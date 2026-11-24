@@ -248,7 +248,8 @@ object GboxScripts {
             ISO="$isoFlag"
             BR_NAME="${'$'}(echo "${'$'}CFG" | awk '/^interface Bridge[0-9]+/{cur=${'$'}2; inb=1; g=0} inb && /description Gor4akovNET/{g=1} inb && /^!/{if(g){print cur; exit} inb=0} END{if(inb && g) print cur}')"
             if [ -z "${'$'}BR_NAME" ]; then
-                for n in 1 2 3 4 5; do
+                bridge_count=$(echo "${'$'}CFG" | grep -c "^interface Bridge")
+                for n in $(seq 1 $((bridge_count + 1))); do
                     if ! echo "${'$'}CFG" | grep -q "^interface Bridge${'$'}n"; then
                         BR_NAME="Bridge${'$'}n"
                         break
@@ -277,7 +278,16 @@ object GboxScripts {
                 # Bind AccessPoint1 (2.4GHz and 5GHz if exists) without touching Home AccessPoint0!
                 for master in WifiMaster0 WifiMaster1; do
                     if echo "${'$'}CFG" | grep -q "^interface ${'$'}{master}$"; then
-                        ap="${'$'}{master}/AccessPoint1"
+                        ap=$(echo "${'$'}CFG" | grep -B1 "description Gor4akovNET" | grep -oE "${'$'}{master}/AccessPoint[0-9]+" | head -1)
+if [ -z "${'$'}ap" ]; then
+for cand in $(echo "${'$'}CFG" | grep -oE "${'$'}{master}/AccessPoint[0-9]+" | sort -u); do
+if ! echo "${'$'}CFG" | grep -q "^interface ${'$'}cand${'$'}"; then continue; fi
+if echo "${'$'}CFG" | grep -q "include ${'$'}cand${'$'}"; then continue; fi
+blk=$(echo "${'$'}CFG" | grep -A20 "^interface ${'$'}cand${'$'}" | sed '/^!/q')
+if echo "${'$'}blk" | grep -q "ssid "; then continue; fi
+ap="${'$'}cand"; break; done
+fi
+[ -z "${'$'}ap" ] && continue
                         LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap" >/dev/null
                         LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap description Gor4akovNET" >/dev/null
                         LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap ssid $safeSsid" >/dev/null

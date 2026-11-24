@@ -1,4 +1,5 @@
 package ru.garickbox.gor4akovnet
+import androidx.compose.foundation.layout.Arrangement
 
 import android.content.Intent
 import android.net.Uri
@@ -439,6 +440,24 @@ fun ConnectWizardScreen(
                         },
                         modifier = Modifier.fillMaxWidth()
                     )
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        AssistChip(onClick = { sshPass = "keenetic" }, label = { Text("keenetic", fontSize = 11.sp) })
+                        AssistChip(onClick = { sshPass = "" }, label = { Text("Пустой", fontSize = 11.sp) })
+                        AssistChip(onClick = { sshPass = rciPass }, label = { Text("Как RCI", fontSize = 11.sp) })
+                        AssistChip(
+                            onClick = {
+                                scope.launch {
+                                    val port = sshPortStr.toIntOrNull() ?: 222
+                                    val found = withContext(Dispatchers.IO) {
+                                        runCatching { Gboxcore.tryPasswordsSSH(host, port, sshUser, rciPass) }.getOrNull()
+                                    }
+                                    if (found != null) sshPass = found
+                                }
+                            },
+                            label = { Text("Автоподбор", fontSize = 11.sp) }
+                        )
+                    }
 
                     Button(
                         onClick = {

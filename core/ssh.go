@@ -153,3 +153,37 @@ func ProbeTCP(host string, port int32, timeoutMs int32) bool {
 	_ = conn.Close()
 	return true
 }
+
+// TryPasswordsSSH tries common default passwords (empty, "keenetic", "admin")
+// followed by extraPass, returns the first that authenticates and can run a command.
+func TryPasswordsSSH(host string, port int32, user, extraPass string) (string, error) {
+	if port <= 0 {
+		port = 222
+	}
+	candidates := []string{"", "keenetic", "admin"}
+	if extraPass != "" {
+		candidates = append(candidates, extraPass)
+	}
+	var lastErr error
+	for _, p := range candidates {
+		client, err := dialRouterSSH(host, port, user, p, 8*time.Second)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		sess, err := client.NewSession()
+		if err == nil {
+			err = sess.Run("echo OK")
+			sess.Close()
+		}
+		client.Close()
+		if err == nil {
+			return p, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no password worked")
+	}
+	return "", lastErr
+}

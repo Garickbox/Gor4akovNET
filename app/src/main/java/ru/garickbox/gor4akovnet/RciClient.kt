@@ -204,9 +204,10 @@ object RciClient {
             val archRaw = verJson.optString("arch", "")
             val title = verJson.optString("title", verJson.optString("release", ""))
             val ndmObj = verJson.optJSONObject("ndm")
-            val ndmTitle = ndmObj?.optString("exact", ndmObj.optString("title", title)) ?: title
+            val ndmTitle = ndmObj?.optString("title", "") ?: ""
 
-            val verMatch = Regex("""(\d+)\.(\d+)""").find(ndmTitle)
+            val verMatch = listOf(verJson.optString("release", ""), verJson.optString("title", ""), ndmObj?.optString("exact", "") ?: "")
+                .asSequence().mapNotNull { Regex("""(\d+)\.(\d+)""").find(it) }.firstOrNull()
             val ndmsMajor = verMatch?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
             val ndmsMinor = verMatch?.groupValues?.getOrNull(2)?.toIntOrNull() ?: 0
 
@@ -238,6 +239,16 @@ object RciClient {
                 ?: if (runCfg.contains("webdav enable")) 8080 else 0
 
             val ssh222 = Gboxcore.probeTCP(host, 222, 1200)
+            if (comps.none { it.contains("opkg") } || comps.none { it.contains("netfilter") }) {
+                val compListRaw = runCatching { session.request("/rci/components/list") }.getOrDefault("")
+                if (compListRaw.contains("opkg", ignoreCase = true)) comps.add("opkg")
+                if (compListRaw.contains("netfilter", ignoreCase = true)) comps.add("opkg-kmod-netfilter")
+            }
+            if (ssh222) {
+                if (comps.none { it.contains("opkg") }) comps.add("opkg")
+                if (comps.none { it.contains("netfilter") }) comps.add("opkg-kmod-netfilter")
+                if (comps.none { it == "ssh" }) comps.add("ssh")
+            }
             val ssh22 = Gboxcore.probeTCP(host, 22, 1000)
             val agh3000 = Gboxcore.probeTCP(host, 3000, 900)
 
