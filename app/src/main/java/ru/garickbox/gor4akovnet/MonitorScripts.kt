@@ -94,28 +94,33 @@ object MonitorScripts {
 
     val CMD_BYPASS_STATE = sh(
         """
-        zst=§(curl -fsS -m 4 http://127.0.0.1:8088/cgi-bin/api/status 2>/dev/null || echo '')
+        panel_up=true
+        if command -v nc >/dev/null 2>&1; then
+          nc -z -w 1 127.0.0.1 8088 2>/dev/null || panel_up=false
+        fi
+        cp_get() { if [ "§panel_up" = true ]; then curl -fsS "§@" 2>/dev/null || echo ''; else echo ''; fi; }
+        zst=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/status)
         case "§zst" in '{'*) ;; *)
           zrun=false; ps | grep -q '[n]fqws2' && zrun=true
           zcfg_json=§(ZRUN="§zrun" awk -F= '$AWK_ESC /^([A-Z0-9_]+)=/{k=§1; v=§2; gsub(/^["'"'"']|["'"'"']§/,"",v); if(k=="MODE"||k=="Z2K_PRESET") md=v; if(k=="DISABLE_IPV6") ipv6=v; if(k=="POLICY_NAME") pol=v; if(k=="POLICY_EXCLUDE") pex=v; if(k=="AUTOHOSTLIST") ahl=v} END{printf "{\"ok\":true,\"direct\":true,\"running\":%s,\"mode\":\"%s\",\"no_ipv6\":%s,\"policy\":\"%s\",\"policy_exclude\":%d,\"autohost\":%s}", ENVIRON["ZRUN"], esc(md==""?"auto":md), (ipv6=="1"?"true":"false"), esc(pol), pex+0, (ahl=="1"?"true":"false")}' /opt/zapret2/config 2>/dev/null)
           zst="§{zcfg_json:-{\"ok\":true,\"direct\":true}}"
           ;;
         esac
-        wst=§(curl -fsS -m 4 http://127.0.0.1:8088/cgi-bin/api/warp/status 2>/dev/null || echo '')
+        wst=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/warp/status)
         case "§wst" in '{'*) ;; *)
           winst=false; [ -x /opt/sbin/z2k-warpd ] || [ -x /opt/zapret2/z2k-warp.sh ] && winst=true
           wrun=false; ps | grep -q '[z]2k-warpd' && wrun=true
           wst="{\"ok\":true,\"installed\":§winst,\"running\":§wrun}"
           ;;
         esac
-        pst=§(curl -fsS -m 3 http://127.0.0.1:8088/cgi-bin/api/policy/status 2>/dev/null || echo '')
+        pst=§(cp_get -m 3 http://127.0.0.1:8088/cgi-bin/api/policy/status)
         case "§pst" in '{'*) ;; *)
           pol_nm=§(awk -F= '/^POLICY_NAME=/{gsub(/["'"'"'\r\n]/,"",§2); print §2; exit}' /opt/zapret2/config 2>/dev/null)
           pol_ex=§(awk -F= '/^POLICY_EXCLUDE=/{print §2+0; exit}' /opt/zapret2/config 2>/dev/null | head -n1 | tr -dc '0-9')
           pst="{\"ok\":true,\"name\":\"§{pol_nm:-Gor4akovNET}\",\"exclude\":§{pol_ex:-0}}"
           ;;
         esac
-        ahl=§(curl -fsS -m 3 http://127.0.0.1:8088/cgi-bin/api/autohostlist-domains 2>/dev/null || echo '{"ok":false,"domains":[]}')
+        ahl=§(cp_get -m 3 http://127.0.0.1:8088/cgi-bin/api/autohostlist-domains)
         case "§ahl" in '{'*) ;; *) ahl='{"ok":false,"domains":[]}' ;; esac
         list_to_json() {
           if [ -r "§1" ]; then
