@@ -179,15 +179,27 @@ object CompatibilityMatrix {
     }
 
     fun evaluate(major: Int, minor: Int, hasUsb: Boolean, hasInternalOpkg: Boolean): Pair<CompatLevel, String> {
-        return when {
-            major >= 4 -> CompatLevel.FULL to
-                "KeeneticOS / Netcraze $major.$minor: полная поддержка (USB ext4 или внутренняя память если доступно, OPKG + Netfilter + изолированный Wi-Fi сегмент)."
-            major == 3 && minor >= 7 -> CompatLevel.FULL to
-                "KeeneticOS $major.$minor: полная поддержка (рекомендуется USB ext4, есть API сегментов и OPKG)."
-            major in 2..3 -> CompatLevel.USB_ONLY to
-                "Устаревшая KeeneticOS $major.$minor: работает ТОЛЬКО с USB-флешкой в ext4 (встроенная память OPKG не поддерживается)."
-            else -> CompatLevel.UNKNOWN to
-                "Версия прошивки не определена точно. Проверьте наличие компонентов OPKG и Netfilter."
+        if (!hasUsb && !hasInternalOpkg) {
+            return CompatLevel.UNSUPPORTED to
+                "Нет USB-флешки (ext4) и нет пригодной внутренней памяти для OPKG. Установка невозможна. Вставьте USB (Giga/Ultra/Peak поддерживают)."
         }
+        if (!hasUsb && hasInternalOpkg) {
+            return CompatLevel.USB_ONLY to
+                "USB не обнаружен. Установка только во внутреннюю память ($major.$minor) — рискованно: займёт NAND, нужен swap. Рекомендуем USB ext4."
+        }
+        if (major in 1..3 && !(major == 3 && minor >= 7)) {
+            return CompatLevel.USB_ONLY to
+                "Устаревшая KeeneticOS $major.$minor: работает ТОЛЬКО с USB-флешкой в ext4."
+        }
+        if (major >= 4) {
+            return CompatLevel.FULL to
+                "Netcraze / KeeneticOS $major.$minor: полная поддержка (USB ext4, OPKG + Netfilter + изолированный Wi-Fi сегмент)."
+        }
+        if (major == 3 && minor >= 7) {
+            return CompatLevel.FULL to
+                "KeeneticOS $major.$minor: полная поддержка (USB ext4 обязателен, есть API сегментов и OPKG)."
+        }
+        return CompatLevel.UNKNOWN to
+            "Версия прошивки не определена. Проверьте OPKG и Netfilter."
     }
 }

@@ -229,7 +229,8 @@ object RciClient {
 
             val mediaList = parseMedia(mediaRaw)
             val hasUsb = mediaList.any { it.isUsb }
-            val hasInternalOpkg = mediaList.any { it.isInternalStorage } || ndmsMajor > 3 || (ndmsMajor == 3 && ndmsMinor >= 7)
+            // Внутреннее хранилище для /opt — только по факту media (ext4/opkg), НЕ по версии прошивки
+            val hasInternalOpkg = mediaList.any { it.isInternalStorage && it.totalMb > 200 }
             val (compatLevel, compatReason) = CompatibilityMatrix.evaluate(ndmsMajor, ndmsMinor, hasUsb, hasInternalOpkg)
 
             val opkgDiskLine = runCfg.lines().firstOrNull { it.trim().startsWith("opkg disk ") }?.trim()?.removePrefix("opkg disk ") ?: ""
