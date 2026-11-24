@@ -79,18 +79,32 @@ private enum class MonitorPage(
     LOGS_SSH(MonitorGroup.TOOLS, "Логи & SSH", Icons.Rounded.Terminal, "logs")
 }
 
+private fun isReadOnlyCmd(cmd: String): Boolean {
+    // Изменяющие команды НЕ ретраим — иначе opkg upgrade / warp install выполнятся дважды
+    val dangerous = listOf(
+        "opkg upgrade", "opkg install", "opkg remove",
+        "z2k-warp", "warpInstall", "install.sh", "installer", "reboot",
+        "S99", "S98", "S97", "S96", "S51",
+        "/opt/etc/init.d", "togglez2k", "warpgametoggle",
+        "wol ", "wakeonlan"
+    )
+    val lower = cmd.lowercase()
+    return dangerous.none { lower.contains(it.lowercase()) }
+}
+
 private suspend fun runSshRetry(prefs: Prefs, cmd: String): String {
     val host = prefs.routerHost.ifBlank { "192.168.1.1" }
     val port = prefs.sshPort
+    val allowRetry = isReadOnlyCmd(cmd)
     return withContext(Dispatchers.IO) {
         try {
             val first = Gboxcore.runRouterSSH(host, port, prefs.sshUser, prefs.sshPass, cmd)
-            if (first.isNotBlank()) return@withContext first
+            if (!allowRetry || first.isNotBlank()) return@withContext first
             Thread.sleep(250)
             Gboxcore.runRouterSSH(host, port, prefs.sshUser, prefs.sshPass, cmd)
         } catch (e: Throwable) {
             val msg = e.message.orEmpty()
-            if (msg.contains("EOF", true) || msg.contains("closed", true)) {
+            if (allowRetry && (msg.contains("EOF", true) || msg.contains("closed", true))) {
                 Thread.sleep(250)
                 Gboxcore.runRouterSSH(host, port, prefs.sshUser, prefs.sshPass, cmd)
             } else throw e
@@ -731,7 +745,10 @@ fun MonitorPanelScreen(
         val svcObj = overview?.optJSONObject("svc")
         val isUp = svcObj?.optBoolean(key, false) == true
         val warpObj = bypass?.optJSONObject("warp")
-        val warpInstalled = warpObj?.optBoolean("installed", false) ?: false
+        val warpStrSvc = if (warpObj == null) bypass?.optString("warp").orEmpty() else ""
+        val warpInstalled = warpObj?.optBoolean("installed", false) == true ||
+            warpObj?.optBoolean("running", false) == true ||
+            warpStrSvc == "true" || warpStrSvc == "1"
         val initMap = mapOf(
             "nfqws2" to "S99zapret2", "adguard" to "S99AdGuardHome",
             "tg_tunnel" to "S98tg-tunnel", "http_tunnel" to "S97z2k-http-tunnel", "warp" to "S51z2k-warp",

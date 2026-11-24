@@ -153,7 +153,10 @@ object MonitorScripts {
 
     val CMD_WARP_GAMES = sh(
         """
-        g=§(curl -fsS -m 5 http://127.0.0.1:8088/cgi-bin/api/warp/games 2>/dev/null || echo '{"ok":false,"games":[]}')
+        panel_up=true
+        if command -v nc >/dev/null 2>&1; then nc -z -w 1 127.0.0.1 8088 2>/dev/null || panel_up=false; fi
+        g=''
+        if [ "§panel_up" = true ]; then g=§(curl -fsS -m 5 http://127.0.0.1:8088/cgi-bin/api/warp/games 2>/dev/null || echo ''); fi
         case "§g" in '{'*) printf '%s\n' "§g" ;; *) echo '{"ok":false,"games":[]}' ;; esac
         """
     )
