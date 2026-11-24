@@ -44,7 +44,11 @@ object GboxScripts {
         set +e
         ent=0; [ -x /opt/bin/opkg ] && ent=1
         z2k_inst=0; [ -d /opt/zapret2 ] && z2k_inst=1
-        nfq=${'$'}(ps | grep -c '[n]fqws2' | head -n1 | tr -dc '0-9'); [ -z "${'$'}nfq" ] && nfq=0
+        nfq=0
+        if command -v pgrep >/dev/null 2>&1 && pgrep -f nfqws2 >/dev/null 2>&1; then nfq=1
+        elif ps w 2>/dev/null | grep -q '[n]fqws2'; then nfq=1
+        elif ps 2>/dev/null | grep -q '[n]fqws2'; then nfq=1
+        fi
         z2k_run=0; [ "${'$'}nfq" -gt 0 ] && z2k_run=1
         z2k_mode=${'$'}(awk -F= '/^MODE=|^Z2K_PRESET=/{v=${'$'}2} END{gsub(/"/,"",v); print (v==""?"auto":v)}' /opt/zapret2/config 2>/dev/null)
         ipt_cnt=${'$'}(iptables -t mangle -S 2>/dev/null | grep -c NFQUEUE | head -n1 | tr -dc '0-9'); [ -z "${'$'}ipt_cnt" ] && ipt_cnt=0
@@ -52,8 +56,13 @@ object GboxScripts {
         agh_run=0; ps | grep -q '[A]dGuardHome' && agh_run=1
         cfg=${'$'}(LD_LIBRARY_PATH= ndmc -c "show running-config" 2>/dev/null)
         dns_ov=0; echo "${'$'}cfg" | grep -q "opkg dns-override" && dns_ov=1
-        warp_inst=0; [ -x /opt/sbin/z2k-warpd ] || [ -x /opt/zapret2/z2k-warp.sh ] && warp_inst=1
-        warp_run=0; ps | grep -q '[z]2k-warpd' && warp_run=1
+        warp_inst=0
+        if [ -x /opt/sbin/z2k-warpd ] || [ -f /opt/sbin/z2k-warpd ] || [ -x /opt/zapret2/z2k-warp.sh ] || [ -f /opt/zapret2/z2k-warp.sh ]; then warp_inst=1; fi
+        warp_run=0
+        if command -v pgrep >/dev/null 2>&1 && pgrep -f z2k-warpd >/dev/null 2>&1; then warp_run=1
+        elif ps w 2>/dev/null | grep -q '[z]2k-warpd'; then warp_run=1
+        elif ps 2>/dev/null | grep -q '[z]2k-warpd'; then warp_run=1
+        fi
         tg_run=0; ps | grep -q '[t]g-mtproxy-client' && tg_run=1
         db_run=0; ps | grep -q '[d]ropbear' && db_run=1
         pol_name=${'$'}(awk -F= '/^POLICY_NAME=/{gsub(/["'"'"']/,"",${'$'}2); print ${'$'}2; exit}' /opt/zapret2/config 2>/dev/null)
@@ -140,6 +149,14 @@ object GboxScripts {
             set +e
             export PATH="/opt/bin:/opt/sbin:/opt/usr/bin:/opt/usr/sbin:/bin:/sbin:/usr/bin:/usr/sbin"
             export TMPDIR=/opt/tmp
+            # PREFLIGHT: Entware обязателен, иначе установка "пройдёт" на flash вхолостую
+            if [ ! -x /opt/bin/opkg ]; then
+                echo "[FATAL] Entware (/opt/bin/opkg) не смонтирован — установка невозможна."
+                echo "[FATAL] Вернитесь на шаг 4 мастера: USB ext4 + Entware + SSH :222"
+                echo "PREFLIGHT_FAIL"
+                exit 1
+            fi
+            echo "[OK] Preflight: Entware на /opt смонтирован"
             mkdir -p /opt/tmp /opt/etc/opkg /opt/etc/ndm/netfilter.d /opt/gor4akov-offline/ipks
 
             echo "=== [1/6] Установка локальных системных пакетов ==="
@@ -308,7 +325,12 @@ object GboxScripts {
                         fi
                     done
                     LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null
-                    echo "[OK] Wi-Fi сеть '$safeSsid' поднята на ${'$'}BR_NAME (${'$'}{SUB_PREFIX}.0/24)"
+                    ap_count=${'$'}(echo "${'$'}CFG" | grep -cE '^interface WifiMaster[0-9]+/AccessPoint' 2>/dev/null)
+                    if [ "${'$'}{ap_count:-0}" -gt 0 ]; then
+                        echo "[OK] Wi-Fi сеть '$safeSsid' поднята на ${'$'}BR_NAME (${'$'}{SUB_PREFIX}.0/24)"
+                    else
+                        echo "[WARN] На роутере нет Wi-Fi AP — сеть '$safeSsid' не создана. Политика Gor4akovNET работает для проводных."
+                    fi
                 fi
             else
                 echo "[INFO] Режим без отдельного Wi-Fi: политика Gor4akovNET создана (можно назначать на устройства в Мониторе)."
@@ -345,27 +367,47 @@ EOFHOOK
             if [ "$aghFlag" = "1" ]; then
                 echo "[INFO] Установка AdGuard Home (требуется выход в интернет)..."
                 if opkg update && opkg install adguardhome-go; then
-                    LD_LIBRARY_PATH= ndmc -c "opkg dns-override" >/dev/null
-                    LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null
+                    agh_started=0
                     for ini in /opt/etc/init.d/S99AdGuardHome /opt/etc/init.d/S99adguardhome; do
-                        [ -x "${'$'}ini" ] && "${'$'}ini" start >/dev/null 2>&1 || true
+                        if [ -x "${'$'}ini" ]; then
+                            "${'$'}ini" start >/dev/null 2>&1 && agh_started=1 && break
+                        fi
                     done
-                    echo "[OK] AdGuard Home установлен и opkg dns-override включён"
+                    sleep 2
+                    if [ "${'$'}agh_started" = "1" ] && { ps w 2>/dev/null | grep -q '[A]dGuardHome' || ps 2>/dev/null | grep -q '[A]dGuardHome'; }; then
+                        LD_LIBRARY_PATH= ndmc -c "opkg dns-override" >/dev/null
+                        LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null
+                        echo "[OK] AdGuard Home установлен, работает, opkg dns-override включён"
+                    else
+                        echo "[WARN] AdGuard Home не стартовал — override НЕ включён (иначе поломка DNS). Проверьте Монитор → DNS."
+                    fi
                 else
                     echo "[WARN] Не удалось скачать adguardhome-go сейчас — можно доустановить позже в Мониторе"
                 fi
             fi
 
-            if [ "$warpFlag" = "1" ] && [ -x /opt/zapret2/z2k-warp.sh ]; then
-                echo "[INFO] Активация Cloudflare WARP в z2k..."
-                sh /opt/zapret2/z2k-warp.sh enable >/dev/null 2>&1 || true
+            if [ "$warpFlag" = "1" ]; then
+                if [ -x /opt/zapret2/z2k-warp.sh ] || [ -f /opt/zapret2/z2k-warp.sh ]; then
+                    echo "[INFO] Активация Cloudflare WARP в z2k..."
+                    sh /opt/zapret2/z2k-warp.sh enable >/dev/null 2>&1 || true
+                else
+                    echo "[WARN] z2k-warp.sh не найден — WARP можно установить вручную из Монитора"
+                fi
             fi
 
             echo "=== [6/6] Запуск обхода и финальная проверка ==="
             [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart
             sh /opt/etc/ndm/netfilter.d/090-gor4akov-policy.sh >/dev/null 2>&1 || true
             sleep 2
-            nfq_cnt=${'$'}(ps | grep -c '[n]fqws2' | head -n1 | tr -dc '0-9')
+            nfq_cnt=0
+            if command -v pgrep >/dev/null 2>&1 && pgrep -f nfqws2 >/dev/null 2>&1; then nfq_cnt=1
+            elif ps w 2>/dev/null | grep -q '[n]fqws2'; then nfq_cnt=1
+            elif ps 2>/dev/null | grep -q '[n]fqws2'; then nfq_cnt=1
+            fi
+            if [ "${'$'}nfq_cnt" = "0" ]; then
+                sleep 2
+                if ps w 2>/dev/null | grep -q '[n]fqws2' || ps 2>/dev/null | grep -q '[n]fqws2'; then nfq_cnt=1; fi
+            fi
             echo "NFQWS_PROCS=${'$'}{nfq_cnt:-0}"
             echo "INSTALL_DONE"
         """.trimIndent()
@@ -373,7 +415,11 @@ EOFHOOK
 
     val VERIFY_BYPASS_SCRIPT = """
         set +e
-        nfq=${'$'}(ps | grep -c '[n]fqws2' | head -n1 | tr -dc '0-9')
+        nfq=0
+        if command -v pgrep >/dev/null 2>&1 && pgrep -f nfqws2 >/dev/null 2>&1; then nfq=1
+        elif ps w 2>/dev/null | grep -q '[n]fqws2'; then nfq=1
+        elif ps 2>/dev/null | grep -q '[n]fqws2'; then nfq=1
+        fi
         rules=${'$'}(iptables -t mangle -S 2>/dev/null | grep -c NFQUEUE | head -n1 | tr -dc '0-9')
         echo "PROCESSES|nfqws2=${'$'}{nfq:-0}|nfqueue_rules=${'$'}{rules:-0}"
         for host in youtube.com discord.com instagram.com; do
