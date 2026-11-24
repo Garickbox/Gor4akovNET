@@ -409,7 +409,6 @@ EOFHOOK
     """.trimIndent()
 
     val FULL_BACKUP_TAR_CMD = """
-        set -e
         TMPB="/tmp/.gbox_bkp_${'$'}${'$'}"
         mkdir -p "${'$'}TMPB"
         LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" > "${'$'}TMPB/startup-config.txt" 2>/dev/null || true
