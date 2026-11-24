@@ -118,10 +118,24 @@ private fun parseJsonOut(raw: String, tag: String): JSONObject {
         val preview = raw.trim().take(180)
         throw IllegalArgumentException(if (preview.isBlank()) "$tag: пустой ответ роутера" else "$tag (не JSON): $preview")
     }
-    // Отрезаем мусор после последней } — иначе bash warnings / stderr ломают JSONObject
-    val j = raw.lastIndexOf('}')
-    val body = if (j > i) raw.substring(i, j + 1) else raw.substring(i)
-    return JSONObject(body)
+    // Берём ПЕРВЫЙ сбалансированный {} — игнорируем мусор до/после и второй JSON
+    var depth = 0
+    var inStr = false
+    var esc = false
+    var end = -1
+    for (k in i until raw.length) {
+        val c = raw[k]
+        if (esc) { esc = false; continue }
+        if (c == '\\') { esc = true; continue }
+        if (c == '"') { inStr = !inStr; continue }
+        if (inStr) continue
+        when (c) {
+            '{' -> depth++
+            '}' -> { depth--; if (depth == 0) { end = k; break } }
+        }
+    }
+    if (end < 0) throw IllegalArgumentException("$tag: незакрытый JSON (${raw.take(120)})")
+    return JSONObject(raw.substring(i, end + 1))
 }
 
 private fun formatUptime(sec: Long): String {
