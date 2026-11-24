@@ -283,8 +283,8 @@ fun MonitorPanelScreen(
                         bypass = parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_BYPASS_STATE), "Zapret2")
                     }
                     MonitorPage.WARP -> {
-                        bypass = parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_BYPASS_STATE), "WARP")
-                        if (warpGames == null || force) warpGames = parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_WARP_GAMES), "Игры WARP")
+                        runCatching { bypass = parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_BYPASS_STATE), "WARP") }
+                        if (warpGames == null || force) runCatching { warpGames = parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_WARP_GAMES), "Игры WARP") }
                     }
                     MonitorPage.WIFI, MonitorPage.DEVICES -> if (wifiDevs == null || force) {
                         wifiDevs = parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_WIFI_DEVICES), "Wi-Fi/Клиенты")
@@ -1439,7 +1439,7 @@ private fun BypassModesPage(
 @Composable
 private fun WarpPage(bypass: JSONObject?, gamesData: JSONObject?, onTopicHelp: (String) -> Unit, onAction: (String, String) -> Unit) {
     val warp = bypass?.optJSONObject("warp") ?: JSONObject()
-    val installed = warp.optBoolean("installed")
+    val installed = warp.optBoolean("installed") || warp.optBoolean("running")
     val running = warp.optBoolean("running")
     val games = gamesData?.optJSONArray("games") ?: JSONArray()
 
