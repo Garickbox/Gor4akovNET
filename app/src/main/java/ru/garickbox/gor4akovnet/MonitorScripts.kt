@@ -135,6 +135,12 @@ object MonitorScripts {
         """
     )
 
+    val CMD_WARP_STATUS = sh("""
+        winst=false; [ -x /opt/sbin/z2k-warpd ] || [ -x /opt/zapret2/z2k-warp.sh ] && winst=true
+        wrun=false; ps | grep -q '[z]2k-warpd' && wrun=true
+        printf '{"ok":true,"installed":%s,"running":%s}\n' "$winst" "$wrun"
+        """)
+
     val CMD_WARP_GAMES = sh(
         """
         g=§(curl -fsS -m 5 http://127.0.0.1:8088/cgi-bin/api/warp/games 2>/dev/null || echo '{"ok":false,"games":[]}')

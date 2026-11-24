@@ -283,7 +283,7 @@ fun MonitorPanelScreen(
                         bypass = parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_BYPASS_STATE), "Zapret2")
                     }
                     MonitorPage.WARP -> {
-                        runCatching { bypass = parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_BYPASS_STATE), "WARP") }
+                        runCatching { bypass = JSONObject().put("warp", parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_WARP_STATUS), "WARP")) }
                         if (warpGames == null || force) runCatching { warpGames = parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_WARP_GAMES), "Игры WARP") }
                     }
                     MonitorPage.WIFI, MonitorPage.DEVICES -> if (wifiDevs == null || force) {
