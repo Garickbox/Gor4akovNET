@@ -9,3 +9,6 @@ app/src/main/assets/offline/ipks/
 app/src/main/assets/offline/z2k/
 app/src/main/assets/offline/manifest.json
 .DS_Store
+
+dump.txt
+*.py
