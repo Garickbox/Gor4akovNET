@@ -129,4 +129,18 @@ class Prefs(private val context: Context) {
         val raw = sp.getString("backups_meta", "[]") ?: "[]"
         return runCatching { JSONArray(raw) }.getOrElse { JSONArray() }
     }
+
+    companion object {
+        private fun of(c: Context) = Prefs(c)
+        fun sshHost(c: Context): String = of(c).sshHost
+        fun sshPort(c: Context): Int = of(c).sshPort
+        fun sshUser(c: Context): String = of(c).sshUser
+        fun sshPass(c: Context): String = of(c).sshPass
+        fun exitNode(c: Context): String = ""
+        fun setSshHost(c: Context, v: String) { of(c).sshHost = v }
+        fun setSshUser(c: Context, v: String) { of(c).sshUser = v }
+        fun setSshPort(c: Context, v: Int) { of(c).sshPort = v }
+        fun setSshPass(c: Context, v: String) { of(c).sshPass = v }
+    }
+
 }

@@ -189,20 +189,7 @@ fun Gor4akovRootApp(prefs: Prefs) {
                     onGoToSetups = { tab = 2 },
                     onGoToMonitor = { tab = 1 }
                 )
-                1 -> MonitorPanelScreen(
-                    prefs = prefs,
-                    passport = passport,
-                    stats = stats,
-                    services = services,
-                    clients = clients,
-                    backups = backups,
-                    onRefreshAll = { refreshAllTelemetry() },
-                    onBackupSaved = { b -> backups = listOf(b) + backups },
-                    onBackupDeleted = { id ->
-                        prefs.deleteBackup(id)
-                        backups = prefs.listBackups()
-                    }
-                )
+                1 -> MonitorPanelScreen(onBack = { tab = 0 })
                 2 -> SetupsScreen(
                     prefs = prefs,
                     passport = passport,

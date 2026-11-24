@@ -45,7 +45,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import yadomacore.Yadomacore
+import gboxcore.Gboxcore
 
 private enum class MonitorGroup(val title: String) {
     SYSTEM("СИСТЕМА"),
@@ -78,25 +78,23 @@ private enum class MonitorPage(
     LOGS_SSH(MonitorGroup.TOOLS, "Логи & SSH", Icons.Rounded.Terminal, "logs")
 }
 
-private fun sshTarget(ctx: Context): Triple<String, Int, String> {
-    val proxy = YaDomaVpnService.proxyAddrForApp()
-    val host = if (proxy.isNotBlank()) Prefs.exitNode(ctx) else Prefs.sshHost(ctx)
-    return Triple(host, Prefs.sshPort(ctx), proxy)
+private fun sshTarget(ctx: Context): Pair<String, Int> {
+    return Pair(Prefs.sshHost(ctx), Prefs.sshPort(ctx))
 }
 
 private suspend fun runSshRetry(ctx: Context, cmd: String): String {
-    val (host, port, proxy) = sshTarget(ctx)
+    val (host, port) = sshTarget(ctx)
     return withContext(Dispatchers.IO) {
         try {
-            val first = Yadomacore.runRouterSSH(host, port, Prefs.sshUser(ctx), Prefs.sshPass(ctx), cmd, proxy)
+            val first = Gboxcore.runRouterSSH(host, port, Prefs.sshUser(ctx), Prefs.sshPass(ctx), cmd)
             if (first.isNotBlank()) return@withContext first
             Thread.sleep(250)
-            Yadomacore.runRouterSSH(host, port, Prefs.sshUser(ctx), Prefs.sshPass(ctx), cmd, proxy)
+            Gboxcore.runRouterSSH(host, port, Prefs.sshUser(ctx), Prefs.sshPass(ctx), cmd)
         } catch (e: Throwable) {
             val msg = e.message.orEmpty()
             if (msg.contains("EOF", true) || msg.contains("closed", true)) {
                 Thread.sleep(250)
-                Yadomacore.runRouterSSH(host, port, Prefs.sshUser(ctx), Prefs.sshPass(ctx), cmd, proxy)
+                Gboxcore.runRouterSSH(host, port, Prefs.sshUser(ctx), Prefs.sshPass(ctx), cmd)
             } else throw e
         }
     }
@@ -193,8 +191,8 @@ fun MonitorPanelScreen(onBack: () -> Unit) {
     var showPass by remember { mutableStateOf(false) }
     var confirmReboot by remember { mutableStateOf(false) }
 
-    val (curHost, curPort, curProxy) = sshTarget(ctx)
-    val routeBadge = if (curProxy.isNotBlank()) "TS • $curHost:$curPort" else "LAN • $curHost:$curPort"
+    val (curHost, curPort) = sshTarget(ctx)
+    val routeBadge = "LAN • $curHost:$curPort"
 
     fun showTopic(key: String) {
         helpTopic = MonitorHelp.topics[key]
@@ -292,7 +290,7 @@ fun MonitorPanelScreen(onBack: () -> Unit) {
         scope.launch {
             runCatching {
                 val out = runSshRetry(ctx, cmd)
-                if (syncRulesAfter) withContext(Dispatchers.IO) { YaDomaVpnService.syncRulesFromRouter(ctx, true) }
+                if (syncRulesAfter) { /* tailscale removed */ }
                 if (onOutput != null) onOutput(out.ifBlank { "OK (пустой вывод, rc=0)" })
                 else if (out.isNotBlank()) consoleOut = out
                 statusMsg = "$title — готово"
