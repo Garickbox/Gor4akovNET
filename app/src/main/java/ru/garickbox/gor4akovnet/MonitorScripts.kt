@@ -511,7 +511,7 @@ object MonitorScripts {
 
     fun tunnelSetCmd(enable: Boolean): String = z2kApiJob(if (enable) "tunnel/enable" else "tunnel/disable", "", 20)
     fun warpInstallCmd(): String = sh(
-        """
+        """__LONG__
         if [ -x /opt/zapret2/z2k-warp.sh ]; then
           sh /opt/zapret2/z2k-warp.sh install 2>&1 || sh /opt/zapret2/z2k-warp.sh enable 2>&1
         else
