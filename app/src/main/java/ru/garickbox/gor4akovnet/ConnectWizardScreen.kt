@@ -17,6 +17,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
@@ -129,11 +131,14 @@ fun ConnectWizardScreen(
                 ) {
                     Text(
                         text = label,
-                        fontSize = 10.sp,
+                        fontSize = 9.5.sp,
                         fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
                         color = if (active || done) DeckColors.Emerald else DeckColors.Muted,
-                        modifier = Modifier.padding(vertical = 7.dp, horizontal = 3.dp),
-                        maxLines = 1
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 7.dp, horizontal = 2.dp),
+                        softWrap = false,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -385,7 +390,7 @@ fun ConnectWizardScreen(
                                                 }
                                             }
                                         }.onFailure {
-                                            errorMsg = it.message ?: "Ошибка авто-заливки Entware"
+                                            val em = it.message ?: "Ошибка авто-заливки Entware"; errorMsg = em; Telemetry.recordError(prefs, "entware_webdav", em, p.model, p.ndmsTitle, countAsFail = false)
                                         }
                                         busy = false
                                     }
@@ -477,7 +482,7 @@ fun ConnectWizardScreen(
                                     refreshPassport()
                                     currentStep = 4
                                 }.onFailure {
-                                    errorMsg = "SSH недоступен: ${it.message}"
+                                    val em = "SSH недоступен: ${it.message}"; errorMsg = em; scope.launch { Telemetry.recordError(prefs, "connect_wizard", em, passport?.model ?: "", passport?.ndmsTitle ?: "", countAsFail = false) }
                                 }
                                 busy = false
                             }

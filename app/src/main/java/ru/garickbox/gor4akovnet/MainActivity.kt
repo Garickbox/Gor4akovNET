@@ -3,6 +3,8 @@ package ru.garickbox.gor4akovnet
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
@@ -11,6 +13,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import gboxcore.Gboxcore
@@ -34,47 +38,40 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun Gor4akovRootApp(prefs: Prefs) {
     val scope = rememberCoroutineScope()
+    var unlocked by remember { mutableStateOf(false) }
+    var privileged by remember { mutableStateOf(prefs.privilegedMode) }
+
+    if (!unlocked) {
+        AppLockScreen(
+            isFirstSetup = !prefs.hasAppPin,
+            onUnlocked = { priv ->
+                if (priv) privileged = true
+                unlocked = true
+            },
+            verifyPin = { prefs.verifyAppPin(it) },
+            createPin = { prefs.setAppPin(it) }
+        )
+        return
+    }
+
     var tab by remember { mutableIntStateOf(if (prefs.wizardCompleted) 1 else 0) }
     var passport by remember { mutableStateOf<RouterPassport?>(null) }
-    var stats by remember { mutableStateOf<SystemStats?>(null) }
     var services by remember { mutableStateOf<ServiceStatus?>(null) }
-    var clients by remember { mutableStateOf<List<ClientHost>>(emptyList()) }
     var backups by remember { mutableStateOf(prefs.listBackups()) }
     var showHelp by remember { mutableStateOf(false) }
+
+    var titleTaps by remember { mutableIntStateOf(0) }
+    var lastTapMs by remember { mutableLongStateOf(0L) }
+    var showPinDialog by remember { mutableStateOf(false) }
+    var newPinInput by remember { mutableStateOf("") }
+    var showPinText by remember { mutableStateOf(false) }
+    var pinErr by remember { mutableStateOf("") }
 
     fun refreshAllTelemetry() {
         val host = prefs.routerHost.ifBlank { return }
         scope.launch {
             withContext(Dispatchers.IO) {
                 if (Gboxcore.probeTCP(host, prefs.sshPort, 900)) {
-                    runCatching {
-                        val dashRaw = Gboxcore.runRouterSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, GboxScripts.DASHBOARD_SCRIPT)
-                        dashRaw.lines().firstOrNull { it.startsWith("DASH|") }?.let { line ->
-                            val p = line.split("|")
-                            if (p.size >= 20) {
-                                stats = SystemStats(
-                                    cpuPct = p[1].toIntOrNull() ?: 0,
-                                    ramUsedMb = p[2].toIntOrNull() ?: 0,
-                                    ramTotalMb = p[3].toIntOrNull() ?: 0,
-                                    zramUsedMb = p[4].toIntOrNull() ?: 0,
-                                    zramTotalMb = p[5].toIntOrNull() ?: 0,
-                                    swapUsedMb = p[6].toIntOrNull() ?: 0,
-                                    swapTotalMb = p[7].toIntOrNull() ?: 0,
-                                    tempCpuC = p[8].toIntOrNull() ?: 0,
-                                    conntrackCur = p[9].toIntOrNull() ?: 0,
-                                    conntrackMax = p[10].toIntOrNull() ?: 0,
-                                    loadAvg = p[11],
-                                    uptimeStr = "${p[12]}д ${p[13]}ч ${p[14]}м",
-                                    optFreeMb = p[15].toIntOrNull() ?: 0,
-                                    optTotalMb = p[16].toIntOrNull() ?: 0,
-                                    optMount = p[17],
-                                    arch = p[18],
-                                    hostname = p[19],
-                                    firmware = p.getOrElse(20) { "-" }
-                                )
-                            }
-                        }
-                    }
                     runCatching {
                         val svcRaw = Gboxcore.runRouterSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, GboxScripts.SERVICE_RADAR_SCRIPT)
                         svcRaw.lines().firstOrNull { it.startsWith("SVC|") }?.let { line ->
@@ -103,29 +100,13 @@ fun Gor4akovRootApp(prefs: Prefs) {
                             }
                         }
                     }
-                    runCatching {
-                        val cliRaw = Gboxcore.runRouterSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, GboxScripts.CLIENTS_SCRIPT)
-                        clients = cliRaw.lines()
-                            .filter { it.startsWith("HOST|") }
-                            .mapNotNull { line ->
-                                val p = line.split("|")
-                                if (p.size >= 8) {
-                                    ClientHost(
-                                        mac = p[1],
-                                        ip = p[2],
-                                        name = p[3],
-                                        segment = p[4],
-                                        policy = p[5],
-                                        qosClass = 0,
-                                        isOnline = p[6] == "1",
-                                        isStaticDhcp = p[7] == "1"
-                                    )
-                                } else null
-                            }
-                    }
                 }
             }
         }
+    }
+
+    LaunchedEffect(Unit) {
+        Telemetry.recordOpen(prefs, passport?.model ?: "", passport?.ndmsTitle ?: "")
     }
 
     LaunchedEffect(tab) {
@@ -139,7 +120,26 @@ fun Gor4akovRootApp(prefs: Prefs) {
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = DeckColors.Card),
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Gor4akovNET", color = DeckColors.Emerald, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
+                        Text(
+                            "Gor4akovNET",
+                            color = DeckColors.Emerald,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 18.sp,
+                            modifier = Modifier.clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null
+                            ) {
+                                val now = System.currentTimeMillis()
+                                titleTaps = if (now - lastTapMs < 2000L) titleTaps + 1 else 1
+                                lastTapMs = now
+                                if (titleTaps >= 5) {
+                                    titleTaps = 0
+                                    newPinInput = ""
+                                    pinErr = ""
+                                    showPinDialog = true
+                                }
+                            }
+                        )
                         passport?.let {
                             StatusTag(it.model, DeckColors.Sky)
                         }
@@ -154,13 +154,15 @@ fun Gor4akovRootApp(prefs: Prefs) {
         },
         bottomBar = {
             NavigationBar(containerColor = DeckColors.Card) {
-                val items = listOf(
+                val baseItems = mutableListOf(
                     Triple("Подключение", Icons.Outlined.Cable, 0),
                     Triple("Монитор", Icons.Outlined.MonitorHeart, 1),
-                    Triple("Сетапы", Icons.Outlined.RocketLaunch, 2),
-                    Triple("Управление", Icons.Outlined.Tune, 3)
+                    Triple("Сетапы", Icons.Outlined.RocketLaunch, 2)
                 )
-                items.forEach { (label, icon, idx) ->
+                if (privileged) {
+                    baseItems.add(Triple("Статистика", Icons.Outlined.QueryStats, 3))
+                }
+                baseItems.forEach { (label, icon, idx) ->
                     NavigationBarItem(
                         selected = tab == idx,
                         onClick = { tab = idx },
@@ -189,7 +191,11 @@ fun Gor4akovRootApp(prefs: Prefs) {
                     onGoToSetups = { tab = 2 },
                     onGoToMonitor = { tab = 1 }
                 )
-                1 -> MonitorPanelScreen(onBack = { tab = 0 })
+                1 -> MonitorPanelScreen(
+                    prefs = prefs,
+                    onBackupSaved = { b -> backups = listOf(b) + backups },
+                    onBack = { tab = 0 }
+                )
                 2 -> SetupsScreen(
                     prefs = prefs,
                     passport = passport,
@@ -197,15 +203,58 @@ fun Gor4akovRootApp(prefs: Prefs) {
                     onServicesRefresh = { refreshAllTelemetry() },
                     onBackupSaved = { b -> backups = listOf(b) + backups }
                 )
-                3 -> MordaPagesScreen(
-                    prefs = prefs,
-                    onServicesRefresh = { refreshAllTelemetry() }
-                )
+                3 -> if (privileged) {
+                    StatsScreen(prefs = prefs)
+                } else {
+                    tab = 0
+                }
             }
         }
     }
 
     if (showHelp) {
         HelpDialog { showHelp = false }
+    }
+
+    if (showPinDialog) {
+        AlertDialog(
+            onDismissRequest = { showPinDialog = false },
+            containerColor = DeckColors.Card,
+            title = { Text("Пароль приложения", color = DeckColors.Text, fontSize = 16.sp, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Введите новый пароль доступа (от 4 символов):", color = DeckColors.Muted, fontSize = 12.sp)
+                    OutlinedTextField(
+                        value = newPinInput,
+                        onValueChange = { newPinInput = it; pinErr = "" },
+                        label = { Text("Пароль") },
+                        singleLine = true,
+                        visualTransformation = if (showPinText) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { showPinText = !showPinText }) {
+                                Icon(if (showPinText) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility, null)
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (pinErr.isNotBlank()) Text(pinErr, color = DeckColors.Rose, fontSize = 11.5.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val clean = newPinInput.trim()
+                    if (clean.length < 4) {
+                        pinErr = "Минимум 4 символа"
+                        return@TextButton
+                    }
+                    val isPriv = prefs.setAppPin(clean)
+                    if (isPriv) privileged = true
+                    showPinDialog = false
+                }) { Text("Сохранить", color = DeckColors.Emerald) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPinDialog = false }) { Text("Отмена") }
+            }
+        )
     }
 }

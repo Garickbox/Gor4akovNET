@@ -61,39 +61,67 @@ object OfflineAssets {
             if (!assetExists(context, assetPath)) {
                 error("Оффлайн-архив $assetPath не найден в APK.")
             }
+            if (targetMedia.freeMb in 1..15) {
+                error("Накопитель ${targetMedia.label} почти заполнен (${targetMedia.freeMb} МБ свободно, нужно минимум 16 МБ).")
+            }
             val bytes = readAssetBytes(context, assetPath)
             onLog("Читаю из APK ${passport.entwareInstaller} (${bytes.size / 1024} КБ)...")
 
             val session = RciSession(passport.host, user, pass)
             session.ensureAuth()
 
-            // Enable WebDAV server briefly if component installed
             if (passport.hasWebdavComp) {
-                val port = if (passport.webdavPort > 0) passport.webdavPort else 8081
-                onLog("Проверяю WebDAV на роутере (порт $port)...")
-                session.parseCli(listOf(
-                    "webdav enable",
-                    "webdav port $port",
-                    "webdav anonymous",
-                    "system configuration save"
-                ))
+                onLog("Включаю WebDAV на роутере...")
+                // NDMS 4.x/5.x syntax + NDMS 3.x fallback (ignored cleanly if unsupported)
+                runCatching {
+                    session.parseCli(listOf(
+                        "ip http webdav",
+                        "ip http webdav enable",
+                        "ip http webdav security-level private",
+                        "system configuration save"
+                    ))
+                }
+                if (passport.ndmsMajor in 1..3) {
+                    runCatching {
+                        session.parseCli(listOf(
+                            "webdav enable",
+                            "webdav port ${if (passport.webdavPort > 0) passport.webdavPort else 8081}",
+                            "webdav anonymous",
+                            "system configuration save"
+                        ))
+                    }
+                }
+
+                val portsToTry = listOfNotNull(
+                    passport.webdavPort.takeIf { it > 0 },
+                    80,
+                    8081,
+                    8080
+                ).distinct()
 
                 val shareName = if (targetMedia.isInternalStorage) "storage" else targetMedia.label.ifBlank { targetMedia.name }
                 val candidates = listOf(
                     "/install" to "/install/${passport.entwareInstaller}",
                     "/$shareName/install" to "/$shareName/install/${passport.entwareInstaller}",
-                    "/webdav/$shareName/install" to "/webdav/$shareName/install/${passport.entwareInstaller}"
+                    "/webdav/$shareName/install" to "/webdav/$shareName/install/${passport.entwareInstaller}",
+                    "/webdav/install" to "/webdav/install/${passport.entwareInstaller}",
+                    "" to "/${passport.entwareInstaller}"
                 )
                 var uploadedPath: String? = null
-                for ((dir, path) in candidates) {
-                    session.mkcolWebDav(port, dir)
-                    val putRes = session.putWebDavFile(port, path, bytes)
-                    if (putRes.isSuccess) {
-                        uploadedPath = path
-                        onLog("Залито по WebDAV -> $path (${putRes.getOrNull()})")
-                        break
+                for (port in portsToTry) {
+                    if (!Gboxcore.probeTCP(passport.host, port, 700)) continue
+                    for ((dir, path) in candidates) {
+                        if (dir.isNotBlank()) session.mkcolWebDav(port, dir)
+                        val putRes = session.putWebDavFile(port, path, bytes)
+                        if (putRes.isSuccess) {
+                            uploadedPath = "$port:$path"
+                            onLog("Залито по WebDAV -> http://${passport.host}:$port$path (${putRes.getOrNull()})")
+                            break
+                        }
                     }
+                    if (uploadedPath != null) break
                 }
+
                 if (uploadedPath != null) {
                     val diskId = if (targetMedia.isInternalStorage) "storage:" else "${targetMedia.uuid}:"
                     onLog("Настраиваю opkg disk $diskId и автозапуск Entware...")
@@ -106,7 +134,7 @@ object OfflineAssets {
                     return@runCatching "Entware загружен на роутер и запущен на $diskId. Подождите ~40 сек пока распакуется Dropbear SSH :222!"
                 }
             }
-            error("WebDAV недоступен или не включен — переходите к инструкции ручного копирования /install/${passport.entwareInstaller}.")
+            error("WebDAV недоступен или не включён — переходите к инструкции ручного копирования /install/${passport.entwareInstaller}.")
         }
     }
 

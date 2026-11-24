@@ -13,7 +13,7 @@ import (
 
 func dialRouterSSH(host string, port int32, user, pass string, timeout time.Duration) (*ssh.Client, error) {
 	cfg := &ssh.ClientConfig{
-		User: user,
+		User: strings.TrimSpace(user),
 		Auth: []ssh.AuthMethod{
 			ssh.Password(pass),
 			ssh.KeyboardInteractive(func(_, _ string, questions []string, _ []bool) ([]string, error) {
@@ -27,7 +27,7 @@ func dialRouterSSH(host string, port int32, user, pass string, timeout time.Dura
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         timeout,
 	}
-	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+	addr := net.JoinHostPort(strings.TrimSpace(host), fmt.Sprintf("%d", port))
 	conn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("tcp dial %s: %w", addr, err)
@@ -50,13 +50,11 @@ func RunRouterSSH(host string, port int32, user, pass, cmd string) (string, erro
 		cmd = strings.ReplaceAll(cmd, "__LONG__", "")
 		timeout = 300 * time.Second
 	}
-
 	client, err := dialRouterSSH(host, port, user, pass, 10*time.Second)
 	if err != nil {
 		return "", err
 	}
 	defer client.Close()
-
 	sess, err := client.NewSession()
 	if err != nil {
 		return "", fmt.Errorf("ssh session: %w", err)
@@ -69,7 +67,6 @@ func RunRouterSSH(host string, port int32, user, pass, cmd string) (string, erro
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-
 	done := make(chan error, 1)
 	go func() {
 		done <- sess.Run(cmd)
@@ -112,13 +109,11 @@ func PushBytesSSH(host string, port int32, user, pass, remotePath string, data [
 		return err
 	}
 	defer client.Close()
-
 	sess, err := client.NewSession()
 	if err != nil {
 		return fmt.Errorf("ssh session: %w", err)
 	}
 	defer sess.Close()
-
 	sess.Stdin = bytes.NewReader(data)
 	var stderr bytes.Buffer
 	sess.Stderr = &stderr
@@ -133,11 +128,47 @@ func PushBytesSSH(host string, port int32, user, pass, remotePath string, data [
 		safeDir := "'" + strings.ReplaceAll(dir, "'", "'\"'\"'") + "'"
 		cmd = "mkdir -p " + safeDir + " && cat > " + safePath
 	}
-
 	if err := sess.Run(cmd); err != nil {
 		return fmt.Errorf("push %s: %w (%s)", remotePath, err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
+}
+
+// PullBytesSSH runs a remote command (e.g. tar -czf -) and returns raw stdout bytes.
+func PullBytesSSH(host string, port int32, user, pass, cmd string) ([]byte, error) {
+	if port <= 0 {
+		port = 222
+	}
+	client, err := dialRouterSSH(host, port, user, pass, 12*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+	sess, err := client.NewSession()
+	if err != nil {
+		return nil, fmt.Errorf("ssh session: %w", err)
+	}
+	defer sess.Close()
+
+	var stdout, stderr bytes.Buffer
+	sess.Stdout = &stdout
+	sess.Stderr = &stderr
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- sess.Run(cmd)
+	}()
+	select {
+	case <-ctx.Done():
+		_ = sess.Signal(ssh.SIGTERM)
+		return nil, fmt.Errorf("ssh pull timeout")
+	case err := <-done:
+		if err != nil {
+			return nil, fmt.Errorf("pull exit: %w (%s)", err, strings.TrimSpace(stderr.String()))
+		}
+		return stdout.Bytes(), nil
+	}
 }
 
 // ProbeTCP checks if a local/router TCP port responds within timeoutMs milliseconds.
@@ -145,7 +176,7 @@ func ProbeTCP(host string, port int32, timeoutMs int32) bool {
 	if timeoutMs <= 0 {
 		timeoutMs = 1200
 	}
-	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+	addr := net.JoinHostPort(strings.TrimSpace(host), fmt.Sprintf("%d", port))
 	conn, err := net.DialTimeout("tcp", addr, time.Duration(timeoutMs)*time.Millisecond)
 	if err != nil {
 		return false

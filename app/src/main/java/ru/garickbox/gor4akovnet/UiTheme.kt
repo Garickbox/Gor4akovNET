@@ -1,5 +1,7 @@
 package ru.garickbox.gor4akovnet
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -9,16 +11,17 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.HelpOutline
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -28,10 +31,10 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 
 object DeckColors {
-    val Bg = Color(0xFF0A0D14)
-    val Card = Color(0xFF121722)
-    val CardAlt = Color(0xFF171E2C)
-    val Border = Color(0xFF232D42)
+    val Bg = Color(0xFF0A0F1A)
+    val Card = Color(0xFF111A2B)
+    val CardAlt = Color(0xFF172238)
+    val Border = Color(0xFF253552)
     val Text = Color(0xFFE8EEF8)
     val Muted = Color(0xFF8C9AB5)
     val Emerald = Color(0xFF00E5A3)
@@ -93,6 +96,79 @@ fun StatusTag(label: String, color: Color) {
             fontWeight = FontWeight.SemiBold,
             fontFamily = FontFamily.Monospace,
             modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+        )
+    }
+}
+
+@Composable
+fun DonateCard(modifier: Modifier = Modifier, compact: Boolean = false) {
+    val ctx = LocalContext.current
+    var showPlaceholder by remember { mutableStateOf(false) }
+    val url = BuildConfig.DONATE_URL.trim()
+
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        color = DeckColors.Card,
+        border = BorderStroke(1.dp, DeckColors.Amber.copy(alpha = 0.4f))
+    ) {
+        Row(
+            modifier = Modifier.padding(if (compact) 10.dp else 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    "Поддержать разработку",
+                    color = DeckColors.Text,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = if (compact) 12.5.sp else 14.sp
+                )
+                Text(
+                    "Проект развивается для сообщества Keenetic / Netcraze",
+                    color = DeckColors.Muted,
+                    fontSize = if (compact) 10.5.sp else 11.5.sp
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            OutlinedButton(
+                onClick = {
+                    if (url.isNotBlank()) {
+                        runCatching { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+                            .onFailure { showPlaceholder = true }
+                    } else {
+                        showPlaceholder = true
+                    }
+                },
+                shape = RoundedCornerShape(8.dp),
+                border = BorderStroke(1.dp, DeckColors.Amber.copy(0.6f)),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = DeckColors.Amber),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+            ) {
+                Icon(Icons.Outlined.FavoriteBorder, contentDescription = null, modifier = Modifier.size(15.dp))
+                Spacer(Modifier.width(5.dp))
+                Text("Донат", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+
+    if (showPlaceholder) {
+        AlertDialog(
+            onDismissRequest = { showPlaceholder = false },
+            containerColor = DeckColors.Card,
+            title = { Text("Поддержка проекта", color = DeckColors.Text, fontSize = 16.sp, fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    "Спасибо за интерес к проекту Gor4akovNET! Страница поддержки и реквизиты сейчас готовятся и появятся в ближайшем обновлении.",
+                    color = DeckColors.Muted,
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showPlaceholder = false }) {
+                    Text("Понятно", color = DeckColors.Emerald)
+                }
+            }
         )
     }
 }

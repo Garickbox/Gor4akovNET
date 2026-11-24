@@ -44,14 +44,24 @@ fun SetupsScreen(
     var confirmRollback by remember { mutableStateOf(false) }
     var removeZapretToo by remember { mutableStateOf(false) }
 
-    val sshReady = passport?.ssh222Open == true || Gboxcore.probeTCP(prefs.routerHost.ifBlank { "192.168.1.1" }, prefs.sshPort, 400)
     val host = prefs.routerHost.ifBlank { "192.168.1.1" }
+    var sshReady by remember { mutableStateOf(passport?.ssh222Open == true) }
+    LaunchedEffect(host, prefs.sshPort, passport?.ssh222Open) {
+        sshReady = passport?.ssh222Open == true || withContext(Dispatchers.IO) {
+            Gboxcore.probeTCP(host, prefs.sshPort, 600)
+        }
+    }
+
+    var installLocked by remember(prefs.networkInstallLocked, prefs.privilegedMode) {
+        mutableStateOf(prefs.networkInstallLocked && !prefs.privilegedMode)
+    }
 
     fun appendLog(line: String) {
         installLog = if (installLog.isBlank()) line else "$installLog\n$line"
     }
 
     fun runOneClickInstall() {
+        if (prefs.networkInstallLocked && !prefs.privilegedMode) return
         scope.launch {
             installing = true
             verifyOut = ""
@@ -62,11 +72,25 @@ fun SetupsScreen(
             prefs.optAdguard = optAdguard
             prefs.optWarp = optWarp
 
-            // 1. Pre-install backup
-            RciClient.fetchRunningConfig(host, prefs.rciUser, prefs.rciPass).onSuccess { cfg ->
-                val b = prefs.saveBackup("Перед Gor4akovNET", passport?.model ?: "Router", cfg)
+            val routerModel = passport?.model ?: "Keenetic / Netcraze"
+            val ndmsVer = passport?.ndmsTitle ?: "-"
+
+            // 1. Pre-install full backup (.tar.gz or startup-config fallback)
+            val tarBytes = withContext(Dispatchers.IO) {
+                runCatching {
+                    Gboxcore.pullBytesSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, GboxScripts.FULL_BACKUP_TAR_CMD)
+                }.getOrNull()
+            }
+            if (tarBytes != null && tarBytes.size > 64) {
+                val b = prefs.saveBinaryBackup("Полный перед установкой", routerModel, tarBytes, "tar.gz")
                 onBackupSaved(b)
-                appendLog("[OK] Бэкап перед установкой сохранён (${b.sizeBytes / 1024} КБ)")
+                appendLog("[OK] Полный бэкап (.tar.gz) сохранён (${b.sizeBytes / 1024} КБ)")
+            } else {
+                RciClient.fetchRunningConfig(host, prefs.rciUser, prefs.rciPass).onSuccess { cfg ->
+                    val b = prefs.saveBackup("Перед Gor4akovNET", routerModel, cfg)
+                    onBackupSaved(b)
+                    appendLog("[OK] Бэкап конфигурации сохранён (${b.sizeBytes / 1024} КБ)")
+                }
             }
 
             // 2. Push offline payloads from APK -> /opt/gor4akov-offline/
@@ -81,7 +105,9 @@ fun SetupsScreen(
             ) { msg -> appendLog(msg) }
 
             if (pushRes.isFailure) {
-                appendLog("[ERR] Ошибка передачи файлов по SSH: ${pushRes.exceptionOrNull()?.message}")
+                val em = "Ошибка передачи файлов по SSH: ${pushRes.exceptionOrNull()?.message}"
+                appendLog("[ERR] $em")
+                Telemetry.recordError(prefs, "setup_install", em, routerModel, ndmsVer)
                 installing = false
                 return@launch
             }
@@ -100,9 +126,22 @@ fun SetupsScreen(
             }
             execRes.onSuccess { out ->
                 appendLog(out)
+                val nfqCount = Regex("""NFQWS_PROCS=(\d+)""").find(out)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+                val done = out.contains("INSTALL_DONE") && nfqCount > 0
+                if (done) {
+                    Telemetry.recordInstallSuccess(prefs, routerModel, ndmsVer)
+                    if (!prefs.privilegedMode) {
+                        prefs.networkInstallLocked = true
+                        installLocked = true
+                    }
+                } else {
+                    Telemetry.recordError(prefs, "setup_verify", "INSTALL_INCOMPLETE (nfqws=$nfqCount)", routerModel, ndmsVer)
+                }
                 onServicesRefresh()
             }.onFailure { err ->
-                appendLog("[ERR] ${err.message}")
+                val em = err.message ?: "Ошибка выполнения скрипта установки"
+                appendLog("[ERR] $em")
+                Telemetry.recordError(prefs, "setup_install", em, routerModel, ndmsVer)
             }
             installing = false
         }
@@ -123,9 +162,9 @@ fun SetupsScreen(
     fun runOnlineUpdate() {
         scope.launch {
             installing = true
-            appendLog("Запуск онлайн-обновления z2k-enhanced...")
+            appendLog("Запуск онлайн-обновления списков z2k...")
             val res = withContext(Dispatchers.IO) {
-                runCatching { Gboxcore.runRouterSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, GboxMordaScripts.Z2K_ONLINE_UPDATE) }
+                runCatching { Gboxcore.runRouterSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, MonitorScripts.Z2K_UPDATE_CMD) }
             }
             appendLog(res.getOrElse { "Ошибка обновления: ${it.message}" })
             onServicesRefresh()
@@ -152,7 +191,20 @@ fun SetupsScreen(
             }
         }
 
-        // Main active preset: Обход Gor4akovNET
+        if (installLocked) {
+            DeckCard(borderColor = DeckColors.Sky.copy(0.5f)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Outlined.Lock, null, tint = DeckColors.Sky)
+                    Text("Развёртывание новой сети на этом устройстве уже выполнено", color = DeckColors.Sky, fontWeight = FontWeight.Bold, fontSize = 13.5.sp)
+                }
+                Text(
+                    "Повторное создание новых сетей недоступно. Вы можете проверять работу обхода, обновлять списки, управлять параметрами в «Мониторе», делать бэкапы и откатить настройки.",
+                    color = DeckColors.Muted,
+                    fontSize = 12.sp
+                )
+            }
+        }
+
         DeckCard(borderColor = DeckColors.Emerald.copy(0.45f)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -169,7 +221,7 @@ fun SetupsScreen(
                 )
             }
 
-            if (isolatedMode) {
+            if (isolatedMode && !installLocked) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = wifiSsid,
@@ -188,56 +240,58 @@ fun SetupsScreen(
                 }
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Отдельная сеть Gor4akovNET", color = DeckColors.Text, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                    Text("Не трогает основную домашнюю Wi-Fi сеть", color = DeckColors.Muted, fontSize = 11.5.sp)
+            if (!installLocked) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Отдельная сеть Gor4akovNET", color = DeckColors.Text, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        Text("Не трогает основную домашнюю Wi-Fi сеть", color = DeckColors.Muted, fontSize = 11.5.sp)
+                    }
+                    Switch(checked = isolatedMode, onCheckedChange = { isolatedMode = it })
                 }
-                Switch(checked = isolatedMode, onCheckedChange = { isolatedMode = it })
-            }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Антиреклама (AdGuard Home)", color = DeckColors.Text, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                    Text("Фильтрация рекламы + журнал запросов в Мониторе", color = DeckColors.Muted, fontSize = 11.5.sp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Антиреклама (AdGuard Home)", color = DeckColors.Text, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        Text("Фильтрация рекламы + журнал запросов в Мониторе", color = DeckColors.Muted, fontSize = 11.5.sp)
+                    }
+                    Checkbox(checked = optAdguard, onCheckedChange = { optAdguard = it })
                 }
-                Checkbox(checked = optAdguard, onCheckedChange = { optAdguard = it })
-            }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Cloudflare WARP для заблокированных IP", color = DeckColors.Text, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                    Text("Дополнительный туннель z2k для игр и CDN", color = DeckColors.Muted, fontSize = 11.5.sp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Cloudflare WARP для заблокированных IP", color = DeckColors.Text, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        Text("Дополнительный туннель z2k для игр и CDN", color = DeckColors.Muted, fontSize = 11.5.sp)
+                    }
+                    Checkbox(checked = optWarp, onCheckedChange = { optWarp = it })
                 }
-                Checkbox(checked = optWarp, onCheckedChange = { optWarp = it })
-            }
 
-            Button(
-                onClick = { runOneClickInstall() },
-                enabled = !installing && sshReady,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(8.dp)
-            ) {
-                if (installing) {
-                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Идёт установка...")
-                } else {
-                    Icon(Icons.Outlined.RocketLaunch, null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text(if (services?.z2kInstalled == true) "Переустановить / применить сетап" else "Установить в 1 клик (офлайн из APK)")
+                Button(
+                    onClick = { runOneClickInstall() },
+                    enabled = !installing && sshReady,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    if (installing) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Идёт установка...")
+                    } else {
+                        Icon(Icons.Outlined.RocketLaunch, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (services?.z2kInstalled == true) "Переустановить / применить сетап" else "Установить в 1 клик (офлайн из APK)")
+                    }
                 }
             }
 
@@ -282,6 +336,7 @@ fun SetupsScreen(
                 pass = wifiPass,
                 subnetInfo = services?.wifiSubnet?.ifBlank { "192.168.77.0/24" } ?: "192.168.77.0/24"
             )
+            DonateCard(compact = true)
         }
 
         if (verifyOut.isNotBlank()) {
@@ -306,15 +361,16 @@ fun SetupsScreen(
             }
         }
 
-        // Future modular catalog slots
+        DonateCard()
+
         Text("Будущие модули (в разработке)", color = DeckColors.Muted, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
         FutureSetupCard(
-            title = "Я Дома VPN",
-            subtitle = "Универсальный пресет для личного VPS (VLESS / AmneziaWG / WireGuard) с политикой роуминга и Kill Switch."
+            title = "Персональный VPN-мост",
+            subtitle = "Универсальный пресет для личного VPS (VLESS / AmneziaWG / WireGuard) с политикой маршрутизации."
         )
         FutureSetupCard(
             title = "Чистый DNS Shield",
-            subtitle = "Автономная настройка AdGuard Home + DoH/DoT + шифрованный DNS для всей семьи без обхода DPI."
+            subtitle = "Автономная настройка AdGuard Home + DoH/DoT + шифрованный DNS для всей семьи."
         )
     }
 

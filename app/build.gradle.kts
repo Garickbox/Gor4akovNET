@@ -4,6 +4,11 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+fun envQuoted(name: String): String {
+    val v = (System.getenv(name) ?: "").replace("\\", "\\\\").replace("\"", "\\\"")
+    return "\"$v\""
+}
+
 android {
     namespace = "ru.garickbox.gor4akovnet"
     compileSdk = 35
@@ -15,6 +20,11 @@ android {
         val runNum = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
         versionCode = runNum
         versionName = "1.$runNum"
+
+        buildConfigField("String", "STATS_GIST_ID", envQuoted("GBOX_STATS_GIST_ID"))
+        buildConfigField("String", "STATS_TOKEN", envQuoted("GBOX_STATS_TOKEN"))
+        buildConfigField("String", "STATS_URL", envQuoted("GBOX_STATS_URL"))
+        buildConfigField("String", "DONATE_URL", envQuoted("GBOX_DONATE_URL"))
     }
 
     signingConfigs {
@@ -45,7 +55,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
     androidResources {
         noCompress += listOf("gz", "tar", "ipk")
     }

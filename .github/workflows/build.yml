@@ -3,11 +3,14 @@ name: Build Gor4akovNET APK
 on:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -19,8 +22,8 @@ jobs:
       - name: Setup Android SDK & NDK
         run: |
           SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-          echo "ANDROID_HOME=$SDK" >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=$SDK" >> $GITHUB_ENV
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
           SM="$SDK/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SM" --licenses >/dev/null 2>&1 || true
           "$SM" --install "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
@@ -28,12 +31,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
+          cache: false
 
       - name: Install sagernet gomobile
         run: |
           go install github.com/sagernet/gomobile/cmd/gomobile@latest
           go install github.com/sagernet/gomobile/cmd/gobind@latest
-          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Build gboxcore.aar
         working-directory: core
@@ -49,7 +53,6 @@ jobs:
         run: |
           python3 - <<'PY'
           import urllib.request, gzip, json, hashlib, pathlib, tarfile, io, re, time
-
           base = pathlib.Path("app/src/main/assets/offline")
           (base / "entware").mkdir(parents=True, exist_ok=True)
           (base / "ipks").mkdir(parents=True, exist_ok=True)
@@ -68,7 +71,6 @@ jobs:
               raise RuntimeError(f"Failed {url}: {last}")
 
           manifest = {"entware": {}, "ipks": {}, "z2k": {}}
-
           entware_urls = {
               "aarch64-k3.10": ("aarch64-installer.tar.gz", "https://bin.entware.net/aarch64-k3.10/installer/aarch64-installer.tar.gz"),
               "mipselsf-k3.4": ("mipsel-installer.tar.gz", "https://bin.entware.net/mipselsf-k3.4/installer/mipsel-installer.tar.gz"),
@@ -81,13 +83,11 @@ jobs:
               manifest["entware"][arch] = {"file": fname, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
               print(f"Entware {arch}: {len(data)} B")
 
-          # Core runtime packages required by z2k/zapret2 (AdGuardHome excluded to keep APK compact; installed online via opkg when selected)
           WANTED = [
               "libmnl", "libnetfilter-queue", "libnfnetlink", "libcap", "zlib",
               "curl", "flock", "unzip", "iptables", "xtables-addons_legacy",
               "kmod_ndms", "ipset", "openssl-util"
           ]
-
           def parse_index(raw_text, sub=""):
               pkgs = {}
               for blk in raw_text.strip().split("\n\n"):
@@ -118,7 +118,6 @@ jobs:
                       dep = re.sub(r"\s*\(.*?\)", "", dep.strip())
                       if dep and dep not in seen:
                           q.append(dep)
-
               tar_path = base / "ipks" / f"ipks-{arch}.tar.gz"
               pkg_index_blocks = []
               with tarfile.open(tar_path, "w:gz") as tf:
@@ -144,12 +143,10 @@ jobs:
               }
               print(f"IPKs {arch}: {len(selected)} pkgs -> {tar_path.stat().st_size} B")
 
-          # Fetch z2k-enhanced source snapshot
           z2k_src = fetch("https://github.com/necronicle/z2k/archive/refs/heads/z2k-enhanced.tar.gz")
           (base / "z2k" / "z2k-repo.tar.gz").write_bytes(z2k_src)
           manifest["z2k"]["repo_size"] = len(z2k_src)
 
-          # Fetch zapret2-z2k latest openwrt-embedded release (or pinned fallback)
           rel_url = "https://github.com/necronicle/zapret2-z2k/releases/download/v1.0.7-z2k-r0/zapret2-v1.0.7-z2k-r0-openwrt-embedded.tar.gz"
           rel_tag = "v1.0.7-z2k-r0"
           try:
@@ -161,7 +158,6 @@ jobs:
                       break
           except Exception as e:
               print(f"Using fallback zapret2 URL: {e}")
-
           z2_bin = fetch(rel_url)
           (base / "z2k" / "zapret2-openwrt-embedded.tar.gz").write_bytes(z2_bin)
           manifest["z2k"]["tag"] = rel_tag
@@ -188,9 +184,21 @@ jobs:
           GBOX_STORE_PASS: ${{ secrets.GBOX_STORE_PASS }}
           GBOX_KEY_ALIAS: ${{ secrets.GBOX_KEY_ALIAS }}
           GBOX_KEY_PASS: ${{ secrets.GBOX_KEY_PASS }}
-        run: gradle assembleDebug --no-daemon
+          GBOX_STATS_GIST_ID: ${{ secrets.GBOX_STATS_GIST_ID }}
+          GBOX_STATS_TOKEN: ${{ secrets.GBOX_STATS_TOKEN }}
+          GBOX_STATS_URL: ${{ secrets.GBOX_STATS_URL }}
+          GBOX_DONATE_URL: ${{ secrets.GBOX_DONATE_URL }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
 
       - uses: actions/upload-artifact@v4
         with:
           name: Gor4akovNET-debug-apk
           path: app/build/outputs/apk/debug/*.apk
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: app/build/outputs/apk/debug/*.apk

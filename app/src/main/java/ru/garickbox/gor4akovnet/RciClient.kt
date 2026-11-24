@@ -234,9 +234,12 @@ object RciClient {
 
             val opkgDiskLine = runCfg.lines().firstOrNull { it.trim().startsWith("opkg disk ") }?.trim()?.removePrefix("opkg disk ") ?: ""
             val opkgInitrc = runCfg.lines().firstOrNull { it.trim().startsWith("opkg initrc ") }?.trim()?.removePrefix("opkg initrc ") ?: ""
+            val ndms5WebdavMatch = Regex("""(?ms)^ip http webdav\b[^!]*?^[ \t]+port (\d+)""").find(runCfg)
             val webdavPortLine = runCfg.lines().firstOrNull { it.trim().startsWith("webdav port ") }?.trim()
-            val webdavPort = webdavPortLine?.substringAfter("webdav port ")?.toIntOrNull()
-                ?: if (runCfg.contains("webdav enable")) 8080 else 0
+            val webdavEnabled5 = Regex("""(?ms)^ip http webdav\b[^!]*?^[ \t]+enable\b""").containsMatchIn(runCfg)
+            val webdavPort = ndms5WebdavMatch?.groupValues?.getOrNull(1)?.toIntOrNull()
+                ?: webdavPortLine?.substringAfter("webdav port ")?.toIntOrNull()
+                ?: if (webdavEnabled5) 80 else if (runCfg.contains("webdav enable")) 8080 else 0
 
             val ssh222 = Gboxcore.probeTCP(host, 222, 1200)
             if (comps.none { it.contains("opkg") } || comps.none { it.contains("netfilter") }) {
@@ -250,7 +253,7 @@ object RciClient {
                 if (comps.none { it == "ssh" }) comps.add("ssh")
             }
             val ssh22 = Gboxcore.probeTCP(host, 22, 1000)
-            val agh3000 = Gboxcore.probeTCP(host, 3000, 900)
+            val agh3000 = Gboxcore.probeTCP(host, 3000, 700) || Gboxcore.probeTCP(host, 3080, 700)
 
             val wanOnline = runCatching {
                 val pingOut = session.parseCli(listOf("tools ping 1.1.1.1 count 1"))
@@ -258,8 +261,8 @@ object RciClient {
             }.getOrDefault(false)
 
             val polExists = runCfg.contains("ip policy Gor4akovNET")
-            val brMatch = Regex("""(?m)^interface (Bridge\d+)\s*$(?:[\s\S]*?)description Gor4akovNET""").find(runCfg)
-            val ssidMatch = Regex("""description Gor4akovNET[\s\S]*?ssid (\S+)""").find(runCfg)
+            val brMatch = Regex("""(?ms)^interface (Bridge\d+)\s*[\r\n]+[^!]*?description Gor4akovNET""").find(runCfg)
+            val ssidMatch = Regex("""(?ms)^interface WifiMaster\d+/\S+[\r\n]+[^!]*?description Gor4akovNET[^!]*?^[ \t]+ssid (\S+)""").find(runCfg)
 
             RouterPassport(
                 host = host,

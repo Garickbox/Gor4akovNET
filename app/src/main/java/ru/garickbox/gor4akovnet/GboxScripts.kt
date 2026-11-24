@@ -44,10 +44,10 @@ object GboxScripts {
         set +e
         ent=0; [ -x /opt/bin/opkg ] && ent=1
         z2k_inst=0; [ -d /opt/zapret2 ] && z2k_inst=1
-        nfq=${'$'}(ps | grep -c '[n]fqws2')
+        nfq=${'$'}(ps | grep -c '[n]fqws2' | head -n1 | tr -dc '0-9'); [ -z "${'$'}nfq" ] && nfq=0
         z2k_run=0; [ "${'$'}nfq" -gt 0 ] && z2k_run=1
         z2k_mode=${'$'}(awk -F= '/^MODE=|^Z2K_PRESET=/{v=${'$'}2} END{gsub(/"/,"",v); print (v==""?"auto":v)}' /opt/zapret2/config 2>/dev/null)
-        ipt_cnt=${'$'}(iptables -t mangle -S 2>/dev/null | grep -c NFQUEUE)
+        ipt_cnt=${'$'}(iptables -t mangle -S 2>/dev/null | grep -c NFQUEUE | head -n1 | tr -dc '0-9'); [ -z "${'$'}ipt_cnt" ] && ipt_cnt=0
         agh_inst=0; [ -x /opt/sbin/AdGuardHome ] || [ -x /opt/bin/AdGuardHome ] && agh_inst=1
         agh_run=0; ps | grep -q '[A]dGuardHome' && agh_run=1
         cfg=${'$'}(LD_LIBRARY_PATH= ndmc -c "show running-config" 2>/dev/null)
@@ -59,7 +59,6 @@ object GboxScripts {
         pol_name=${'$'}(awk -F= '/^POLICY_NAME=/{gsub(/["'"'"']/,"",${'$'}2); print ${'$'}2; exit}' /opt/zapret2/config 2>/dev/null)
         [ -z "${'$'}pol_name" ] && pol_name="Gor4akovNET"
         pol_act=0; echo "${'$'}cfg" | grep -q "ip policy Gor4akovNET" && pol_act=1
-        br_name=""; br_sub=""; br_ssid=""
         eval_br=${'$'}(echo "${'$'}cfg" | awk '
             /^interface Bridge[0-9]+/ { cur=${'$'}2; inb=1; isg=0; ip="" }
             inb && /^[ \t]+description Gor4akovNET/ { isg=1 }
@@ -72,8 +71,9 @@ object GboxScripts {
         br_ssid=${'$'}(echo "${'$'}cfg" | awk '
             /^interface WifiMaster/ { cur=${'$'}2; inw=1; isg=0; ss="" }
             inw && /^[ \t]+description Gor4akovNET/ { isg=1 }
-            inw && /^[ \t]+ssid / { ss=${'$'}2 }
+            inw && /^[ \t]+ssid / { sub(/^[ \t]+ssid /,""); ss=${'$'}0 }
             inw && /^!/ { if (isg && ss!="") { print ss; exit } inw=0 }
+            END { if (inw && isg && ss!="") print ss }
         ')
         echo "SVC|${'$'}ent|${'$'}z2k_inst|${'$'}z2k_run|${'$'}z2k_mode|${'$'}nfq|${'$'}ipt_cnt|${'$'}agh_inst|${'$'}agh_run|${'$'}dns_ov|${'$'}warp_inst|${'$'}warp_run|${'$'}tg_run|${'$'}db_run|${'$'}pol_name|${'$'}pol_act|${'$'}br_name|${'$'}br_sub|${'$'}br_ssid"
     """.trimIndent()
@@ -187,16 +187,14 @@ object GboxScripts {
             export GITHUB_RAW="https://raw.githubusercontent.com/necronicle/z2k/z2k-enhanced"
             MODULES="utils install strategies config config_official webpanel menu auto_update wan"
 
-            # Source z2k.sh without invoking main
             if [ -f "${'$'}WORK_STAGE/z2k.sh" ]; then
                 sed '/^main "\${'$'}@"/d' "${'$'}WORK_STAGE/z2k.sh" > "${'$'}WORK_STAGE/.z2k_lib_only.sh"
                 . "${'$'}WORK_STAGE/.z2k_lib_only.sh"
                 for m in ${'$'}MODULES; do
                     [ -f "${'$'}LIB_DIR/${'$'}{m}.sh" ] && . "${'$'}LIB_DIR/${'$'}{m}.sh"
                 done
-                # Offline local file resolver wrapper around z2k_fetch if WORK_DIR already has it
                 if type z2k_fetch >/dev/null 2>&1; then
-                    eval "orig_$(declare -f z2k_fetch 2>/dev/null || true)"
+                    eval "orig_${'$'}(declare -f z2k_fetch 2>/dev/null || true)"
                 fi
                 z2k_fetch_offline_or_net() {
                     _u="${'$'}1"; _d="${'$'}2"
@@ -209,7 +207,6 @@ object GboxScripts {
                 }
                 z2k_fetch() { z2k_fetch_offline_or_net "${'$'}@"; }
 
-                # Prevent step_build_zapret2 from wiping our staged openwrt-embedded.tar.gz inside build_dir
                 mkdir -p /opt/gor4akov-offline/cache
                 [ -s "${'$'}WORK_STAGE/zapret2_build/openwrt-embedded.tar.gz" ] && mv "${'$'}WORK_STAGE/zapret2_build/openwrt-embedded.tar.gz" /opt/gor4akov-offline/cache/openwrt-embedded.tar.gz
                 download_openwrt_embedded_release() {
@@ -238,70 +235,85 @@ object GboxScripts {
                 exit 1
             fi
 
-            echo "=== [4/6] Создание изолированной сети и политики Gor4akovNET ==="
+            echo "=== [4/6] Настройка политики и изолированной сети ==="
             CFG="${'$'}(LD_LIBRARY_PATH= ndmc -c "show running-config" 2>/dev/null)"
-            if ! echo "${'$'}CFG" | grep -q "ip policy Gor4akovNET"; then
+            if ! echo "${'$'}CFG" | grep -q "^ip policy Gor4akovNET"; then
                 LD_LIBRARY_PATH= ndmc -c "ip policy Gor4akovNET" >/dev/null
                 LD_LIBRARY_PATH= ndmc -c "ip policy Gor4akovNET description Gor4akovNET" >/dev/null
             fi
 
             ISO="$isoFlag"
-            BR_NAME="${'$'}(echo "${'$'}CFG" | awk '/^interface Bridge[0-9]+/{cur=${'$'}2; inb=1; g=0} inb && /description Gor4akovNET/{g=1} inb && /^!/{if(g){print cur; exit} inb=0} END{if(inb && g) print cur}')"
-            if [ -z "${'$'}BR_NAME" ]; then
-                bridge_count=$(echo "${'$'}CFG" | grep -c "^interface Bridge")
-                for n in $(seq 1 $((bridge_count + 1))); do
-                    if ! echo "${'$'}CFG" | grep -q "^interface Bridge${'$'}n"; then
-                        BR_NAME="Bridge${'$'}n"
-                        break
-                    fi
+            SUB_PREFIX="192.168.77"
+            if [ "${'$'}ISO" = "1" ]; then
+                BR_NAME="${'$'}(echo "${'$'}CFG" | awk '/^interface Bridge[0-9]+/{cur=${'$'}2; inb=1; g=0} inb && /description Gor4akovNET/{g=1} inb && /^!/{if(g){print cur; exit} inb=0} END{if(inb && g) print cur}')"
+                if [ -z "${'$'}BR_NAME" ]; then
+                    n=1
+                    while [ "${'$'}n" -le 15 ]; do
+                        if ! echo "${'$'}CFG" | grep -q "^interface Bridge${'$'}n${'$'}"; then
+                            BR_NAME="Bridge${'$'}n"
+                            break
+                        fi
+                        n=${'$'}((n + 1))
+                    done
+                fi
+                SUB_THIRD=77
+                while echo "${'$'}CFG" | grep -q "192.168.${'$'}{SUB_THIRD}." && ! echo "${'$'}CFG" | awk -v b="^interface ${'$'}BR_NAME${'$'}" "${'$'}0 ~ b{f=1} f && /^!/{f=0} f" | grep -q "192.168.${'$'}{SUB_THIRD}."; do
+                    SUB_THIRD=${'$'}((SUB_THIRD + 1))
                 done
+                SUB_PREFIX="192.168.${'$'}{SUB_THIRD}"
+
+                if [ -n "${'$'}BR_NAME" ]; then
+                    LD_LIBRARY_PATH= ndmc -c "interface ${'$'}BR_NAME" >/dev/null
+                    LD_LIBRARY_PATH= ndmc -c "interface ${'$'}BR_NAME description Gor4akovNET" >/dev/null
+                    LD_LIBRARY_PATH= ndmc -c "interface ${'$'}BR_NAME security-level private" >/dev/null
+                    LD_LIBRARY_PATH= ndmc -c "interface ${'$'}BR_NAME ip address ${'$'}{SUB_PREFIX}.1 255.255.255.0" >/dev/null
+                    LD_LIBRARY_PATH= ndmc -c "interface ${'$'}BR_NAME ip policy Gor4akovNET" >/dev/null
+                    LD_LIBRARY_PATH= ndmc -c "interface ${'$'}BR_NAME up" >/dev/null
+
+                    LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET" >/dev/null
+                    LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET range ${'$'}{SUB_PREFIX}.10 ${'$'}{SUB_PREFIX}.200" >/dev/null
+                    LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET bind ${'$'}BR_NAME" >/dev/null
+                    LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET enable" >/dev/null
+
+                    for master in WifiMaster0 WifiMaster1; do
+                        if echo "${'$'}CFG" | grep -q "^interface ${'$'}{master}${'$'}"; then
+                            # 1) Reuse AP already tagged Gor4akovNET on this master
+                            ap="${'$'}(echo "${'$'}CFG" | awk -v m="^interface ${'$'}{master}/" "${'$'}0 ~ m{cur=${'$'}2; inb=1; g=0} inb && /description Gor4akovNET/{g=1} inb && /^!/{if(g){print cur; exit} inb=0} END{if(inb && g) print cur}")"
+                            # 2) Otherwise scan AccessPoint1..7 checking both config blocks and Bridge include aliases
+                            if [ -z "${'$'}ap" ]; then
+                                for slot in 1 2 3 4 5 6 7; do
+                                    cand="${'$'}{master}/AccessPoint${'$'}{slot}"
+                                    # Check if hardware slot exists in NDMS
+                                    if ! LD_LIBRARY_PATH= ndmc -c "show interface ${'$'}cand" 2>/dev/null | grep -qiE "id:|AccessPoint|type:"; then
+                                        continue
+                                    fi
+                                    blk="${'$'}(echo "${'$'}CFG" | awk -v c="^interface ${'$'}cand${'$'}" "${'$'}0 ~ c{f=1} f{print} f && /^!/{exit}")"
+                                    if [ -n "${'$'}blk" ]; then
+                                        alias="${'$'}(echo "${'$'}blk" | awk '/^[ \t]+rename /{print ${'$'}2; exit}')"
+                                        echo "${'$'}blk" | grep -qE "^[ \t]+(ssid |description )" && continue
+                                        echo "${'$'}CFG" | grep -qE "^[ \t]+include (${'$'}cand|${'$'}{alias:-__NONE__})${'$'}" && continue
+                                    fi
+                                    ap="${'$'}cand"
+                                    break
+                                done
+                            fi
+                            [ -z "${'$'}ap" ] && continue
+                            LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap" >/dev/null
+                            LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap description Gor4akovNET" >/dev/null
+                            LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap ssid $safeSsid" >/dev/null
+                            LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap encryption wpa2" >/dev/null
+                            LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap authentication wpa-psk $safePass" >/dev/null
+                            LD_LIBRARY_PATH= ndmc -c "interface ${'$'}{BR_NAME} include ${'$'}ap" >/dev/null
+                            LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap up" >/dev/null
+                        fi
+                    done
+                    LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null
+                    echo "[OK] Wi-Fi сеть '$safeSsid' поднята на ${'$'}BR_NAME (${'$'}{SUB_PREFIX}.0/24)"
+                fi
+            else
+                echo "[INFO] Режим без отдельного Wi-Fi: политика Gor4akovNET создана (можно назначать на устройства в Мониторе)."
             fi
-            SUB_THIRD=77
-            while echo "${'$'}CFG" | grep -q "192.168.${'$'}{SUB_THIRD}." && ! echo "${'$'}CFG" | grep -A8 "^interface ${'$'}BR_NAME" | grep -q "192.168.${'$'}{SUB_THIRD}."; do
-                SUB_THIRD=${'$'}((SUB_THIRD + 1))
-            done
-            SUB_PREFIX="192.168.${'$'}{SUB_THIRD}"
 
-            if [ -n "${'$'}BR_NAME" ]; then
-                LD_LIBRARY_PATH= ndmc -c "interface ${'$'}BR_NAME" >/dev/null
-                LD_LIBRARY_PATH= ndmc -c "interface ${'$'}BR_NAME description Gor4akovNET" >/dev/null
-                LD_LIBRARY_PATH= ndmc -c "interface ${'$'}BR_NAME security-level private" >/dev/null
-                LD_LIBRARY_PATH= ndmc -c "interface ${'$'}BR_NAME ip address ${'$'}{SUB_PREFIX}.1 255.255.255.0" >/dev/null
-                LD_LIBRARY_PATH= ndmc -c "interface ${'$'}BR_NAME ip policy Gor4akovNET" >/dev/null
-                LD_LIBRARY_PATH= ndmc -c "interface ${'$'}BR_NAME up" >/dev/null
-
-                LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET" >/dev/null
-                LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET range ${'$'}{SUB_PREFIX}.10 ${'$'}{SUB_PREFIX}.200" >/dev/null
-                LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET bind ${'$'}BR_NAME" >/dev/null
-                LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET enable" >/dev/null
-
-                # Bind AccessPoint1 (2.4GHz and 5GHz if exists) without touching Home AccessPoint0!
-                for master in WifiMaster0 WifiMaster1; do
-                    if echo "${'$'}CFG" | grep -q "^interface ${'$'}{master}$"; then
-                        ap=$(echo "${'$'}CFG" | grep -B1 "description Gor4akovNET" | grep -oE "${'$'}{master}/AccessPoint[0-9]+" | head -1)
-if [ -z "${'$'}ap" ]; then
-for cand in $(echo "${'$'}CFG" | grep -oE "${'$'}{master}/AccessPoint[0-9]+" | sort -u); do
-if ! echo "${'$'}CFG" | grep -q "^interface ${'$'}cand${'$'}"; then continue; fi
-if echo "${'$'}CFG" | grep -q "include ${'$'}cand${'$'}"; then continue; fi
-blk=$(echo "${'$'}CFG" | grep -A20 "^interface ${'$'}cand${'$'}" | sed '/^!/q')
-if echo "${'$'}blk" | grep -q "ssid "; then continue; fi
-ap="${'$'}cand"; break; done
-fi
-[ -z "${'$'}ap" ] && continue
-                        LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap" >/dev/null
-                        LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap description Gor4akovNET" >/dev/null
-                        LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap ssid $safeSsid" >/dev/null
-                        LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap encryption wpa2" >/dev/null
-                        LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap authentication wpa-psk $safePass" >/dev/null
-                        LD_LIBRARY_PATH= ndmc -c "interface ${'$'}{BR_NAME} include ${'$'}ap" >/dev/null
-                        LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap up" >/dev/null
-                    fi
-                done
-                LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null
-                echo "[OK] Wi-Fi сеть '$safeSsid' поднята на ${'$'}BR_NAME (${'$'}{SUB_PREFIX}.0/24)"
-            fi
-
-            # Update zapret2 config for Gor4akovNET policy isolation
             ZCFG="/opt/zapret2/config"
             if [ -f "${'$'}ZCFG" ]; then
                 sed -i '/^POLICY_NAME=/d;/^POLICY_EXCLUDE=/d' "${'$'}ZCFG"
@@ -310,11 +322,10 @@ fi
                 fi
             fi
 
-            # Netfilter hook so Bridge subnet 192.168.77.0/24 is ALWAYS included in bypass while Home Wi-Fi is isolated
             cat > /opt/etc/ndm/netfilter.d/090-gor4akov-policy.sh << EOFHOOK
 #!/bin/sh
 [ "${'$'}ISO" = "1" ] || exit 0
-[ "${'$'}{type:-ip6tables}" = "iptables" ] || exit 0
+[ "\${'$'}{type:-ip6tables}" = "iptables" ] || exit 0
 MARK=\${'$'}(LD_LIBRARY_PATH= ndmc -c "show ip policy" 2>/dev/null | awk 'tolower(${'$'}0)~/description.*gor4akovnet/{f=1} f && tolower(${'$'}0)~/mark/{sub(/.*[:=][ \t]*/,""); sub(/\/.*/,""); sub(/^0x/,""); print "0x"${'$'}1"/0x0fffffff"; exit}')
 WAN=\${'$'}(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if(${'$'}i=="dev"){print ${'$'}(i+1); exit}}')
 [ -n "\${'$'}WAN" ] || exit 0
@@ -336,10 +347,12 @@ EOFHOOK
                 if opkg update && opkg install adguardhome-go; then
                     LD_LIBRARY_PATH= ndmc -c "opkg dns-override" >/dev/null
                     LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null
-                    /opt/etc/init.d/S99AdGuardHome start >/dev/null 2>&1 || true
-                    echo "[OK] AdGuard Home установлен (:3000) и opkg dns-override включён"
+                    for ini in /opt/etc/init.d/S99AdGuardHome /opt/etc/init.d/S99adguardhome; do
+                        [ -x "${'$'}ini" ] && "${'$'}ini" start >/dev/null 2>&1 || true
+                    done
+                    echo "[OK] AdGuard Home установлен и opkg dns-override включён"
                 else
-                    echo "[WARN] Не удалось скачать adguardhome-go сейчас — можно доустановить в Управление -> AdGuardHome после подключения к сети"
+                    echo "[WARN] Не удалось скачать adguardhome-go сейчас — можно доустановить позже в Мониторе"
                 fi
             fi
 
@@ -352,16 +365,17 @@ EOFHOOK
             [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart
             sh /opt/etc/ndm/netfilter.d/090-gor4akov-policy.sh >/dev/null 2>&1 || true
             sleep 2
-            echo "NFQWS_PROCS=${'$'}(ps | grep -c '[n]fqws2')"
+            nfq_cnt=${'$'}(ps | grep -c '[n]fqws2' | head -n1 | tr -dc '0-9')
+            echo "NFQWS_PROCS=${'$'}{nfq_cnt:-0}"
             echo "INSTALL_DONE"
         """.trimIndent()
     }
 
     val VERIFY_BYPASS_SCRIPT = """
         set +e
-        nfq=${'$'}(ps | grep -c '[n]fqws2')
-        rules=${'$'}(iptables -t mangle -S 2>/dev/null | grep -c NFQUEUE)
-        echo "PROCESSES|nfqws2=${'$'}nfq|nfqueue_rules=${'$'}rules"
+        nfq=${'$'}(ps | grep -c '[n]fqws2' | head -n1 | tr -dc '0-9')
+        rules=${'$'}(iptables -t mangle -S 2>/dev/null | grep -c NFQUEUE | head -n1 | tr -dc '0-9')
+        echo "PROCESSES|nfqws2=${'$'}{nfq:-0}|nfqueue_rules=${'$'}{rules:-0}"
         for host in youtube.com discord.com instagram.com; do
             code=${'$'}(curl -sI --connect-timeout 4 --max-time 6 -o /dev/null -w "%{http_code}" "https://${'$'}host" 2>/dev/null || echo "000")
             echo "PROBE|${'$'}host|HTTP_${'$'}code"
@@ -372,19 +386,17 @@ EOFHOOK
         set +e
         CFG=${'$'}(LD_LIBRARY_PATH= ndmc -c "show running-config" 2>/dev/null)
         BR_NAME=${'$'}(echo "${'$'}CFG" | awk '/^interface Bridge[0-9]+/{cur=${'$'}2; inb=1; g=0} inb && /description Gor4akovNET/{g=1} inb && /^!/{if(g){print cur; exit} inb=0} END{if(inb && g) print cur}')
-        for master in WifiMaster0 WifiMaster1; do
-            ap="${'$'}{master}/AccessPoint1"
-            if echo "${'$'}CFG" | grep -A6 "^interface ${'$'}ap" | grep -q "description Gor4akovNET"; then
-                LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap down" >/dev/null
-                [ -n "${'$'}BR_NAME" ] && LD_LIBRARY_PATH= ndmc -c "no interface ${'$'}BR_NAME include ${'$'}ap" >/dev/null
-                LD_LIBRARY_PATH= ndmc -c "no interface ${'$'}ap" >/dev/null
-            fi
+        APS=${'$'}(echo "${'$'}CFG" | awk '/^interface WifiMaster[0-9]+\/[^ \t]+/{cur=${'$'}2; inb=1; g=0} inb && /description Gor4akovNET/{g=1} inb && /^!/{if(g) print cur; inb=0} END{if(inb && g) print cur}')
+        for ap in ${'$'}APS; do
+            LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap down" >/dev/null 2>&1
+            [ -n "${'$'}BR_NAME" ] && LD_LIBRARY_PATH= ndmc -c "no interface ${'$'}BR_NAME include ${'$'}ap" >/dev/null 2>&1
+            LD_LIBRARY_PATH= ndmc -c "no interface ${'$'}ap" >/dev/null 2>&1
         done
-        [ -n "${'$'}BR_NAME" ] && LD_LIBRARY_PATH= ndmc -c "no interface ${'$'}BR_NAME" >/dev/null
-        LD_LIBRARY_PATH= ndmc -c "no ip dhcp pool Gor4akovNET" >/dev/null
-        LD_LIBRARY_PATH= ndmc -c "no ip policy Gor4akovNET" >/dev/null
+        [ -n "${'$'}BR_NAME" ] && LD_LIBRARY_PATH= ndmc -c "no interface ${'$'}BR_NAME" >/dev/null 2>&1
+        LD_LIBRARY_PATH= ndmc -c "no ip dhcp pool Gor4akovNET" >/dev/null 2>&1
+        LD_LIBRARY_PATH= ndmc -c "no ip policy Gor4akovNET" >/dev/null 2>&1
         LD_LIBRARY_PATH= ndmc -c "no opkg dns-override" >/dev/null 2>&1 || true
-        LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null
+        LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null 2>&1
         rm -f /opt/etc/ndm/netfilter.d/090-gor4akov-policy.sh
         if [ "${if (removeZapret) 1 else 0}" = "1" ]; then
             [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 stop >/dev/null 2>&1 || true
@@ -396,6 +408,44 @@ EOFHOOK
         echo "ROLLBACK_OK"
     """.trimIndent()
 
+    val FULL_BACKUP_TAR_CMD = """
+        set -e
+        TMPB="/tmp/.gbox_bkp_${'$'}${'$'}"
+        mkdir -p "${'$'}TMPB"
+        LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" > "${'$'}TMPB/startup-config.txt" 2>/dev/null || true
+        ITEMS=""
+        for p in /opt/zapret2/config /opt/zapret2/lists /opt/etc/AdGuardHome/AdGuardHome.yaml /opt/etc/ndm/netfilter.d; do
+            [ -e "${'$'}p" ] && ITEMS="${'$'}ITEMS -C / ${'$'}{p#/}"
+        done
+        tar -czf /tmp/.gbox_backup_stream.tar.gz -C "${'$'}TMPB" startup-config.txt ${'$'}ITEMS 2>/dev/null
+        cat /tmp/.gbox_backup_stream.tar.gz
+        rm -rf "${'$'}TMPB" /tmp/.gbox_backup_stream.tar.gz
+    """.trimIndent()
+
+    fun restoreArchiveCmd(mode: String): String = """
+        set +e
+        ARCH="/tmp/gbox_restore.tar.gz"
+        [ -s "${'$'}ARCH" ] || { echo "ERR: Архив бэкапа не найден"; exit 1; }
+        mkdir -p /tmp/.gbox_rst
+        tar -xzf "${'$'}ARCH" -C /tmp/.gbox_rst 2>/dev/null || { echo "ERR: Некорректный архив"; rm -rf /tmp/.gbox_rst "${'$'}ARCH"; exit 1; }
+        if [ "$mode" = "bypass" ]; then
+            [ -d /tmp/.gbox_rst/opt/zapret2 ] && rm -rf /opt/zapret2 && cp -a /tmp/.gbox_rst/opt/zapret2 /opt/zapret2
+            [ -d /tmp/.gbox_rst/opt/etc/ndm/netfilter.d ] && cp -af /tmp/.gbox_rst/opt/etc/ndm/netfilter.d/* /opt/etc/ndm/netfilter.d/ 2>/dev/null || true
+            [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true
+            echo "OK: Восстановлен обход (/opt/zapret2 и netfilter.d)"
+        else
+            [ -d /tmp/.gbox_rst/opt/zapret2 ] && rm -rf /opt/zapret2 && cp -a /tmp/.gbox_rst/opt/zapret2 /opt/zapret2
+            [ -d /tmp/.gbox_rst/opt/etc/AdGuardHome ] && cp -af /tmp/.gbox_rst/opt/etc/AdGuardHome/* /opt/etc/AdGuardHome/ 2>/dev/null || true
+            [ -d /tmp/.gbox_rst/opt/etc/ndm/netfilter.d ] && cp -af /tmp/.gbox_rst/opt/etc/ndm/netfilter.d/* /opt/etc/ndm/netfilter.d/ 2>/dev/null || true
+            [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true
+            for ini in /opt/etc/init.d/S99AdGuardHome /opt/etc/init.d/S99adguardhome; do
+                [ -x "${'$'}ini" ] && "${'$'}ini" restart >/dev/null 2>&1 || true
+            done
+            echo "OK: Восстановлены конфиги /opt (zapret2 + AdGuard + netfilter). Конфигурация NDMS при необходимости доступна в txt-снимке."
+        fi
+        rm -rf /tmp/.gbox_rst "${'$'}ARCH"
+    """.trimIndent()
+
     val AUTO_DIAG_REPAIR_SCRIPT = """
         set +e
         echo "=== Автодиагностика Gor4akovNET ==="
@@ -405,11 +455,12 @@ EOFHOOK
         fi
         echo "[OK] Entware активен"
         if [ -x /opt/etc/init.d/S99zapret2 ]; then
-            if [ "${'$'}(ps | grep -c '[n]fqws2')" -eq 0 ]; then
+            nfq=${'$'}(ps | grep -c '[n]fqws2' | head -n1 | tr -dc '0-9')
+            if [ "${'$'}{nfq:-0}" -eq 0 ]; then
                 echo "[FIX] nfqws2 был остановлен — запускаю S99zapret2..."
                 /opt/etc/init.d/S99zapret2 restart
             else
-                echo "[OK] nfqws2 работает"
+                echo "[OK] nfqws2 работает (${'$'}nfq проц.)"
             fi
         else
             echo "[WARN] zapret2 не установлен"
