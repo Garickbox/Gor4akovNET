@@ -1,0 +1,196 @@
+name: Build Gor4akovNET APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK & NDK
+        run: |
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$SDK" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$SDK" >> $GITHUB_ENV
+          SM="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SM" --licenses >/dev/null 2>&1 || true
+          "$SM" --install "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Install sagernet gomobile
+        run: |
+          go install github.com/sagernet/gomobile/cmd/gomobile@latest
+          go install github.com/sagernet/gomobile/cmd/gobind@latest
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+
+      - name: Build gboxcore.aar
+        working-directory: core
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/27.2.12479018"
+          gomobile init
+          go mod tidy
+          go get github.com/sagernet/gomobile/bind@latest
+          mkdir -p ../app/libs
+          gomobile bind -v -androidapi 26 -target=android/arm64 -trimpath -ldflags="-s -w" -o ../app/libs/gboxcore.aar .
+
+      - name: Bundle Offline Router Payloads (Entware + z2k + Core IPKs)
+        run: |
+          python3 - <<'PY'
+          import urllib.request, gzip, json, hashlib, pathlib, tarfile, io, re, time
+
+          base = pathlib.Path("app/src/main/assets/offline")
+          (base / "entware").mkdir(parents=True, exist_ok=True)
+          (base / "ipks").mkdir(parents=True, exist_ok=True)
+          (base / "z2k").mkdir(parents=True, exist_ok=True)
+
+          def fetch(url, retries=3):
+              last = None
+              for i in range(retries):
+                  try:
+                      req = urllib.request.Request(url, headers={"User-Agent": "Gor4akovNET-CI/1.0"})
+                      with urllib.request.urlopen(req, timeout=60) as r:
+                          return r.read()
+                  except Exception as e:
+                      last = e
+                      time.sleep(2 * (i + 1))
+              raise RuntimeError(f"Failed {url}: {last}")
+
+          manifest = {"entware": {}, "ipks": {}, "z2k": {}}
+
+          entware_urls = {
+              "aarch64-k3.10": ("aarch64-installer.tar.gz", "https://bin.entware.net/aarch64-k3.10/installer/aarch64-installer.tar.gz"),
+              "mipselsf-k3.4": ("mipsel-installer.tar.gz", "https://bin.entware.net/mipselsf-k3.4/installer/mipsel-installer.tar.gz"),
+              "mipssf-k3.4": ("mips-installer.tar.gz", "https://bin.entware.net/mipssf-k3.4/installer/mips-installer.tar.gz"),
+          }
+          for arch, (fname, url) in entware_urls.items():
+              data = fetch(url)
+              out = base / "entware" / fname
+              out.write_bytes(data)
+              manifest["entware"][arch] = {"file": fname, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+              print(f"Entware {arch}: {len(data)} B")
+
+          # Core runtime packages required by z2k/zapret2 (AdGuardHome excluded to keep APK compact; installed online via opkg when selected)
+          WANTED = [
+              "libmnl", "libnetfilter-queue", "libnfnetlink", "libcap", "zlib",
+              "curl", "flock", "unzip", "iptables", "xtables-addons_legacy",
+              "kmod_ndms", "ipset", "openssl-util"
+          ]
+
+          def parse_index(raw_text, sub=""):
+              pkgs = {}
+              for blk in raw_text.strip().split("\n\n"):
+                  d = {}
+                  for line in blk.splitlines():
+                      if ": " in line:
+                          k, v = line.split(": ", 1)
+                          d[k] = v
+                  if "Package" in d:
+                      d["_sub"] = sub
+                      d["_raw"] = blk
+                      pkgs[d["Package"]] = d
+              return pkgs
+
+          for arch in ["aarch64-k3.10", "mipselsf-k3.4", "mipssf-k3.4"]:
+              raw_main = gzip.decompress(fetch(f"https://bin.entware.net/{arch}/Packages.gz")).decode("utf-8", "replace")
+              raw_keen = gzip.decompress(fetch(f"https://bin.entware.net/{arch}/keenetic/Packages.gz")).decode("utf-8", "replace")
+              all_p = {**parse_index(raw_main, ""), **parse_index(raw_keen, "keenetic/")}
+              seen, q, selected = set(), list(WANTED), []
+              while q:
+                  cur = q.pop(0)
+                  if cur in seen or cur not in all_p:
+                      continue
+                  seen.add(cur)
+                  meta = all_p[cur]
+                  selected.append(meta)
+                  for dep in meta.get("Depends", "").split(","):
+                      dep = re.sub(r"\s*\(.*?\)", "", dep.strip())
+                      if dep and dep not in seen:
+                          q.append(dep)
+
+              tar_path = base / "ipks" / f"ipks-{arch}.tar.gz"
+              pkg_index_blocks = []
+              with tarfile.open(tar_path, "w:gz") as tf:
+                  for meta in selected:
+                      fn = meta["Filename"]
+                      fn_base = pathlib.Path(fn).name
+                      url = f"https://bin.entware.net/{arch}/{meta['_sub']}{fn}"
+                      ipk_bytes = fetch(url)
+                      info = tarfile.TarInfo(name=fn_base)
+                      info.size = len(ipk_bytes)
+                      tf.addfile(info, io.BytesIO(ipk_bytes))
+                      blk_fixed = re.sub(r"(?m)^Filename:.*$", f"Filename: {fn_base}", meta["_raw"])
+                      pkg_index_blocks.append(blk_fixed)
+                  idx_bytes = ("\n\n".join(pkg_index_blocks) + "\n").encode("utf-8")
+                  for idx_name, idx_payload in [("Packages", idx_bytes), ("Packages.gz", gzip.compress(idx_bytes))]:
+                      info = tarfile.TarInfo(name=idx_name)
+                      info.size = len(idx_payload)
+                      tf.addfile(info, io.BytesIO(idx_payload))
+              manifest["ipks"][arch] = {
+                  "file": tar_path.name,
+                  "count": len(selected),
+                  "size": tar_path.stat().st_size,
+              }
+              print(f"IPKs {arch}: {len(selected)} pkgs -> {tar_path.stat().st_size} B")
+
+          # Fetch z2k-enhanced source snapshot
+          z2k_src = fetch("https://github.com/necronicle/z2k/archive/refs/heads/z2k-enhanced.tar.gz")
+          (base / "z2k" / "z2k-repo.tar.gz").write_bytes(z2k_src)
+          manifest["z2k"]["repo_size"] = len(z2k_src)
+
+          # Fetch zapret2-z2k latest openwrt-embedded release (or pinned fallback)
+          rel_url = "https://github.com/necronicle/zapret2-z2k/releases/download/v1.0.7-z2k-r0/zapret2-v1.0.7-z2k-r0-openwrt-embedded.tar.gz"
+          rel_tag = "v1.0.7-z2k-r0"
+          try:
+              rel = json.loads(fetch("https://api.github.com/repos/necronicle/zapret2-z2k/releases/latest").decode())
+              for a in rel.get("assets", []):
+                  if a.get("name", "").endswith("openwrt-embedded.tar.gz"):
+                      rel_url = a["browser_download_url"]
+                      rel_tag = rel.get("tag_name", rel_tag)
+                      break
+          except Exception as e:
+              print(f"Using fallback zapret2 URL: {e}")
+
+          z2_bin = fetch(rel_url)
+          (base / "z2k" / "zapret2-openwrt-embedded.tar.gz").write_bytes(z2_bin)
+          manifest["z2k"]["tag"] = rel_tag
+          manifest["z2k"]["zapret2_size"] = len(z2_bin)
+          (base / "manifest.json").write_text(json.dumps(manifest, indent=2))
+          print("Offline manifest ready:", json.dumps(manifest))
+          PY
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Decode signing keystore (optional)
+        env:
+          KS_B64: ${{ secrets.GBOX_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            printf '%s' "$KS_B64" | tr -d '\n\r ' | base64 -d > "$RUNNER_TEMP/gbox.p12"
+            echo "GBOX_KEYSTORE_PATH=$RUNNER_TEMP/gbox.p12" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build Debug APK
+        env:
+          GBOX_STORE_PASS: ${{ secrets.GBOX_STORE_PASS }}
+          GBOX_KEY_ALIAS: ${{ secrets.GBOX_KEY_ALIAS }}
+          GBOX_KEY_PASS: ${{ secrets.GBOX_KEY_PASS }}
+        run: gradle assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Gor4akovNET-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
