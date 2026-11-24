@@ -722,7 +722,7 @@ object MonitorScripts {
     )
 
     val CMD_OPKG_CHECK = sh(
-        """
+        """__LONG__
         export TMPDIR=/opt/tmp; mkdir -p /opt/tmp
         opkg update 2>&1 | tail -n 12
         echo "=== Доступные обновления ==="
@@ -732,7 +732,7 @@ object MonitorScripts {
     )
 
     val CMD_OPKG_UPGRADE_ALL = sh(
-        """
+        """__LONG__
         export TMPDIR=/opt/tmp; mkdir -p /opt/tmp
         opkg update 2>&1 | tail -n 5
         opkg upgrade 2>&1
@@ -744,7 +744,7 @@ object MonitorScripts {
     )
 
     fun opkgInstallCmd(pkg: String): String = sh(
-        """
+        """__LONG__
         export TMPDIR=/opt/tmp; mkdir -p /opt/tmp
         opkg install '${sq(pkg.trim())}' 2>&1
         """
