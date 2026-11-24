@@ -11,7 +11,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-func dialRouterSSH(host string, port int, user, pass string, timeout time.Duration) (*ssh.Client, error) {
+func dialRouterSSH(host string, port int32, user, pass string, timeout time.Duration) (*ssh.Client, error) {
 	cfg := &ssh.ClientConfig{
 		User: user,
 		Auth: []ssh.AuthMethod{
@@ -41,7 +41,7 @@ func dialRouterSSH(host string, port int, user, pass string, timeout time.Durati
 }
 
 // RunRouterSSH executes a command on the router via SSH without requiring a proxy.
-func RunRouterSSH(host string, port int, user, pass, cmd string) (string, error) {
+func RunRouterSSH(host string, port int32, user, pass, cmd string) (string, error) {
 	if port <= 0 {
 		port = 222
 	}
@@ -103,7 +103,7 @@ func RunRouterSSH(host string, port int, user, pass, cmd string) (string, error)
 }
 
 // PushBytesSSH streams binary payloads directly to a remote file over BusyBox SSH stdin.
-func PushBytesSSH(host string, port int, user, pass, remotePath string, data []byte) error {
+func PushBytesSSH(host string, port int32, user, pass, remotePath string, data []byte) error {
 	if port <= 0 {
 		port = 222
 	}
@@ -141,7 +141,7 @@ func PushBytesSSH(host string, port int, user, pass, remotePath string, data []b
 }
 
 // ProbeTCP checks if a local/router TCP port responds within timeoutMs milliseconds.
-func ProbeTCP(host string, port int, timeoutMs int) bool {
+func ProbeTCP(host string, port int32, timeoutMs int32) bool {
 	if timeoutMs <= 0 {
 		timeoutMs = 1200
 	}
