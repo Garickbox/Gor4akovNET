@@ -1,0 +1,1426 @@
+[K
+          release: 5.01.C.10.0-0
+          sandbox: stable
+            title: 5.1.10
+             arch: aarch64
+
+              ndm: 
+                exact: 0-86e8376
+                cdate: 19 Nov 2026
+
+              bsp: 
+                exact: 0-0dd197c9ed
+                cdate: 19 Nov 2026
+
+              ndw: 
+             features: dual_image,usb_3_conf,usb_3_first,led_control,
+                       wifi_button,wifi5ghz,vht2ghz,mimo2ghz,mimo5ghz,atf2ghz,
+                       atf5ghz,wifi6,wifi_ft,wpa3,hwnat,hwnat_mib,link_agg,
+                       cable_diag,sfp
+           components: base,cloudcontrol,corewireless,ddns,dhcpd,
+                       dns-filter,dns-https,dns-tls,dot1x,easyconfig,exfat,ext,
+                       ext-utils,fat,hfsplus,igmp,ip6,l2tp,lang-en,lang-ru,mdns,
+                       miniupnpd,mws,nathelper-ftp,nathelper-h323,nathelper-
+                       pptp,nathelper-rtsp,nathelper-sip,ndmp,ndns,ntce,ntfs,
+                       opkg,opkg-kmod-netfilter,opkg-kmod-netfilter-addons,
+                       pingcheck,ppe,pppoe,pptp,ssh,storage,trafficcontrol,tsmb,
+                       usb,usblte,usbmodem,usbnet,usbqmi,webdav,wireguard
+
+             ndw3: 
+              version: 5.1.17.2
+
+             ndw4: 
+              version: 5.1.C.10.1
+
+     manufacturer: Netcraze Ltd.
+           vendor: Netcraze
+           series: NC
+            model: Giga (NC-1012)
+       hw_version: 1210C000
+          hw_type: router
+            hw_id: NC-1012
+           device: Giga
+          consent: EA
+           region: EA
+      description: Netcraze Giga (NC-1012)
+
+[K===CFG===
+[K! $$$ Agent: cli
+! $$$ Last change: Tue, 24 Nov 2026 01:56:26 GMT
+! $$$ Md5 checksum: 33844ad4c42c9c7ee740b29f173d16f0
+! $$$ Model: Netcraze Giga
+! $$$ Username: admin
+! $$$ Version: 2.06.1
+system
+    set dev.usb.force_usb2 0
+    set net.ipv4.ip_forward 1
+    set net.ipv4.neigh.default.gc_thresh1 256
+    set net.ipv4.neigh.default.gc_thresh2 1024
+    set net.ipv4.neigh.default.gc_thresh3 2048
+    set net.ipv4.tcp_fin_timeout 30
+    set net.ipv4.tcp_keepalive_time 120
+    set net.ipv6.conf.all.forwarding 1
+    set net.ipv6.neigh.default.gc_thresh1 256
+    set net.ipv6.neigh.default.gc_thresh2 1024
+    set net.ipv6.neigh.default.gc_thresh3 2048
+    set net.netfilter.nf_conntrack_tcp_timeout_established 1200
+    set vm.overcommit_memory 0
+    set vm.swappiness 60
+    set vm.vfs_cache_pressure 1000
+    clock timezone Europe/Moscow
+    domainname WORKGROUP
+    hostname Netcraze-1070
+    caption default
+    zram
+!
+schedule schedule0
+    description "\xd0\xa0\xd0\xb0\xd1\x81\xd0\xbf\xd0\xb8\xd1\x81\xd0\xb0\xd0\xbd\xd0\xb8\xd0\xb5 \xd0\xb0\xd0\xb2\xd1\x82\xd0\xbe\xd0\xbe\xd0\xb1\xd0\xbd\xd0\xbe\xd0\xb2\xd0\xbb\xd0\xb5\xd0\xbd\xd0\xb8\xd1\x8f"
+    action start 0 1 *
+    action stop 0 6 *
+!
+known host myphone 22:58:9a:56:1e:e2
+known host "POCO-X5-5G - Home network - 2026-11-21 18:02" 24:d3:37:dd:a4:2e
+known host "Home-PC - Home network - 2026-11-21 20:30" 84:9e:56:7a:f1:9d
+known host "DESKTOP-KC0JM46 - Home network - 2026-11-22 13:29" 90:0f:0c:cd:5b:61
+known host PS5 b4:0a:d8:37:d1:a4
+known host "MITV - Home network - 2026-11-21 21:15" ec:9c:32:5e:3b:c2
+isolate-private
+user admin
+    password <REDACTED> 4599e7961fbaf2df9883ec07f3a2e3d3
+    password <REDACTED> 2beb105d1851412a681e7f7654107cd9
+    tag cli
+    tag http
+    tag cifs
+    tag printers
+    tag webdav
+    tag opt
+!
+dyndns profile _WEBADMIN
+!
+interface GigabitEthernet0
+    up
+!
+interface GigabitEthernet0/0
+    rename 1
+    switchport mode access
+    switchport mode trunk
+    switchport access vlan 1
+    switchport trunk vlan 3
+    up
+!
+interface GigabitEthernet0/1
+    rename 2
+    switchport mode access
+    switchport mode trunk
+    switchport access vlan 1
+    switchport trunk vlan 3
+    up
+!
+interface GigabitEthernet0/2
+    rename 3
+    switchport mode access
+    switchport mode trunk
+    switchport access vlan 1
+    switchport trunk vlan 3
+    up
+!
+interface GigabitEthernet0/3
+    rename 4
+    switchport mode access
+    switchport mode trunk
+    switchport access vlan 1
+    switchport trunk vlan 3
+    up
+!
+interface GigabitEthernet0/Vlan1
+    description "Home VLAN"
+    ip dhcp client dns-routes
+    up
+!
+interface GigabitEthernet0/Vlan3
+    description "Guest VLAN"
+    ip dhcp client dns-routes
+    up
+!
+interface GigabitEthernet1
+    rename ISP
+    description "\xd0\x9f\xd0\xbe\xd0\xb4\xd0\xba\xd0\xbb\xd1\x8e\xd1\x87\xd0\xb5\xd0\xbd\xd0\xb8\xd0\xb5 Ethernet"
+    mac address <REDACTED>
+    mac address factory wan
+    security-level public
+    ip address dhcp
+    ip dhcp client dns-routes
+    ip global 700
+    ip no name-servers
+    igmp upstream
+    ipv6 address auto
+    ipv6 prefix auto
+    up
+!
+interface GigabitEthernet1/0
+    rename 0
+    up
+!
+interface WifiMaster0
+    country-code RU
+    compatibility BGN+AX
+    channel width 20
+    tx-burst
+    rekey-interval 86400
+    beamforming explicit
+    vht
+    downlink-mumimo
+    uplink-mumimo
+    spatial-reuse
+    up
+!
+interface WifiMaster0/AccessPoint0
+    rename AccessPoint
+    description "Wi-Fi access point"
+    mac access-list type none
+    wps
+    authentication wpa-psk ns3 <REDACTED>
+    encryption enable
+    encryption wpa2
+    ip dhcp client dns-routes
+    ssid <SSID>
+    wmm
+    rrm
+    ft mdid dC
+    ft enable
+    up
+!
+interface WifiMaster0/AccessPoint1
+    rename GuestWiFi
+    description "Guest access point"
+    mac access-list type none
+    encryption no enable
+    ip dhcp client dns-routes
+    ssid <SSID>
+    wmm
+    rrm
+    ft mdid 9C
+    ft enable
+    down
+!
+interface WifiMaster0/AccessPoint2
+    mac access-list type none
+    wps
+    authentication wpa-psk ns3 <REDACTED>
+    encryption enable
+    encryption wpa2
+    ip dhcp client dns-routes
+    ssid <SSID>
+    rrm
+    ft mdid dC
+    ft enable
+    down
+!
+interface WifiMaster0/AccessPoint3
+    mac access-list type none
+    security-level private
+    encryption no enable
+    ip dhcp client dns-routes
+    down
+!
+interface WifiMaster0/AccessPoint4
+    mac access-list type none
+    security-level private
+    encryption no enable
+    ip dhcp client dns-routes
+    down
+!
+interface WifiMaster0/AccessPoint5
+    mac access-list type none
+    security-level private
+    encryption no enable
+    ip dhcp client dns-routes
+    down
+!
+interface WifiMaster0/AccessPoint6
+    mac access-list type none
+    security-level private
+    encryption no enable
+    ip dhcp client dns-routes
+    down
+!
+interface WifiMaster0/WifiStation0
+    security-level public
+    encryption no enable
+    ip dhcp client dns-routes
+    standby enable
+    standby timeout 600
+    down
+!
+interface WifiMaster1
+    country-code RU
+    compatibility AN+AC+AX
+    channel width 40-above/80
+    tx-burst
+    rekey-interval 86400
+    beamforming explicit
+    target-waketime
+    downlink-mumimo
+    uplink-mumimo
+    spatial-reuse
+    up
+!
+interface WifiMaster1/AccessPoint0
+    rename AccessPoint_5G
+    description "5GHz Wi-Fi access point"
+    mac access-list type none
+    wps
+    authentication wpa-psk ns3 <REDACTED>
+    encryption enable
+    encryption wpa2
+    ip dhcp client dns-routes
+    ssid <SSID>
+    wmm
+    rrm
+    ft mdid dC
+    ft enable
+    up
+!
+interface WifiMaster1/AccessPoint1
+    rename GuestWiFi_5G
+    description "5GHz Guest access point"
+    mac access-list type none
+    encryption no enable
+    ip dhcp client dns-routes
+    ssid <SSID>
+    rrm
+    ft mdid 9C
+    ft enable
+    down
+!
+interface WifiMaster1/AccessPoint2
+    mac access-list type none
+    wps
+    authentication wpa-psk ns3 <REDACTED>
+    encryption enable
+    encryption wpa2
+    ip dhcp client dns-routes
+    ssid <SSID>
+    rrm
+    ft mdid dC
+    ft enable
+    down
+!
+interface WifiMaster1/AccessPoint3
+    mac access-list type none
+    security-level private
+    encryption no enable
+    ip dhcp client dns-routes
+    down
+!
+interface WifiMaster1/AccessPoint4
+    mac access-list type none
+    security-level private
+    encryption no enable
+    ip dhcp client dns-routes
+    down
+!
+interface WifiMaster1/AccessPoint5
+    mac access-list type none
+    security-level private
+    encryption no enable
+    ip dhcp client dns-routes
+    down
+!
+interface WifiMaster1/AccessPoint6
+    mac access-list type none
+    security-level private
+    encryption no enable
+    ip dhcp client dns-routes
+    down
+!
+interface WifiMaster1/WifiStation0
+    security-level public
+    encryption no enable
+    ip dhcp client dns-routes
+    standby enable
+    standby timeout 600
+    down
+!
+interface Bridge0
+    rename Home
+    description "Home network"
+    include GigabitEthernet0/Vlan1
+    include AccessPoint
+    include AccessPoint_5G
+    include WifiMaster0/AccessPoint2
+    include WifiMaster1/AccessPoint2
+    mac address factory lan
+    mac access-list type none
+    security-level private
+    ip address 192.168.1.1 255.255.255.0
+    ip dhcp client dns-routes
+    igmp downstream
+    band-steering
+    iapp key ns3 <REDACTED>
+    up
+!
+interface Bridge1
+    rename Guest
+    description "Guest network"
+    traffic-shape rate 5120
+    include GigabitEthernet0/Vlan3
+    include GuestWiFi
+    include GuestWiFi_5G
+    mac access-list type none
+    peer-isolation
+    security-level protected
+    ip address 10.1.30.1 255.255.255.0
+    ip dhcp client dns-routes
+    no band-steering
+    iapp key ns3 <REDACTED>
+    down
+!
+ip dhcp pool _WEBADMIN
+    range 192.168.1.33 192.168.1.152
+    bind Home
+    enable
+!
+ip dhcp pool _WEBADMIN_GUEST_AP
+    range 10.1.30.33 10.1.30.152
+    bind Guest
+    enable
+!
+ip dhcp host <MAC> <IP>
+ip dhcp host <MAC> <IP>
+ip name-server 77.88.8.8
+ip name-server 77.88.8.1
+ip http security-level private
+ip http lockout-policy 5 15 3
+ip http ssl enable
+ip http webdav
+    security-level private
+    enable
+!
+ip conntrack max-entries 32768
+ip nat Home
+ip nat Guest
+ip static tcp ISP 1935 192.168.1.69
+ip static tcp ISP 3478 through 3480 192.168.1.69
+ip static udp ISP 3074 192.168.1.69
+ip static udp ISP 3478 through 3479 192.168.1.69
+ip telnet
+    security-level private
+    lockout-policy 5 15 3
+!
+ip ssh
+    security-level private
+    lockout-policy 5 15 3
+!
+ip host whatsapp.com 85.192.60.175
+ip host whatsapp.net 85.192.60.175
+ip host g.whatsapp.net 85.192.60.175
+ip host static.whatsapp.net 85.192.60.175
+ip host mmg.whatsapp.net 85.192.60.175
+ip host pps.whatsapp.net 85.192.60.175
+ip host dit.whatsapp.net 85.192.60.175
+ip host v.whatsapp.net 85.192.60.175
+ip host crashlogs.whatsapp.net 85.192.60.175
+ip host api.instagram.com 57.144.248.192
+ip host api.instagram.com 57.144.244.192
+ip host web.whatsapp.com 57.144.245.32
+ip host web.whatsapp.com 57.144.249.32
+ip host www.whatsapp.com 57.144.245.32
+ip host www.whatsapp.com 57.144.249.32
+ip host graph.whatsapp.com 57.144.245.32
+ip host graph.whatsapp.com 57.144.249.32
+ip host v.whatsapp.com 57.144.249.32
+ip host v.whatsapp.com 57.144.245.32
+ip host scontent.cdninstagram.com 57.144.248.192
+ip host instagram.com 57.144.248.34
+ip host www.instagram.com 57.144.248.34
+ip host graph.instagram.com 57.144.248.192
+ip host instagram.c10r.instagram.com 57.144.244.192
+ip host instagram.c10r.instagram.com 57.144.248.192
+ip host static.cdninstagram.com 57.144.248.192
+ip host static.cdninstagram.com 57.144.244.192
+ip host scontent.whatsapp.net 57.144.245.32
+ip host scontent.whatsapp.net 57.144.249.32
+ip host instagram.com 57.144.248.192
+ip host graph.instagram.com 57.144.248.34
+ip host graph.instagram.com 57.144.244.192
+ip host api.instagram.com 57.144.248.34
+ip host instagram.c10r.instagram.com 57.144.248.34
+ip host scontent.cdninstagram.com 57.144.244.192
+ip host static.xx.fbcdn.net 57.144.248.128
+ip host static.xx.fbcdn.net 57.144.244.128
+ip host scontent.xx.fbcdn.net 57.144.248.128
+ip host scontent.xx.fbcdn.net 57.144.244.128
+ip host rutracker.org 10.171.171.171
+ip host rutracker.wiki 10.171.171.171
+ip host api.rutracker.cc 10.171.171.171
+ip host rep.rutracker.cc 10.171.171.171
+ip host static.rutracker.cc 10.171.171.171
+ip host instagram.com 57.144.244.34
+ip host www.instagram.com 57.144.244.34
+ip hotspot
+    host 22:58:9a:56:1e:e2 permit
+    host 84:9e:56:7a:f1:9d permit
+    host 84:9e:56:7a:f1:9d conform
+    host 90:0f:0c:cd:5b:61 permit
+    host 90:0f:0c:cd:5b:61 conform
+    host b4:0a:d8:37:d1:a4 permit
+    host b4:0a:d8:37:d1:a4 conform
+    host b4:0a:d8:37:d1:a4 priority 1
+    host 24:d3:37:dd:a4:2e permit
+    host 24:d3:37:dd:a4:2e conform
+    host 24:d3:37:dd:a4:2e priority 1
+    host ec:9c:32:5e:3b:c2 permit
+    host ec:9c:32:5e:3b:c2 conform
+!
+ipv6 subnet Default
+    bind Home
+    mode slaac
+    prefix length 64
+    number 0
+!
+ipv6 local-prefix default
+ppe software
+ppe hardware
+upnp lan Home
+ntce
+    qos category calling priority 1
+    qos category gaming priority 2
+    qos category streaming priority 3
+    qos category work priority 4
+    qos category surfing priority 5
+    qos category other priority 6
+    qos category filetransfering priority 7
+!
+service dhcp
+service dns-proxy
+service igmp-proxy
+service http
+service cifs
+service ssh
+service ntp
+service upnp
+cifs
+    share "\xd0\x9d\xd0\xbe\xd0\xb2\xd1\x8b\xd0\xb9 \xd1\x82\xd0\xbe\xd0\xbc" 6CF6350BF634D6D4:
+    share EXT4-GvuCWlZQ ac6b28a4-7e0a-480a-901e-ecf991fa4781:
+    automount
+    permissive
+!
+dns-proxy
+    rebind-protect auto
+    intercept enable
+    filter engine opkg
+!
+mws wlan Home
+    band 0
+    band 1
+    bind Home
+    ssid <SSID> Netcraze-1070
+    encryption wpa2
+    wpa psk ns3 xJ+qfC/Hoznp+tsl1Z58saI/
+    wps enable
+    rrm enable
+    ft mdid dC
+    ft enable
+    ft iapp key ns3 <REDACTED>
+    band-steering enable
+!
+mws wlan Guest
+    bind Guest
+    ssid <SSID> Guest
+    rrm enable
+    ft mdid 9C
+    ft enable
+    ft iapp key ns3 <REDACTED>
+    peer-isolation
+!
+opkg disk ac6b28a4-7e0a-480a-901e-ecf991fa4781:
+opkg initrc /opt/etc/init.d/rc.unslung
+opkg dns-override
+easyconfig disable
+components
+    auto-update disable
+    auto-update channel stable
+    auto-update schedule schedule0
+!
+cloud control2 security-level public
+!
+[K===IF===
+[K
+Interface, name = "GigabitEthernet0"
+               id: GigabitEthernet0
+            index: 0
+   interface-name: GigabitEthernet0
+             type: GigabitEthernet
+      description: 
+           traits: Mac
+           traits: Switch
+           traits: EthernetPort
+           traits: MtkSwitch
+           traits: MtkGigabitEthernet
+             link: down
+        connected: no
+            state: up
+              mtu: 1500
+  tx-queue-length: 2000
+       admin-only: no
+             port, name = 1: 
+                    id: GigabitEthernet0/0
+                 index: 0
+        interface-name: 1
+                 label: 1
+                  type: Port
+                  link: down
+           last-change: 114843.213221
+         last-overflow: 0
+     cable-diagnostics: no
+            admin-only: no
+                public: no
+             port, name = 2: 
+                    id: GigabitEthernet0/1
+                 index: 1
+        interface-name: 2
+                 label: 2
+                  type: Port
+                  link: down
+           last-change: 114843.212324
+         last-overflow: 0
+     cable-diagnostics: no
+            admin-only: no
+                public: no
+             port, name = 3: 
+                    id: GigabitEthernet0/2
+                 index: 2
+        interface-name: 3
+                 label: 3
+                  type: Port
+                  link: down
+           last-change: 114843.211474
+         last-overflow: 0
+     cable-diagnostics: no
+            admin-only: no
+                public: no
+             port, name = 4: 
+                    id: GigabitEthernet0/3
+                 index: 3
+        interface-name: 4
+                 label: 4
+                  type: Port
+                  link: down
+           last-change: 114843.210858
+         last-overflow: 0
+     cable-diagnostics: yes
+            admin-only: no
+                public: no
+          summary: 
+
+Interface, name = "1"
+                id: GigabitEthernet0/0
+             index: 0
+    interface-name: 1
+             label: 1
+              type: Port
+            traits: EthernetPort
+            traits: SwitchPort
+            traits: MtkSwitchPort
+              link: down
+       last-change: 114843.213772
+     last-overflow: 0
+ cable-diagnostics: no
+        admin-only: no
+            public: no
+        link-group: 
+            supported: yes
+             group-id: 0
+               master: yes
+              enabled: no
+           summary: 
+
+Interface, name = "2"
+                id: GigabitEthernet0/1
+             index: 1
+    interface-name: 2
+             label: 2
+              type: Port
+            traits: EthernetPort
+            traits: SwitchPort
+            traits: MtkSwitchPort
+              link: down
+       last-change: 114843.212829
+     last-overflow: 0
+ cable-diagnostics: no
+        admin-only: no
+            public: no
+        link-group: 
+            supported: yes
+             group-id: 0
+              enabled: no
+           summary: 
+
+Interface, name = "3"
+                id: GigabitEthernet0/2
+             index: 2
+    interface-name: 3
+             label: 3
+              type: Port
+            traits: EthernetPort
+            traits: SwitchPort
+            traits: MtkSwitchPort
+              link: down
+       last-change: 114843.211983
+     last-overflow: 0
+ cable-diagnostics: no
+        admin-only: no
+            public: no
+        link-group: 
+            supported: no
+           summary: 
+
+Interface, name = "4"
+                id: GigabitEthernet0/3
+             index: 3
+    interface-name: 4
+             label: 4
+              type: Port
+            traits: EthernetPort
+            traits: SwitchPort
+            traits: MtkSwitchPort
+              link: down
+               sfp: 
+          transceiver: internal
+                combo: yes
+       last-change: 114843.211302
+     last-overflow: 0
+ cable-diagnostics: yes
+        admin-only: no
+            public: no
+        link-group: 
+            supported: no
+           summary: 
+
+Interface, name = "GigabitEthernet0/Vlan1"
+               id: GigabitEthernet0/Vlan1
+            index: 1
+   interface-name: GigabitEthernet0/Vlan1
+             type: Vlan
+      description: Home VLAN
+           traits: Mac
+           traits: Ethernet
+           traits: Ip
+           traits: Ip6
+           traits: Supplicant
+           traits: EthernetIp
+           traits: Vlan
+             link: down
+        connected: no
+            state: up
+              mtu: 1500
+  tx-queue-length: 0
+       admin-only: no
+            group: Home
+           usedby: Bridge0
+             ipv6: 
+              mac: d4:9c:53:0c:18:39
+        auth-type: none
+          summary: 
+
+Interface, name = "GigabitEthernet0/Vlan3"
+               id: GigabitEthernet0/Vlan3
+            index: 3
+   interface-name: GigabitEthernet0/Vlan3
+             type: Vlan
+      description: Guest VLAN
+           traits: Mac
+           traits: Ethernet
+           traits: Ip
+           traits: Ip6
+           traits: Supplicant
+           traits: EthernetIp
+           traits: Vlan
+             link: down
+        connected: no
+            state: up
+              mtu: 1500
+  tx-queue-length: 0
+       admin-only: no
+            group: Guest
+           usedby: Bridge1
+             ipv6: 
+              mac: d6:9c:53:0c:18:38
+        auth-type: none
+          summary: 
+
+Interface, name = "ISP"
+               id: GigabitEthernet1
+            index: 1
+   interface-name: ISP
+             type: GigabitEthernet
+      description: Подключение Ethernet
+           traits: Mac
+           traits: Ethernet
+           traits: Ip
+           traits: Ip6
+           traits: Supplicant
+           traits: EthernetIp
+           traits: GigabitEthernet
+             link: up
+        connected: yes
+            state: up
+              mtu: 1500
+  tx-queue-length: 2000
+       admin-only: no
+          address: 10.16.20.23
+             mask: 255.255.254.0
+           uptime: 114818
+           global: yes
+        defaultgw: yes
+         priority: 700
+   security-level: public
+             ipv6: 
+            defaultgw: no
+              mac: c8:e7:d8:85:90:5b
+        auth-type: none
+             port, name = 0: 
+                    id: GigabitEthernet1/0
+                 index: 0
+        interface-name: 0
+                 label: 0
+                  type: Port
+                  link: up
+                 speed: 1000
+                duplex: full
+      auto-negotiation: on
+          flow-control: off
+                   eee: off
+     cable-diagnostics: no
+            admin-only: no
+          summary: 
+
+Interface, name = "0"
+                id: GigabitEthernet1/0
+             index: 0
+    interface-name: 0
+             label: 0
+              type: Port
+            traits: EthernetPort
+            traits: GigabitEthernetPort
+              link: up
+             speed: 1000
+            duplex: full
+  auto-negotiation: on
+      flow-control: off
+               eee: off
+ cable-diagnostics: no
+        admin-only: no
+           summary: 
+
+Interface, name = "WifiMaster0"
+               id: WifiMaster0
+            index: 0
+   interface-name: WifiMaster0
+             type: WifiMaster
+      description: 
+           traits: WifiRadio
+           traits: WifiMaster
+           traits: MtkWifiMaster
+             link: up
+        connected: yes
+            state: up
+              mtu: 1500
+  tx-queue-length: 1000
+       admin-only: no
+          hwstate: on
+          bitrate: 286000000
+          channel: 9
+        bandwidth: 20
+    busy-channels: 7
+    busy-channels: 8
+    busy-channels: 9
+    busy-channels: 10
+    busy-channels: 11
+      temperature: 54
+          summary: 
+
+Interface, name = "AccessPoint"
+               id: WifiMaster0/AccessPoint0
+            index: 0
+   interface-name: AccessPoint
+             type: AccessPoint
+      description: Wi-Fi access point
+           traits: Wireless
+           traits: Mac
+           traits: Ethernet
+           traits: Ip
+           traits: Ip6
+           traits: Supplicant
+           traits: EthernetIp
+           traits: Wifi
+           traits: AccessPoint
+           traits: MtkAccessPoint
+             link: up
+        connected: yes
+            state: up
+              mtu: 1500
+  tx-queue-length: 1000
+       admin-only: no
+            group: Home
+           usedby: Bridge0
+             ipv6: 
+              mac: d4:9c:53:0c:18:39
+        auth-type: none
+             ssid: Gorchakov
+       encryption: wpa2
+          summary: 
+
+Interface, name = "GuestWiFi"
+               id: WifiMaster0/AccessPoint1
+            index: 1
+   interface-name: GuestWiFi
+             type: AccessPoint
+      description: Guest access point
+           traits: Wireless
+           traits: Mac
+           traits: Ethernet
+           traits: Ip
+           traits: Ip6
+           traits: Supplicant
+           traits: EthernetIp
+           traits: Wifi
+           traits: AccessPoint
+           traits: MtkAccessPoint
+             link: down
+        connected: no
+            state: down
+              mtu: 1500
+  tx-queue-length: 1000
+       admin-only: no
+            group: Guest
+           usedby: Bridge1
+             ipv6: 
+              mac: d6:9c:53:1c:18:39
+        auth-type: none
+       encryption: 
+          summary: 
+
+Interface, name = "WifiMaster0/AccessPoint2"
+               id: WifiMaster0/AccessPoint2
+            index: 2
+   interface-name: WifiMaster0/AccessPoint2
+             type: AccessPoint
+      description: 
+           traits: Wireless
+           traits: Mac
+           traits: Ethernet
+           traits: Ip
+           traits: Ip6
+           traits: Supplicant
+           traits: EthernetIp
+           traits: Wifi
+           traits: AccessPoint
+           traits: MtkAccessPoint
+             link: down
+        connected: no
+            state: down
+              mtu: 1500
+  tx-queue-length: 1000
+       admin-only: no
+            group: Home
+           usedby: Bridge0
+             ipv6: 
+              mac: d6:9c:53:2c:18:39
+        auth-type: none
+       encryption: wpa2
+          summary: 
+
+Interface, name = "WifiMaster0/AccessPoint3"
+               id: WifiMaster0/AccessPoint3
+            index: 3
+   interface-name: WifiMaster0/AccessPoint3
+             type: AccessPoint
+      description: 
+           traits: Wireless
+           traits: Mac
+           traits: Ethernet
+           traits: Ip
+           traits: Ip6
+           traits: Supplicant
+           traits: EthernetIp
+           traits: Wifi
+           traits: AccessPoint
+           traits: MtkAccessPoint
+             link: down
+        connected: no
+            state: down
+              mtu: 1500
+  tx-queue-length: 1000
+       admin-only: no
+           global: no
+   security-level: private
+             ipv6: 
+              mac: d6:9c:53:3c:18:39
+        auth-type: none
+       encryption: 
+          summary: 
+
+Interface, name = "WifiMaster0/AccessPoint4"
+               id: WifiMaster0/AccessPoint4
+            index: 4
+   interface-name: WifiMaster0/AccessPoint4
+             type: AccessPoint
+      description: 
+           traits: Wireless
+           traits: Mac
+           traits: Ethernet
+           traits: Ip
+           traits: Ip6
+           traits: Supplicant
+           traits: EthernetIp
+           traits: Wifi
+           traits: AccessPoint
+           traits: MtkAccessPoint
+             link: down
+        connected: no
+            state: down
+              mtu: 1500
+  tx-queue-length: 1000
+       admin-only: no
+           global: no
+   security-level: private
+             ipv6: 
+              mac: d6:9c:53:4c:18:39
+        auth-type: none
+       encryption: 
+          summary: 
+
+Interface, name = "WifiMaster0/AccessPoint5"
+               id: WifiMaster0/AccessPoint5
+            index: 5
+   interface-name: WifiMaster0/AccessPoint5
+             type: AccessPoint
+      description: 
+           traits: Wireless
+           traits: Mac
+           traits: Ethernet
+           traits: Ip
+           traits: Ip6
+           traits: Supplicant
+           traits: EthernetIp
+           traits: Wifi
+           traits: AccessPoint
+           traits: MtkAccessPoint
+             link: down
+        connected: no
+            state: down
+              mtu: 1500
+  tx-queue-length: 1000
+       admin-only: no
+           global: no
+   security-level: private
+             ipv6: 
+              mac: d6:9c:53:5c:18:39
+        auth-type: none
+       encryption: 
+          summary: 
+
+Interface, name = "WifiMaster0/AccessPoint6"
+               id: WifiMaster0/AccessPoint6
+            index: 6
+   interface-name: WifiMaster0/AccessPoint6
+             type: AccessPoint
+      description: 
+           traits: Wireless
+           traits: Mac
+           traits: Ethernet
+           traits: Ip
+           traits: Ip6
+           traits: Supplicant
+           traits: EthernetIp
+           traits: Wifi
+           traits: AccessPoint
+           traits: MtkAccessPoint
+             link: down
+        connected: no
+            state: down
+              mtu: 1500
+  tx-queue-length: 1000
+       admin-only: no
+           global: no
+   security-level: private
+             ipv6: 
+              mac: d6:9c:53:6c:18:39
+        auth-type: none
+       encryption: 
+          summary: 
+
+Interface, name = "WifiMaster0/WifiStation0"
+               ap: 00:00:00:00:00:00
+               id: WifiMaster0/WifiStation0
+            index: 0
+   interface-name: WifiMaster0/WifiStation0
+             type: WifiStation
+      description: 
+           traits: Wireless
+           traits: Mac
+           traits: Ethernet
+           traits: Ip
+           traits: Ip6
+           traits: Supplicant
+           traits: EthernetIp
+           traits: Wifi
+           traits: WifiStation
+           traits: MtkWifiStation
+             link: down
+        connected: no
+            state: down
+              mtu: 1500
+  tx-queue-length: 1000
+       admin-only: no
+           global: no
+   security-level: public
+             ipv6: 
+              mac: d2:9c:53:0c:18:39
+        auth-type: none
+       encryption: 
+          summary: 
+
+Interface, name = "WifiMaster1"
+               id: WifiMaster1
+            index: 1
+   interface-name: WifiMaster1
+             type: WifiMaster
+      description: 
+           traits: WifiRadio
+           traits: WifiMaster
+           traits: MtkWifiMaster
+             link: up
+        connected: yes
+            state: up
+              mtu: 1500
+  tx-queue-length: 1000
+       admin-only: no
+          hwstate: on
+          bitrate: 1201000000
+          channel: 52
+        bandwidth: 80
+    busy-channels: 52
+    busy-channels: 56
+    busy-channels: 60
+    busy-channels: 64
+      temperature: 54
+          summary: 
+
+Interface, name = "AccessPoint_5G"
+               id: WifiMaster1/AccessPoint0
+            index: 0
+   interface-name: AccessPoint_5G
+             type: AccessPoint
+      description: 5GHz Wi-Fi access point
+           traits: Wireless
+           traits: Mac
+           traits: Ethernet
+           traits: Ip
+           traits: Ip6
+           traits: Supplicant
+           traits: EthernetIp
+           traits: Wifi
+           traits: AccessPoint
+           traits: MtkAccessPoint
+             link: up
+        connected: yes
+            state: up
+              mtu: 1500
+  tx-queue-length: 1000
+       admin-only: no
+            group: Home
+           usedby: Bridge0
+             ipv6: 
+              mac: d6:9c:53:8c:18:39
+        auth-type: none
+             ssid: Gorchakov
+       encryption: wpa2
+          summary: 
+
+Interface, name = "GuestWiFi_5G"
+               id: WifiMaster1/AccessPoint1
+            index: 1
+   interface-name: GuestWiFi_5G
+             type: AccessPoint
+      description: 5GHz Guest access point
+           traits: Wireless
+           traits: Mac
+           traits: Ethernet
+           traits: Ip
+           traits: Ip6
+           traits: Supplicant
+           traits: EthernetIp
+           traits: Wifi
+           traits: AccessPoint
+           traits: MtkAccessPoint
+             link: down
+        connected: no
+            state: down
+              mtu: 1500
+  tx-queue-length: 1000
+       admin-only: no
+            group: Guest
+           usedby: Bridge1
+             ipv6: 
+              mac: d6:9c:53:9c:18:39
+        auth-type: none
+       encryption: 
+          summary: 
+
+Interface, name = "WifiMaster1/AccessPoint2"
+               id: WifiMaster1/AccessPoint2
+            index: 2
+   interface-name: WifiMaster1/AccessPoint2
+             type: AccessPoint
+      description: 
+           traits: Wireless
+           traits: Mac
+           traits: Ethernet
+           traits: Ip
+           traits: Ip6
+           traits: Supplicant
+           traits: EthernetIp
+           traits: Wifi
+           traits: AccessPoint
+           traits: MtkAccessPoint
+             link: down
+        connected: no
+            state: down
+              mtu: 1500
+  tx-queue-length: 1000
+       admin-only: no
+            group: Home
+           usedby: Bridge0
+             ipv6: 
+              mac: d6:9c:53:ac:18:39
+        auth-type: none
+       encryption: wpa2
+          summary: 
+
+Interface, name = "WifiMaster1/AccessPoint3"
+               id: WifiMaster1/AccessPoint3
+            index: 3
+   interface-name: WifiMaster1/AccessPoint3
+             type: AccessPoint
+      description: 
+           traits: Wireless
+           traits: Mac
+           traits: Ethernet
+           traits: Ip
+           traits: Ip6
+           traits: Supplicant
+           traits: EthernetIp
+           traits: Wifi
+           traits: AccessPoint
+           traits: MtkAccessPoint
+             link: down
+        connected: no
+            state: down
+              mtu: 1500
+  tx-queue-length: 1000
+       admin-only: no
+           global: no
+   security-level: private
+             ipv6: 
+              mac: d6:9c:53:bc:18:39
+        auth-type: none
+       encryption: 
+          summary: 
+
+Interface, name = "WifiMaster1/AccessPoint4"
+               id: WifiMaster1/AccessPoint4
+            index: 4
+   interface-name: WifiMaster1/AccessPoint4
+             type: AccessPoint
+      description: 
+           traits: Wireless
+           traits: Mac
+           traits: Ethernet
+           traits: Ip
+           traits: Ip6
+           traits: Supplicant
+           traits: EthernetIp
+           traits: Wifi
+           traits: AccessPoint
+           traits: MtkAccessPoint
+             link: down
+        connected: no
+            state: down
+              mtu: 1500
+  tx-queue-length: 1000
+       admin-only: no
+           global: no
+   security-level: private
+             ipv6: 
+              mac: d6:9c:53:cc:18:39
+        auth-type: none
+       encryption: 
+          summary: 
+
+Interface, name = "WifiMaster1/AccessPoint5"
+               id: WifiMaster1/AccessPoint5
+            index: 5
+   interface-name: WifiMaster1/AccessPoint5
+             type: AccessPoint
+      description: 
+           traits: Wireless
+           traits: Mac
+           traits: Ethernet
+           traits: Ip
+           traits: Ip6
+           traits: Supplicant
+           traits: EthernetIp
+           traits: Wifi
+           traits: AccessPoint
+           traits: MtkAccessPoint
+             link: down
+        connected: no
+            state: down
+              mtu: 1500
+  tx-queue-length: 1000
+       admin-only: no
+           global: no
+   security-level: private
+             ipv6: 
+              mac: d6:9c:53:dc:18:39
+        auth-type: none
+       encryption: 
+          summary: 
+
+Interface, name = "WifiMaster1/AccessPoint6"
+               id: WifiMaster1/AccessPoint6
+            index: 6
+   interface-name: WifiMaster1/AccessPoint6
+             type: AccessPoint
+      description: 
+           traits: Wireless
+           traits: Mac
+           traits: Ethernet
+           traits: Ip
+           traits: Ip6
+           traits: Supplicant
+           traits: EthernetIp
+           traits: Wifi
+           traits: AccessPoint
+           traits: MtkAccessPoint
+             link: down
+        connected: no
+            state: down
+              mtu: 1500
+  tx-queue-length: 1000
+       admin-only: no
+           global: no
+   security-level: private
+             ipv6: 
+              mac: d6:9c:53:ec:18:39
+        auth-type: none
+       encryption: 
+          summary: 
+
+Interface, name = "WifiMaster1/WifiStation0"
+               ap: 00:00:00:00:00:00
+               id: WifiMaster1/WifiStation0
+            index: 0
+   interface-name: WifiMaster1/WifiStation0
+             type: WifiStation
+      description: 
+           traits: Wireless
+           traits: Mac
+           traits: Ethernet
+           traits: Ip
+           traits: Ip6
+           traits: Supplicant
+           traits: EthernetIp
+           traits: Wifi
+           traits: WifiStation
+           traits: MtkWifiStation
+             link: down
+        connected: no
+            state: down
+              mtu: 1500
+  tx-queue-length: 1000
+       admin-only: no
+           global: no
+   security-level: public
+             ipv6: 
+              mac: de:9c:53:0c:18:39
+        auth-type: none
+       encryption: 
+          summary: 
+
+Interface, name = "Home"
+               id: Bridge0
+            index: 0
+   interface-name: Home
+             type: Bridge
+      description: Home network
+           traits: Mac
+           traits: Ethernet
+           traits: Ip
+           traits: Ip6
+           traits: Supplicant
+           traits: EthernetIp
+           traits: Bridge
+             link: up
+        connected: yes
+            state: up
+              mtu: 1500
+  tx-queue-length: 0
+       admin-only: no
+          address: 192.168.1.1
+             mask: 255.255.255.0
+           uptime: 114829
+           global: no
+   security-level: private
+             ipv6: 
+              mac: d4:9c:53:0c:18:39
+        auth-type: none
+           bridge: 
+            interface, link = no: GigabitEthernet0/Vlan1
+            interface, link = yes: WifiMaster0/AccessPoint0
+            interface, link = yes: WifiMaster1/AccessPoint0
+            interface, link = no: WifiMaster0/AccessPoint2
+            interface, link = no: WifiMaster1/AccessPoint2
+          summary: 
+
+Interface, name = "Guest"
+               id: Bridge1
+            index: 1
+   interface-name: Guest
+             type: Bridge
+      description: Guest network
+           traits: Mac
+           traits: Ethernet
+           traits: Ip
+           traits: Ip6
+           traits: Supplicant
+           traits: EthernetIp
+           traits: Bridge
+             link: down
+        connected: no
+            state: down
+              mtu: 1500
+  tx-queue-length: 0
+       admin-only: no
+           global: no
+   security-level: protected
+             ipv6: 
+              mac: d6:9c:53:0c:18:38
+        auth-type: none
+           bridge: 
+            interface, link = no: GigabitEthernet0/Vlan3
+            interface, link = no: WifiMaster0/AccessPoint1
+            interface, link = no: WifiMaster1/AccessPoint1
+          summary: 
+
+[K===RT===
+[K================================================================================
+Destination         Gateway          Interface                        F  Metric 
+================================================================================
+0.0.0.0/0           10.16.20.1       ISP                              U  1000   
+10.16.20.0/23       0.0.0.0          ISP                              U  1000   
+192.168.1.0/24      0.0.0.0          Home                             U  1000   
+[K
