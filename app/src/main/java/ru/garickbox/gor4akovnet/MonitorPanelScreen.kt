@@ -747,11 +747,11 @@ fun MonitorPanelScreen(
                     when (key) {
                         "warp" -> {
                             if (!warpInstalled) {
-                                Button(onClick = { svcModalKey = null; runAction("Установка WARP", MonitorScripts.warpInstallCmd(), MonitorPage.OVERVIEW) }, modifier = Modifier.fillMaxWidth()) {
+                                Button(onClick = { svcModalKey = null; runAction("Установка WARP", MonitorScripts.warpInstallCmd(), MonitorPage.WARP) }, modifier = Modifier.fillMaxWidth()) {
                                     Text("Установить Cloudflare WARP", fontSize = 12.sp)
                                 }
                             } else {
-                                Button(onClick = { svcModalKey = null; runAction(if (isUp) "Стоп WARP" else "Старт WARP", MonitorScripts.toggleZ2k("game-warp", if (isUp) 0 else 1), MonitorPage.OVERVIEW) }, modifier = Modifier.fillMaxWidth()) {
+                                Button(onClick = { svcModalKey = null; runAction(if (isUp) "Стоп WARP" else "Старт WARP", MonitorScripts.toggleZ2k("game-warp", if (isUp) 0 else 1), MonitorPage.WARP) }, modifier = Modifier.fillMaxWidth()) {
                                     Text(if (isUp) "Выключить WARP" else "Включить WARP", fontSize = 12.sp)
                                 }
                             }
