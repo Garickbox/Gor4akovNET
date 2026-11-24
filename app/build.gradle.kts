@@ -25,6 +25,12 @@ android {
         buildConfigField("String", "STATS_TOKEN", envQuoted("GBOX_STATS_TOKEN"))
         buildConfigField("String", "STATS_URL", envQuoted("GBOX_STATS_URL"))
         buildConfigField("String", "DONATE_URL", envQuoted("GBOX_DONATE_URL"))
+
+        ndk {
+            // Только реальные телефоны: arm64 (POCO, новые Samsung/Xiaomi) + armeabi-v7a (старые 32-bit).
+            // x86/x86_64 убираем — они нужны только эмуляторам, на телефоне не запускаются.
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     signingConfigs {

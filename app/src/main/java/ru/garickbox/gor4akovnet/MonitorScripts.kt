@@ -142,7 +142,7 @@ object MonitorScripts {
         wl_file="/opt/zapret2/lists/whitelist.txt"
         [ -r /opt/zapret2/lists/exclude.txt ] && [ ! -s "§wl_file" ] && wl_file="/opt/zapret2/lists/exclude.txt"
         wl_arr=§(list_to_json "§wl_file")
-        raw_cfg=§(head -n 60 /opt/zapret2/config 2>/dev/null | awk '$AWK_ESC BEGIN{printf "["} /^[A-Z0-9_]+=/{printf "%s\"%s\"", (n++?",":""), esc(§0)} END{printf "]"}')
+        raw_cfg=§(head -n 200 /opt/zapret2/config 2>/dev/null | awk '$AWK_ESC BEGIN{printf "["} /^[A-Z0-9_]+=/{printf "%s\"%s\"", (n++?",":""), esc(§0)} END{printf "]"}')
         [ -n "§raw_cfg" ] || raw_cfg='[]'
         printf '{"z2k":%s,"warp":%s,"policy":%s,"autohost":%s,"extra":%s,"whitelist":%s,"wl_file":"%s","cfg_lines":%s}\n' \
           "§zst" "§wst" "§pst" "§ahl" "§ex_arr" "§wl_arr" "§wl_file" "§raw_cfg"
