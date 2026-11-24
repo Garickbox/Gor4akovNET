@@ -45,7 +45,12 @@ android {
             signingConfigs.findByName("gbox")?.let { signingConfig = it }
         }
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
             signingConfigs.findByName("gbox")?.let { signingConfig = it }
         }
     }
