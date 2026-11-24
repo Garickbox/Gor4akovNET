@@ -104,7 +104,10 @@ private fun parseJsonOut(raw: String, tag: String): JSONObject {
         val preview = raw.trim().take(180)
         throw IllegalArgumentException(if (preview.isBlank()) "$tag: пустой ответ роутера" else "$tag (не JSON): $preview")
     }
-    return JSONObject(raw.substring(i))
+    // Отрезаем мусор после последней } — иначе bash warnings / stderr ломают JSONObject
+    val j = raw.lastIndexOf('}')
+    val body = if (j > i) raw.substring(i, j + 1) else raw.substring(i)
+    return JSONObject(body)
 }
 
 private fun formatUptime(sec: Long): String {
@@ -283,7 +286,13 @@ fun MonitorPanelScreen(
                         bypass = parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_BYPASS_STATE), "Zapret2")
                     }
                     MonitorPage.WARP -> {
-                        runCatching { bypass = JSONObject().put("warp", parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_WARP_STATUS), "WARP")) }
+                        // Всегда перезаписываем bypass.warp объектом — никогда не оставляем строку от CMD_BYPASS_STATE
+                        try {
+                            bypass = JSONObject().put("warp", parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_WARP_STATUS), "WARP"))
+                        } catch (e: Throwable) {
+                            bypass = JSONObject().put("warp", JSONObject().put("installed", false).put("running", false))
+                            errMsg = "WARP статус: ${e.message ?: "нет ответа"}"
+                        }
                         if (warpGames == null || force) runCatching { warpGames = parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_WARP_GAMES), "Игры WARP") }
                     }
                     MonitorPage.WIFI, MonitorPage.DEVICES -> if (wifiDevs == null || force) {
@@ -1438,9 +1447,12 @@ private fun BypassModesPage(
 
 @Composable
 private fun WarpPage(bypass: JSONObject?, gamesData: JSONObject?, onTopicHelp: (String) -> Unit, onAction: (String, String) -> Unit) {
-    val warp = bypass?.optJSONObject("warp") ?: JSONObject()
-    val installed = warp.optBoolean("installed") || warp.optBoolean("running")
-    val running = warp.optBoolean("running")
+    val warpObj = bypass?.optJSONObject("warp")
+    val warpStr = if (warpObj == null) bypass?.optString("warp").orEmpty() else ""
+    val warp = warpObj ?: JSONObject()
+    val fromBypass = warpStr == "true" || warpStr == "1"
+    val installed = warp.optBoolean("installed") || warp.optBoolean("running") || fromBypass
+    val running = warp.optBoolean("running") || fromBypass
     val games = gamesData?.optJSONArray("games") ?: JSONArray()
 
     MiniCard("Cloudflare WARP (туннель z2k)", { onTopicHelp("warp") }) {

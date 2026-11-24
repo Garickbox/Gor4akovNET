@@ -136,8 +136,13 @@ object MonitorScripts {
     )
 
     val CMD_WARP_STATUS = sh("""
-        winst=false; [ -x /opt/sbin/z2k-warpd ] || [ -x /opt/zapret2/z2k-warp.sh ] && winst=true
-        wrun=false; ps | grep -q '[z]2k-warpd' && wrun=true
+        winst=false
+        if [ -x /opt/sbin/z2k-warpd ] || [ -f /opt/sbin/z2k-warpd ] || [ -x /opt/zapret2/z2k-warp.sh ] || [ -f /opt/zapret2/z2k-warp.sh ]; then winst=true; fi
+        wrun=false
+        if pgrep -f z2k-warpd >/dev/null 2>&1; then wrun=true
+        elif ps w 2>/dev/null | grep -q '[z]2k-warpd'; then wrun=true
+        elif ps 2>/dev/null | grep -q '[z]2k-warpd'; then wrun=true
+        fi
         printf '{"ok":true,"installed":%s,"running":%s}\n' "§winst" "§wrun"
         """)
 
