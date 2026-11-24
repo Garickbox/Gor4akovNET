@@ -138,7 +138,7 @@ object MonitorScripts {
     val CMD_WARP_STATUS = sh("""
         winst=false; [ -x /opt/sbin/z2k-warpd ] || [ -x /opt/zapret2/z2k-warp.sh ] && winst=true
         wrun=false; ps | grep -q '[z]2k-warpd' && wrun=true
-        printf '{"ok":true,"installed":%s,"running":%s}\n' "$winst" "$wrun"
+        printf '{"ok":true,"installed":%s,"running":%s}\n' "§winst" "§wrun"
         """)
 
     val CMD_WARP_GAMES = sh(
