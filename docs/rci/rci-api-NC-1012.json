@@ -1,0 +1,181 @@
+{
+  "host": "192.168.1.1",
+  "show": {
+    "show/version": {
+      "status": 200,
+      "size": 1251,
+      "keys": [
+        "release",
+        "sandbox",
+        "title",
+        "arch",
+        "ndm"
+      ]
+    },
+    "show/interface": {
+      "status": 200,
+      "size": 27099,
+      "keys": [
+        "GigabitEthernet0",
+        "1",
+        "2",
+        "3",
+        "4"
+      ]
+    },
+    "show/interface/stat": {
+      "status": 200,
+      "size": 201,
+      "keys": [
+        "status"
+      ]
+    },
+    "show/media": {
+      "status": 200,
+      "size": 1832,
+      "keys": [
+        "FlashStorage",
+        "Media0"
+      ]
+    },
+    "show/media/Media0": {
+      "status": 200,
+      "size": 1096,
+      "keys": [
+        "bus",
+        "ejectable",
+        "removable",
+        "usb",
+        "state"
+      ]
+    },
+    "show/ip/route": {
+      "status": 200,
+      "size": 699,
+      "keys": []
+    },
+    "show/ip/dhcp": {
+      "status": 200,
+      "size": 3,
+      "keys": []
+    },
+    "show/ip/host": {
+      "status": 404
+    },
+    "show/ip/name-server": {
+      "status": 200,
+      "size": 294,
+      "keys": [
+        "server"
+      ]
+    },
+    "show/ip/arp": {
+      "status": 200,
+      "size": 903,
+      "keys": []
+    },
+    "show/ip6/route": {
+      "status": 404
+    },
+    "show/ip6/name-server": {
+      "status": 404
+    },
+    "show/system": {
+      "status": 200,
+      "size": 333,
+      "keys": [
+        "hostname",
+        "domainname",
+        "cpuload",
+        "memory",
+        "swap"
+      ]
+    },
+    "show/cpu": {
+      "status": 404
+    },
+    "show/log": {
+      "status": 404
+    },
+    "show/ndns": {
+      "status": 200,
+      "size": 276,
+      "keys": [
+        "name",
+        "booked",
+        "domain",
+        "address",
+        "address6"
+      ]
+    },
+    "show/mws": {
+      "status": 200,
+      "size": 3,
+      "keys": []
+    },
+    "show/components": {
+      "status": 200,
+      "size": 3,
+      "keys": []
+    },
+    "show/user": {
+      "status": 200,
+      "size": 131,
+      "keys": [
+        "users"
+      ]
+    },
+    "show/known/hosts": {
+      "status": 404
+    },
+    "show/associations/wifi": {
+      "status": 404
+    },
+    "show/running-config": {
+      "status": 200,
+      "size": 16358,
+      "keys": [
+        "message"
+      ]
+    },
+    "show/startup-config": {
+      "status": 404
+    },
+    "show/counters": {
+      "status": 404
+    },
+    "show/sk/cli": {
+      "status": 404
+    },
+    "show/cli": {
+      "status": 404
+    }
+  },
+  "parse": {
+    "show running-config": {
+      "status": 200,
+      "size": 17409,
+      "sample": "{\n  \"parse\": {\n    \"message\": [\n      \"! $$$ Agent: cli\",\n      \"! $$$ Last change: Tue, 24 Nov 2026 01:56:26 GMT\",\n      \"! $$$ Md5 checksum: 7e6646d1a067faca72b423279dfe5948\",\n      \"! $$$ Model: Ne"
+    },
+    "show interface": {
+      "status": 200,
+      "size": 32371,
+      "sample": "{\n  \"parse\": {\n    \"interface\": {\n      \"GigabitEthernet0\": {\n        \"id\": \"GigabitEthernet0\",\n        \"index\": 0,\n        \"interface-name\": \"GigabitEthernet0\",\n        \"type\": \"GigabitEthernet\",\n   "
+    },
+    "show media": {
+      "status": 200,
+      "size": 2224,
+      "sample": "{\n  \"parse\": {\n    \"media\": {\n      \"FlashStorage\": {\n        \"bus\": \"mtd\",\n        \"ejectable\": false,\n        \"removable\": false,\n        \"state\": \"ACTIVE\",\n        \"manufacturer\": \"Netcraze\",\n     "
+    },
+    "show version": {
+      "status": 200,
+      "size": 1360,
+      "sample": "{\n  \"parse\": {\n    \"release\": \"5.01.C.10.0-0\",\n    \"sandbox\": \"stable\",\n    \"title\": \"5.1.10\",\n    \"arch\": \"aarch64\",\n    \"ndm\": {\n      \"exact\": \"0-86e8376\",\n      \"cdate\": \"19 Nov 2026\"\n    },\n    \""
+    },
+    "show log": {
+      "status": 200,
+      "size": 1117789,
+      "sample": "{\n  \"parse\": {\n    \"log\": {\n      \"4849\": {\n        \"message\": {\n          \"level\": \"Info\",\n          \"label\": \"I\",\n          \"message\": \"(root) CMD (/opt/bin/run-parts /opt/etc/cron.1min^I)\"\n        "
+    }
+  }
+}
