@@ -14,3 +14,4 @@ dump.txt
 *.py
 
 !docs/rci/*.py
+keys/
