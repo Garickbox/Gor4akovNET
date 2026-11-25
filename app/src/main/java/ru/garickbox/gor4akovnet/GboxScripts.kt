@@ -308,6 +308,12 @@ object GboxScripts {
                     curl -fsSL --connect-timeout 8 --max-time 180 "${'$'}1" -o "${'$'}2"
                 }
 
+                if ! command -v step_check_root >/dev/null 2>&1; then
+                    echo "[FATAL] z2k-модули не загрузились: step_check_root не определён."
+                    echo "[FATAL] Проверьте ${'$'}{WORK_STAGE}/lib/install.sh"
+                    echo "PREFLIGHT_FAIL"
+                    exit 1
+                fi
                 step_check_root
                 step_install_dependencies || true
                 step_load_kernel_modules || true
