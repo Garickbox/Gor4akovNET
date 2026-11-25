@@ -676,6 +676,9 @@ EOFINI
 
     fun buildFullBackupCmd(includeUserMedia: Boolean): String = """__BACKUP__
         set +e
+        # GNU tar из Entware: busybox tar в /opt/usr/bin/tar НЕ умеет -c (создание)
+        TAR=/opt/bin/tar
+        [ -x "${'$'}TAR" ] || TAR=tar
         # /opt отсутствует (флешка отвалилась) — полный бэкап собрал бы только 4 txt по 1 КБ,
         # а UI принял бы это за валидный «полный бэкап v2». Явный fail -> на Android сработает RCI-fallback.
         if [ ! -x /opt/bin/opkg ] || [ ! -d /opt/etc ]; then
@@ -743,16 +746,33 @@ EOFINI
             done < "${'$'}MNT_LIST"
         fi
 
+        # Пишем архив на флешку (/opt), а НЕ в /tmp (tmpfs = RAM, OOM) и НЕ в SSH-стрим.
+        # После проверки целостности отдаём содержимое в stdout через cat.
+        STAGE="/opt/.gbox_backup_stage.${'$'}${'$'}.tar.gz"
+        rm -f "${'$'}STAGE"
         if [ -n "${'$'}opt_excl" ]; then
-            tar --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/z2k-rollback' --exclude='opt/tmp' --exclude='opt/var/log' --exclude='*.log' --exclude='*.swap' --exclude='swapfile' --exclude="${'$'}opt_excl" \
-                -czf - "${'$'}@" 2>/dev/null
+            ${'$'}{TAR} --exclude='opt/.gbox_backup_stage*' --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/z2k-rollback' --exclude='opt/tmp' --exclude='opt/var/log' --exclude='*.log' --exclude='*.swap' --exclude='swapfile' --exclude="${'$'}opt_excl" \
+                -czf "${'$'}STAGE" "${'$'}@"
         else
-            tar --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/z2k-rollback' --exclude='opt/tmp' --exclude='opt/var/log' --exclude='*.log' --exclude='*.swap' --exclude='swapfile' \
-                -czf - "${'$'}@" 2>/dev/null
+            ${'$'}{TAR} --exclude='opt/.gbox_backup_stage*' --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/z2k-rollback' --exclude='opt/tmp' --exclude='opt/var/log' --exclude='*.log' --exclude='*.swap' --exclude='swapfile' \
+                -czf "${'$'}STAGE" "${'$'}@"
         fi
         tar_rc=${'$'}?
         rm -rf "${'$'}TMPB"
-        exit ${'$'}tar_rc
+        if [ "${'$'}tar_rc" -ne 0 ] || [ ! -s "${'$'}STAGE" ]; then
+            rm -f "${'$'}STAGE"
+            echo "FATAL: tar не смог создать архив (rc=${'$'}tar_rc)" >&2
+            exit 1
+        fi
+        if ! ${'$'}{TAR} -tzf "${'$'}STAGE" >/dev/null 2>&1; then
+            rm -f "${'$'}STAGE"
+            echo "FATAL: архив повреждён (tar -tzf fail)" >&2
+            exit 1
+        fi
+        cat "${'$'}STAGE"
+        cat_rc=${'$'}?
+        rm -f "${'$'}STAGE"
+        exit ${'$'}cat_rc
     """.trimIndent()
 
     val FULL_BACKUP_TAR_CMD: String get() = buildFullBackupCmd(includeUserMedia = false)
