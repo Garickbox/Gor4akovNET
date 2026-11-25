@@ -372,10 +372,13 @@ fun SetupsScreen(
             }
         }
 
-        if (services?.wifiBridgeName?.isNotBlank() == true) {
+        val liveSsid = services?.wifiSsid?.trim().orEmpty()
+        val livePass = services?.wifiPass?.trim().orEmpty()
+        val showWifiCard = services?.wifiBridgeName?.isNotBlank() == true || liveSsid.isNotBlank()
+        if (showWifiCard) {
             WiFiQrCard(
-                ssid = services?.wifiSsid?.ifBlank { wifiSsid } ?: wifiSsid,
-                pass = wifiPass,
+                ssid = liveSsid.ifBlank { wifiSsid },
+                pass = livePass.ifBlank { wifiPass },
                 subnetInfo = services?.wifiSubnet?.ifBlank { "192.168.77.0/24" } ?: "192.168.77.0/24"
             )
             DonateCard(compact = true)

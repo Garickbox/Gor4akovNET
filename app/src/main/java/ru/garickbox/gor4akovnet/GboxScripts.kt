@@ -108,7 +108,12 @@ object GboxScripts {
             inw && /^!/ { if (inw && isg && ss!="") { print ss; exit } inw=0 }
             END { if (inw && isg && ss!="") print ss }
         ')
-        echo "SVC|${'$'}ent|${'$'}z2k_inst|${'$'}z2k_run|${'$'}z2k_mode|${'$'}nfq|${'$'}ipt_cnt|${'$'}agh_inst|${'$'}agh_run|${'$'}dns_ov|${'$'}warp_inst|${'$'}warp_run|${'$'}tg_run|${'$'}db_run|${'$'}pol_name|${'$'}pol_act|${'$'}br_name|${'$'}br_sub|${'$'}br_ssid|${'$'}inst_mark"
+        # ВАЖНО: в running-config пароль НЕ хранится — там base64-хеш ns3
+        # (`authentication wpa-psk ns3 <hash>`), расшифровать нельзя. Единственный
+        # источник правды для UI — /opt/etc/gor4akov-wifi.pass (chmod 600),
+        # который записывает инсталлер при создании AP. Читаем именно оттуда.
+        br_pass=${'$'}(cat /opt/etc/gor4akov-wifi.pass 2>/dev/null | head -n1 | tr -d '\r\n|')
+        echo "SVC|${'$'}ent|${'$'}z2k_inst|${'$'}z2k_run|${'$'}z2k_mode|${'$'}nfq|${'$'}ipt_cnt|${'$'}agh_inst|${'$'}agh_run|${'$'}dns_ov|${'$'}warp_inst|${'$'}warp_run|${'$'}tg_run|${'$'}db_run|${'$'}pol_name|${'$'}pol_act|${'$'}br_name|${'$'}br_sub|${'$'}br_ssid|${'$'}inst_mark|${'$'}br_pass"
     """.trimIndent()
 
     val CLIENTS_SCRIPT = """
@@ -341,6 +346,11 @@ object GboxScripts {
                 LD_LIBRARY_PATH= ndmc -c "ip policy Gor4akovNET" >/dev/null
                 LD_LIBRARY_PATH= ndmc -c "ip policy Gor4akovNET description Gor4akovNET" >/dev/null
             fi
+            # ВАЖНО: у NDMS-политики по умолчанию "no permit global ISP" — хост,
+            # которому выдали политику (ip hotspot host <MAC> policy Gor4akovNET),
+            # остался бы БЕЗ интернета. Ставим permit global ISP идемпотентно —
+            # это исправляет и старые установки, где политика создана без permit.
+            LD_LIBRARY_PATH= ndmc -c "ip policy Gor4akovNET permit global ISP" >/dev/null 2>&1 || true
 
             SUB_PREFIX="192.168.77"
             if [ "${'$'}ISO_FLAG" = "1" ]; then
@@ -376,15 +386,15 @@ object GboxScripts {
                     LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET" >/dev/null
                     LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET range ${'$'}{SUB_PREFIX}.10 ${'$'}{SUB_PREFIX}.200" >/dev/null
                     LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET bind ${'$'}BR_NAME" >/dev/null
-                    # DNS-сервер для клиентов: если AdGuard есть — Bridge2, иначе Яндекс DNS
-                    if [ "${'$'}aghFlag" = "1" ]; then
-                        LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET dns-server ${'$'}{SUB_PREFIX}.1" >/dev/null
-                    else
-                        LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET dns-server 77.88.8.8" >/dev/null
-                        LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET dns-server 77.88.8.1" >/dev/null
-                    fi
+                    # DNS-сервер для клиентов: СНАЧАЛА ставим рабочий внешний fallback (Яндекс DNS).
+                    # Переключение на 77.1 (AdGuard) делается ПОЗЖЕ в [5/6], только после
+                    # того, как AdGuard реально запустился и слушает :53. Иначе, если
+                    # AdGuard не поднялся, DHCP раздаёт 77.1 → клиент без DNS → "нет интернета".
+                    LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET dns-server 77.88.8.8" >/dev/null
+                    LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET dns-server 77.88.8.1" >/dev/null
                     LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET enable" >/dev/null
 
+                    APS_LIST=""
                     for master in WifiMaster0 WifiMaster1; do
                         if echo "${'$'}CFG" | grep -q "^interface ${'$'}{master}${'$'}"; then
                             ap="${'$'}(echo "${'$'}CFG" | awk -v m="^interface ${'$'}{master}/" '${'$'}0 ~ m{cur=${'$'}2; inb=1; g=0} inb && /description Gor4akovNET/{g=1} inb && /^!/{if(g){print cur; exit} inb=0} END{if(inb && g) print cur}')"
@@ -411,6 +421,12 @@ object GboxScripts {
                             LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap encryption enable" >/dev/null 2>&1 || true
                             LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap encryption wpa2" >/dev/null
                             LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap authentication wpa-psk ${'$'}SAFE_PASS" >/dev/null
+                            # NDMS хранит в running-config только base64-хеш ns3, а не пароль.
+                            # Сохраняем настоящий пароль в файл chmod 600 — это единственный
+                            # способ показать его пользователю после переустановки APK.
+                            printf '%s\n' "${'$'}SAFE_PASS" > /opt/etc/gor4akov-wifi.pass 2>/dev/null || true
+                            chmod 600 /opt/etc/gor4akov-wifi.pass 2>/dev/null || true
+                            APS_LIST="${'$'}{APS_LIST} ${'$'}ap"
                             # ПОРЯДОК ВАЖЕН: сначала up, потом include в Bridge. Если include сделать
                             # до up — NDMS его молча игнорирует (race), и клиенты не получают IP.
                             LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap up" >/dev/null 2>&1 || true
@@ -427,6 +443,32 @@ object GboxScripts {
                             else
                                 echo "[WARN] ${'$'}ap не поднялся за 5 сек — include пропущен"
                             fi
+                        fi
+                    done
+
+                    # ПЕРВЫЙ save: фиксируем AP в state=up ДО того, как include
+                    # пересоберёт Bridge. Без этого если пользователь ребутнёт роутер
+                    # между include и финальным save, startup останется с down.
+                    LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null 2>&1 || true
+
+                    # После include Bridge пересобирается и AP может кратковременно
+                    # уйти в state:down. save фиксирует ТЕКУЩЕЕ NVRAM — если AP в down
+                    # в этот момент, после ребута он останется down навсегда.
+                    # Дожимаем up и ждём state=up для каждого AP из APS_LIST, и только
+                    # потом save.
+                    for _ap in ${'$'}APS_LIST; do
+                        [ -n "${'$'}_ap" ] || continue
+                        _fixup_ok=0
+                        for _ftry in 1 2 3 4 5 6; do
+                            _fst=${'$'}(LD_LIBRARY_PATH= ndmc -c "show interface ${'$'}_ap" 2>/dev/null | awk '/^[ \t]*state:/{print ${'$'}2; exit}')
+                            if [ "${'$'}_fst" = "up" ]; then _fixup_ok=1; break; fi
+                            LD_LIBRARY_PATH= ndmc -c "interface ${'$'}_ap up" >/dev/null 2>&1 || true
+                            sleep 1
+                        done
+                        if [ "${'$'}_fixup_ok" = "1" ]; then
+                            echo "[OK] ${'$'}_ap state=up (готов к save)"
+                        else
+                            echo "[WARN] ${'$'}_ap не поднялся перед save — startup может зафиксировать down"
                         fi
                     done
                     LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null
@@ -552,10 +594,17 @@ EOFINI
                     { netstat -ln 2>/dev/null || ss -ln 2>/dev/null; } | grep -q ':53 ' && dns_listen=1
                     if { ps w 2>/dev/null | grep -q '[A]dGuardHome' || ps 2>/dev/null | grep -q '[A]dGuardHome'; } && [ "${'$'}dns_listen" = "1" ]; then
                         LD_LIBRARY_PATH= ndmc -c "opkg dns-override" >/dev/null
+                        # AdGuard реально слушает :53 → можно безопасно переключить клиентов
+                        # изолированной сети на 77.1 (DNS через AdGuard с фильтрацией).
+                        if [ "${'$'}ISO_FLAG" = "1" ]; then
+                            LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET dns-server ${'$'}{SUB_PREFIX}.1" >/dev/null 2>&1 || true
+                        fi
                         LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null
                         echo "[OK] AdGuard Home v1.0.0 запущен (:3000 / DNS :53), opkg dns-override включён"
+                        [ "${'$'}ISO_FLAG" = "1" ] && echo "[OK] DHCP Gor4akovNET раздаёт DNS ${'$'}{SUB_PREFIX}.1 (AdGuard)"
                     else
                         echo "[WARN] AdGuard Home не слушает :53 — dns-override НЕ включён (безопасность DNS). Проверьте Монитор → DNS."
+                        echo "[WARN] DHCP Gor4akovNET остаётся на 77.88.8.8/77.88.8.1 (рабочий fallback), чтобы клиенты не остались без DNS."
                     fi
                 else
                     echo "[WARN] Бинарник AdGuardHome не найден (нет в кэше и не скачался по opkg)."
@@ -572,8 +621,12 @@ EOFINI
             fi
 
             echo "=== [6/6] Запуск обхода и финальная проверка ==="
+            # Устаревший хук 090-gor4akov-policy.sh ставил CONNMARK-exclude 0x20000000
+            # на весь трафик, кроме 77.x, и ломал обход в Home/Guest. Если остался
+            # от прошлых установок — УДАЛЯЕМ (а не запускаем). Обход z2k работает
+            # глобально через NFQUEUE на WAN (eth3), точечно — через ip hotspot host policy.
+            rm -f /opt/etc/ndm/netfilter.d/090-gor4akov-policy.sh 2>/dev/null || true
             [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart
-            sh /opt/etc/ndm/netfilter.d/090-gor4akov-policy.sh >/dev/null 2>&1 || true
             sleep 2
             nfq_cnt=0
             if command -v pgrep >/dev/null 2>&1 && pgrep -f nfqws2 >/dev/null 2>&1; then nfq_cnt=1
@@ -902,12 +955,29 @@ EOFINI
                 echo "=== NDMS конфиг (как в бэкапе, MAC+IP) ==="
                 err_cnt=0
                 ok_cnt=0
+                # Исключения из применяемого NDMS-конфига:
+                #  - user/no user/system mode     — не блокируем себя же;
+                #  - opkg disk/no opkg disk       — привязка флешки делается отдельно по UUID;
+                #  - interface Bridge0 ip address — только MGMT LAN: иначе можно потерять
+                #                                   доступ к роутеру, если бэкап был с другим IP
+                #                                   управления;
+                #  - interface Bridge0 mac address — bridge MAC MGMT (авто).
+                #
+                # ВАЖНО: остальные Bridge (Bridge2, Bridge3 ...) и их IP ВОССТАНАВЛИВАЕМ
+                # из бэкапа — это пользовательские сети. Голый `mac address <X>` — это
+                # намеренная подмена MAC WAN, её тоже восстанавливаем.
                 tr -d '\r' < "${'$'}CFG_SRC" | awk '
+                  function skip(cmd) {
+                    if (cmd ~ /^(user|no user|system mode|opkg disk|no opkg disk) /) return 1
+                    if (cmd ~ /^interface Bridge0 ip address /) return 1
+                    if (cmd ~ /^interface Bridge0 mac address /) return 1
+                    return 0
+                  }
                   /^[[:space:]]*${'$'}/ {next}
                   /^[[:space:]]*#/ {next}
                   /^[[:space:]]*!/ {if (${'$'}0 ~ /^!${'$'}/) blk=""; next}
-                  /^[[:space:]]/ {sub(/^[[:space:]]+/,""); cmd=(blk!="" ? blk" "${'$'}0 : ${'$'}0); if (cmd !~ /^(user|no user|system mode|opkg disk|no opkg disk) /) print cmd; next}
-                  {blk=${'$'}0; if (blk !~ /^(user|no user|system mode|opkg disk|no opkg disk) /) print blk}
+                  /^[[:space:]]/ {sub(/^[[:space:]]+/,""); cmd=(blk!="" ? blk" "${'$'}0 : ${'$'}0); if (!skip(cmd)) print cmd; next}
+                  {blk=${'$'}0; if (!skip(blk)) print blk}
                 ' > "${'$'}RST/.ndms_flat.txt"
                 while IFS= read -r line; do
                     [ -n "${'$'}line" ] || continue

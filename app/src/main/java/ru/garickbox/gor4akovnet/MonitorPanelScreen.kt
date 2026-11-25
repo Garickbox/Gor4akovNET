@@ -1627,9 +1627,22 @@ private fun OverviewPage(
         if (diagOut.isNotBlank()) MonoBox(diagOut)
     }
 
-    val activeSsid = passport?.gor4akovSsid?.ifBlank { null } ?: prefs.wifiSsid.takeIf { wan?.optBoolean("policy_ok") == true }
-    if (!activeSsid.isNullOrBlank()) {
-        WiFiQrCard(ssid = activeSsid, pass = prefs.wifiPass, subnetInfo = "Gor4akovNET")
+    // Wi-Fi данные берём из overview JSON (data.wifi) — скрипт парсит их прямо из
+    // running-config роутера. Fallback: passport → prefs из Android. Так SSID
+    // и пароль видны даже после переустановки APK, когда prefs.wifiPass пуст.
+    val wifiJson = data?.optJSONObject("wifi")
+    val liveWifiSsid = wifiJson?.optString("ssid")?.trim().orEmpty()
+    val liveWifiPass = wifiJson?.optString("pass")?.trim().orEmpty()
+    val liveWifiSubnet = wifiJson?.optString("subnet")?.trim().orEmpty()
+    val activeSsid = liveWifiSsid.ifBlank {
+        passport?.gor4akovSsid?.trim().orEmpty()
+    }.ifBlank {
+        prefs.wifiSsid.trim().takeIf { wan?.optBoolean("policy_ok") == true }.orEmpty()
+    }
+    if (activeSsid.isNotBlank()) {
+        val activePass = liveWifiPass.ifBlank { prefs.wifiPass.trim() }
+        val activeSubnet = liveWifiSubnet.ifBlank { "Gor4akovNET" }
+        WiFiQrCard(ssid = activeSsid, pass = activePass, subnetInfo = activeSubnet)
     }
 
     DonateCard(compact = true)
@@ -2053,13 +2066,27 @@ private fun BypassModesPage(
         if (probeOut.isNotBlank()) MonoBox(probeOut)
     }
 
-    var polName by remember(pol) { mutableStateOf(pol.optString("name", "Gor4akovNET")) }
-    var polEx by remember(pol) { mutableStateOf(pol.optInt("exclude", 0) == 1) }
-    MiniCard("Политика маршрутизации NDMS") {
-        OutlinedTextField(value = polName, onValueChange = { polName = it }, label = { Text("Имя политики (напр. Gor4akovNET)", fontSize = 10.sp) }, singleLine = true, textStyle = LocalTextStyle.current.copy(fontSize = 11.sp), modifier = Modifier.fillMaxWidth())
-        MiniSwitch("Инвертировать (exclude)", "Если выкл — обход работает только внутри указанной политики", polEx, { onToggleHelp("pol_ex") }) { v -> polEx = v == 1 }
-        Button(onClick = { if (polName.isNotBlank()) onAction("Сохранить политику", MonitorScripts.setPolicyCmd(polName, if (polEx) 1 else 0)) }, modifier = Modifier.fillMaxWidth().height(32.dp)) {
-            Text("Применить политику и перезапустить z2k", fontSize = 11.sp)
+    val polNameJson = pol.optString("name", "").trim()
+    val polExJson = pol.optInt("exclude", 0) == 1
+    MiniCard("Политика маршрутизации") {
+        Text(
+            "Обход работает ГЛОБАЛЬНО через NFQUEUE на WAN — для всех сетей (Home, Guest, Gor4akovNET) сразу. " +
+                "POLICY_NAME в конфиге zapret2 не используется: он включает CONNMARK-exclude и глушит обход вне указанной политики.",
+            color = DeckColors.Muted,
+            fontSize = 11.sp
+        )
+        if (polNameJson.isNotBlank()) {
+            MiniRow("POLICY_NAME в config", polNameJson, Color(0xFFFBBF24))
+            MiniRow("EXCLUDE", if (polExJson) "1" else "0", Color(0xFFFBBF24))
+            Button(
+                onClick = { onAction("Сбросить POLICY_NAME", MonitorScripts.setPolicyCmd("", 0)) },
+                modifier = Modifier.fillMaxWidth().height(32.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706))
+            ) {
+                Text("Сбросить POLICY_NAME (обход во всех сетях)", fontSize = 11.sp)
+            }
+        } else {
+            MiniRow("POLICY_NAME", "не задан — обход во всех сетях", Color(0xFF4ADE80))
         }
     }
 

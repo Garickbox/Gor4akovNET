@@ -100,13 +100,35 @@ object MonitorScripts {
         dns_ov=false; printf '%s\n' "§rc" | grep -q "^opkg dns-override" && dns_ov=true
         zram_on=false; printf '%s\n' "§rc" | grep -q "^[[:space:]]*zram" && zram_on=true
         ent_ok=false; [ -x /opt/bin/opkg ] && ent_ok=true
-        printf '{"sys":{"model":"%s","ndms":"%s","up_sec":%s,"load":"%s","cpus":%s,"ct":%s,"ct_max":%s,"mem":%s,"disk":%s,"temp24":"%s","temp5":"%s","zram":%s},"wan":{"dev":"%s","ip":"%s","spd":"%s","gw":"%s","policy_ok":%s,"policy_name":"%s","policy_mode":"%s","nfq_rules":%s,"ent_ok":%s,"agh_inst":%s,"dns_ov":%s},"svc":{"nfqws2":%s,"gvsub":%s,"adguard":%s,"tg_tunnel":%s,"http_tunnel":%s,"warp":%s,"z2k_panel":%s,"scheduler":%s},"ver":{"z2k_local":"%s","agh":"%s","z2u":%s},"z2k":%s}\n' \
+        wifi_ssid=§(printf '%s\n' "§rc" | awk '
+            /^interface WifiMaster/ { inw=1; isg=0; ss="" }
+            inw && /^[ \t]+description Gor4akovNET/ { isg=1 }
+            inw && /^[ \t]+ssid / { sub(/^[ \t]+ssid /,""); ss=§0 }
+            inw && /^!/ { if (inw && isg && ss!="") { print ss; exit } inw=0 }
+            END { if (inw && isg && ss!="") print ss }
+        ' | tr -d '\r\n"\\')
+        # Пароль НЕ парсим из running-config: там base64-хеш ns3, не пароль.
+        # Единственный источник правды — файл /opt/etc/gor4akov-wifi.pass (chmod 600),
+        # который пишет инсталлер при создании AP.
+        wifi_pass=§(cat /opt/etc/gor4akov-wifi.pass 2>/dev/null | head -n1 | tr -d '\r\n"\\')
+        wifi_bridge=""; wifi_subnet=""
+        eval_br=§(printf '%s\n' "§rc" | awk '
+            /^interface Bridge[0-9]+/ { cur=§2; inb=1; isg=0; ip="" }
+            inb && /^[ \t]+description Gor4akovNET/ { isg=1 }
+            inb && /^[ \t]+ip address / { ip=§3 }
+            inb && /^!/ { if (isg && cur!="") { print cur"|"ip; exit } inb=0 }
+            END { if (inb && isg && cur!="") print cur"|"ip }
+        ')
+        wifi_bridge=§(printf '%s' "§eval_br" | cut -d'|' -f1 | tr -d '\r\n"\\')
+        wifi_subnet=§(printf '%s' "§eval_br" | cut -d'|' -f2 | tr -d '\r\n"\\')
+        printf '{"sys":{"model":"%s","ndms":"%s","up_sec":%s,"load":"%s","cpus":%s,"ct":%s,"ct_max":%s,"mem":%s,"disk":%s,"temp24":"%s","temp5":"%s","zram":%s},"wan":{"dev":"%s","ip":"%s","spd":"%s","gw":"%s","policy_ok":%s,"policy_name":"%s","policy_mode":"%s","nfq_rules":%s,"ent_ok":%s,"agh_inst":%s,"dns_ov":%s},"svc":{"nfqws2":%s,"gvsub":%s,"adguard":%s,"tg_tunnel":%s,"http_tunnel":%s,"warp":%s,"z2k_panel":%s,"scheduler":%s},"ver":{"z2k_local":"%s","agh":"%s","z2u":%s},"z2k":%s,"wifi":{"ssid":"%s","pass":"%s","bridge":"%s","subnet":"%s"}}\n' \
           "§model" "§ndms" "§up_sec" "§load" "§cpu_cnt" "§ct_cnt" "§ct_max" "§mem_json" "§disk_json" "§t24" "§t5" "§zram_on" \
           "§wan_dev" "§wan" "§wan_spd" "§wan_gw" "§pol_ok" "§pol_name" "§pol_mode" "§nfq_rules" "§ent_ok" "§agh_inst" "§dns_ov" \
           "§(has_ps '/nfqws2')" "§(has_ps 'z2k-detect')" "§agh_up" \
           "§(has_pt 1443)" "§(has_pt 1444)" "§(has_ps 'z2k-warpd')" "§(has_pt 8088)" \
           "§(has_ps 'z2k-scheduler')" \
-          "§z2k_loc" "§agh_loc" "§z2u" "§zst"
+          "§z2k_loc" "§agh_loc" "§z2u" "§zst" \
+          "§wifi_ssid" "§wifi_pass" "§wifi_bridge" "§wifi_subnet"
         """
     )
 
@@ -957,15 +979,16 @@ object MonitorScripts {
 
     fun setPolicyCmd(name: String, exclude: Int): String = sh(
         """
+        # АРХИТЕКТУРА: POLICY_NAME в zapret2/config включает CONNMARK-exclude в S99zapret2
+        # и глушит обход вне указанной политики. Мы его НЕ пишем. Эта команда —
+        # очистка остатков от старых установок, а не «применить политику».
         CFG="/opt/zapret2/config"
-        [ -f "§CFG" ] && {
+        if [ -f "§CFG" ]; then
           cp -f "§CFG" "§CFG.bak"
           sed -i '/^POLICY_NAME=/d;/^POLICY_EXCLUDE=/d' "§CFG"
-          printf 'POLICY_NAME="%s"\nPOLICY_EXCLUDE=%d\n' '${sq(name.trim())}' '$exclude' >> "§CFG"
-        }
-        curl -sS -m 6 -X POST -H 'Referer: http://127.0.0.1:8088/' -d 'name=${ue(name.trim())}&exclude=$exclude' 'http://127.0.0.1:8088/cgi-bin/api/policy/save' >/dev/null 2>&1 || true
-        [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart 2>&1 || true
-        echo "OK: Политика=${sq(name.trim())}, exclude=$exclude"
+        fi
+        [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true
+        echo "OK: POLICY_NAME/EXCLUDE удалены — обход работает глобально через NFQUEUE на WAN"
         """
     )
 

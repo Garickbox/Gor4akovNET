@@ -96,7 +96,8 @@ fun Gor4akovRootApp(prefs: Prefs) {
                                     wifiBridgeName = p[16],
                                     wifiSubnet = p[17],
                                     wifiSsid = p[18],
-                                    installMarker = p.getOrNull(19) == "1"
+                                    installMarker = p.getOrNull(19) == "1",
+                                    wifiPass = p.getOrNull(20)?.trim().orEmpty()
                                 )
                             }
                         }

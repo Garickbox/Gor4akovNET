@@ -92,6 +92,7 @@ data class ServiceStatus(
     val wifiBridgeName: String = "",
     val wifiSubnet: String = "",
     val wifiSsid: String = "",
+    val wifiPass: String = "",
     val installMarker: Boolean = false
 )
 
