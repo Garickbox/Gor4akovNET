@@ -57,7 +57,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfigs.findByName("gbox")?.let { signingConfig = it }
+            signingConfig = signingConfigs.findByName("gbox") ?: signingConfigs.getByName("debug")
         }
     }
 
@@ -71,7 +71,7 @@ android {
         buildConfig = true
     }
     androidResources {
-        noCompress += listOf("gz", "tar", "ipk")
+        noCompress += listOf("gz", "tar", "ipk", "xz", "bin")
     }
 }
 

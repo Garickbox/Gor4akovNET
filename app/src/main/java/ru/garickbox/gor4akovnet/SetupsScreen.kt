@@ -62,6 +62,18 @@ fun SetupsScreen(
 
     fun runOneClickInstall() {
         if (prefs.networkInstallLocked && !prefs.privilegedMode) return
+        if (isolatedMode) {
+            val cleanSsid = wifiSsid.trim()
+            val cleanPass = wifiPass.trim()
+            if (cleanSsid.isBlank() || cleanSsid.length > 32) {
+                installLog = "[ERR] Имя Wi-Fi сети должно быть от 1 до 32 символов."
+                return
+            }
+            if (cleanPass.length !in 8..63) {
+                installLog = "[ERR] Пароль Wi-Fi (WPA2) должен содержать от 8 до 63 символов."
+                return
+            }
+        }
         scope.launch {
             installing = true
             verifyOut = ""
@@ -75,29 +87,30 @@ fun SetupsScreen(
             val routerModel = passport?.model ?: "Keenetic / Netcraze"
             val ndmsVer = passport?.ndmsTitle ?: "-"
 
-            // 1. Pre-install full backup (.tar.gz or startup-config fallback)
-            val tarBytes = withContext(Dispatchers.IO) {
+            // 1. Pre-install streaming full backup v2 (.tar.gz -> disk, fallback startup-config)
+            val tmpFile = prefs.allocateStreamBackupTempFile("Полный_до_Gor4akovNET", "tar.gz")
+            val streamedSize = withContext(Dispatchers.IO) {
                 runCatching {
-                    Gboxcore.pullBytesSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, GboxScripts.FULL_BACKUP_TAR_CMD)
-                }.getOrNull()
+                    Gboxcore.pullFileSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, GboxScripts.FULL_BACKUP_TAR_CMD, tmpFile.absolutePath)
+                }.getOrDefault(0L)
             }
             var backupOk = false
-            if (tarBytes != null && tarBytes.size > 64) {
-                val b = prefs.saveBinaryBackup("Полный перед установкой", routerModel, tarBytes, "tar.gz")
+            if (streamedSize > 128L) {
+                val b = prefs.commitStreamedBackupFile(tmpFile, "Полный перед установкой", routerModel, format = "tar_v2", isProtected = true)
                 onBackupSaved(b)
-                appendLog("[OK] Полный бэкап (.tar.gz) сохранён (${b.sizeBytes / 1024} КБ)")
+                appendLog("[OK] Защищённый полный бэкап v2 (.tar.gz) сохранён (${b.sizeBytes / 1024} КБ)")
                 backupOk = true
             } else {
+                tmpFile.delete()
                 RciClient.fetchRunningConfig(host, prefs.rciUser, prefs.rciPass).onSuccess { cfg ->
                     if (cfg.isNotBlank()) {
-                        val b = prefs.saveBackup("Перед Gor4akovNET", routerModel, cfg)
+                        val b = prefs.saveBackup("Перед Gor4akovNET", routerModel, cfg, isProtected = true)
                         onBackupSaved(b)
                         appendLog("[OK] Бэкап конфигурации сохранён (${b.sizeBytes / 1024} КБ)")
                         backupOk = true
                     }
                 }
             }
-            // I-1: без бэкапа установку не начинаем — иначе откатить нечего
             if (!backupOk) {
                 val em = "Не удалось создать резервную копию (ни .tar.gz по SSH, ни конфиг по RCI). Установка отменена — без бэкапа откат невозможен."
                 appendLog("[ERR] $em")
@@ -106,7 +119,7 @@ fun SetupsScreen(
                 return@launch
             }
 
-            // 2. Push offline payloads from APK -> /opt/gor4akov-offline/
+            // 2. Push offline payloads (+ AdGuard Home v1.0.0 if selected) -> /opt/gor4akov-offline/
             val arch = passport?.entwareArch ?: "aarch64-k3.10"
             val pushRes = OfflineAssets.pushOfflineBypassBundleOverSSH(
                 context = context,
@@ -114,7 +127,8 @@ fun SetupsScreen(
                 sshPort = prefs.sshPort,
                 sshUser = prefs.sshUser,
                 sshPass = prefs.sshPass,
-                entwareArch = arch
+                entwareArch = arch,
+                includeAdguard = optAdguard
             ) { msg -> appendLog(msg) }
 
             if (pushRes.isFailure) {
@@ -427,7 +441,12 @@ fun SetupsScreen(
                                     )
                                 }
                             }
-                            appendLog(out.getOrElse { "Ошибка отката: ${it.message}" })
+                            val outText = out.getOrElse { "Ошибка отката: ${it.message}" }
+                            appendLog(outText)
+                            if (outText.contains("ROLLBACK_OK")) {
+                                prefs.networkInstallLocked = false
+                                installLocked = false
+                            }
                             onServicesRefresh()
                             installing = false
                         }

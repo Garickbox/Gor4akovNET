@@ -7,6 +7,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.CloudUpload
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.*
@@ -57,6 +58,22 @@ fun StatsScreen(prefs: Prefs) {
                 Text("Статистика и диагностика", color = DeckColors.Text, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                 Text(r?.remoteNote ?: "Загрузка отчёта...", color = DeckColors.Muted, fontSize = 11.5.sp)
             }
+            if (Telemetry.isRemoteConfigured) {
+                IconButton(
+                    onClick = {
+                        scope.launch {
+                            loading = true
+                            val res = Telemetry.forceSyncNow(prefs)
+                            copiedMsg = res.getOrElse { "Ошибка отправки: ${it.message}" }
+                            report = Telemetry.fetchReport(prefs)
+                            loading = false
+                        }
+                    },
+                    enabled = !loading
+                ) {
+                    Icon(Icons.Outlined.CloudUpload, contentDescription = "Отправить телеметрию", tint = DeckColors.Sky)
+                }
+            }
             IconButton(onClick = { refresh() }, enabled = !loading) {
                 Icon(Icons.Outlined.Refresh, contentDescription = "Обновить", tint = DeckColors.Emerald)
             }
@@ -64,6 +81,9 @@ fun StatsScreen(prefs: Prefs) {
 
         if (loading) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = DeckColors.Emerald)
+        }
+        if (copiedMsg.isNotBlank()) {
+            Text(copiedMsg, color = DeckColors.Emerald, fontSize = 11.5.sp)
         }
 
         if (r != null) {
@@ -79,14 +99,19 @@ fun StatsScreen(prefs: Prefs) {
 
             if (!Telemetry.isRemoteConfigured) {
                 DeckCard(borderColor = DeckColors.Sky.copy(0.45f)) {
-                    Text("Подключение общей статистики на GitHub", color = DeckColors.Sky, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text("Автонастройка GitHub-статистики", color = DeckColors.Sky, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                        IconButton(onClick = {
+                            clipboard.setText(AnnotatedString("./scripts/setup_github_stats.sh"))
+                            copiedMsg = "Команда ./scripts/setup_github_stats.sh скопирована"
+                        }) {
+                            Icon(Icons.Outlined.ContentCopy, contentDescription = "Копировать команду", tint = DeckColors.Sky)
+                        }
+                    }
                     Text(
-                        "1. Создай на gist.github.com один секретный Gist (с любым файлом init.json).\n" +
-                            "2. Создай в GitHub Settings -> Developer settings -> Fine-grained / Classic token права только на Gist.\n" +
-                            "3. В репозитории Gor4akovNET -> Settings -> Secrets -> Actions добавь:\n" +
-                            "   • GBOX_STATS_GIST_ID (ID Gist из URL)\n" +
-                            "   • GBOX_STATS_TOKEN (токен с правом gist)\n" +
-                            "4. Пересобери APK — каждое устройство само запишет файл dev_<id>.json без конфликтов.",
+                        "В репозитории есть скрипт автонастройки, который сам создаст секретный Gist (или подключит Cloudflare Worker) и пропишет Secrets в GitHub Actions:\n\n" +
+                            "bash scripts/setup_github_stats.sh\n\n" +
+                            "После запуска и пересборки APK на GitHub вкладка начнёт собирать статистику и ошибки со всех устройств.",
                         color = DeckColors.Muted,
                         fontSize = 11.5.sp
                     )
@@ -133,7 +158,6 @@ fun StatsScreen(prefs: Prefs) {
                         }
                     }
                 }
-                if (copiedMsg.isNotBlank()) Text(copiedMsg, color = DeckColors.Emerald, fontSize = 11.sp)
                 OutlinedTextField(
                     value = errFilter,
                     onValueChange = { errFilter = it },

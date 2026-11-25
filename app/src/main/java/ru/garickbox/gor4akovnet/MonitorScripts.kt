@@ -1,5 +1,7 @@
 package ru.garickbox.gor4akovnet
 
+import java.net.URLEncoder
+
 object MonitorScripts {
     private const val PATH_HDR = "export PATH=/opt/sbin:/opt/bin:/sbin:/usr/sbin:/bin:/usr/bin"
     private const val AWK_ESC =
@@ -7,12 +9,13 @@ object MonitorScripts {
 
     private fun sh(body: String): String = "$PATH_HDR\n" + body.trimIndent().replace('§', '$')
     private fun sq(s: String): String = s.replace("'", "'\"'\"'")
+    private fun ue(s: String): String = URLEncoder.encode(s, "UTF-8")
 
     private const val AGH_INIT_DETECT =
         "AGH_INI=\"\"; for f in /opt/etc/init.d/S99AdGuardHome /opt/etc/init.d/S99adguardhome; do [ -x \"§f\" ] && { AGH_INI=\"§f\"; break; }; done"
 
     val Z2K_UPDATE_CMD = sh(
-        """
+        """__LONG__
         if curl -fsS -m 15 -X POST -H 'Referer: http://127.0.0.1:8088/' 'http://127.0.0.1:8088/cgi-bin/api/update/apply' 2>/dev/null | grep -q '"ok":true'; then
           echo "OK: Обновление z2k запущено через панель :8088"
         else
@@ -63,11 +66,14 @@ object MonitorScripts {
         ns_l=§(netstat -lnt 2>/dev/null)
         has_ps() { printf '%s\n' "§ps_w" | grep -q "§1" && echo true || echo false; }
         has_pt() { printf '%s\n' "§ns_l" | grep -q ":§1 " && echo true || echo false; }
-        agh_up=false; ps | grep -q '[A]dGuardHome' && agh_up=true
+        agh_up=false; printf '%s\n' "§ps_w" | grep -q '[A]dGuardHome' && agh_up=true
+        agh_inst=false; { [ -x /opt/sbin/AdGuardHome ] || [ -x /opt/bin/AdGuardHome ]; } && agh_inst=true
         z2k_loc=§(tr -d '\r\n"\\' < /opt/zapret2/.z2k-installed-tag 2>/dev/null || echo "-")
         [ -n "§z2k_loc" ] || z2k_loc="-"
         agh_loc=§(opkg list-installed adguardhome-go 2>/dev/null | awk '{print §3; exit}' | tr -d '\r\n"\\')
         [ -n "§agh_loc" ] || agh_loc=§(/opt/sbin/AdGuardHome --version 2>/dev/null | awk '{for(i=1;i<=NF;i++)if(§i~/^v?[0-9]+\./){print §i;exit}}' | tr -d '\r\n"\\')
+        nfq_rules=§(iptables -t mangle -S 2>/dev/null | grep -c NFQUEUE | head -n1 | tr -dc '0-9')
+        [ -n "§nfq_rules" ] || nfq_rules=0
         zst=§(curl -fsS -m 3 http://127.0.0.1:8088/cgi-bin/api/status 2>/dev/null || echo '')
         case "§zst" in '{'*) ;; *)
           nfq_c=§(printf '%s\n' "§ps_w" | grep -c '[n]fqws2' | head -n1 | tr -dc '0-9')
@@ -81,10 +87,14 @@ object MonitorScripts {
           z2u=§(curl -fsS -m 3 'http://127.0.0.1:8088/cgi-bin/api/update/status' 2>/dev/null || echo '{"ok":false}')
         fi
         case "§z2u" in '{'*) ;; *) z2u='{"ok":false}' ;; esac
-        pol_ok=false; LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" 2>/dev/null | grep -q "^ip policy Gor4akovNET" && pol_ok=true
-        printf '{"sys":{"model":"%s","ndms":"%s","up_sec":%s,"load":"%s","cpus":%s,"ct":%s,"ct_max":%s,"mem":%s,"disk":%s,"temp24":"%s","temp5":"%s"},"wan":{"dev":"%s","ip":"%s","spd":"%s","gw":"%s","policy_ok":%s},"svc":{"nfqws2":%s,"gvsub":%s,"adguard":%s,"tg_tunnel":%s,"http_tunnel":%s,"warp":%s,"z2k_panel":%s,"scheduler":%s},"ver":{"z2k_local":"%s","agh":"%s","z2u":%s},"z2k":%s}\n' \
-          "§model" "§ndms" "§up_sec" "§load" "§cpu_cnt" "§ct_cnt" "§ct_max" "§mem_json" "§disk_json" "§t24" "§t5" \
-          "§wan_dev" "§wan" "§wan_spd" "§wan_gw" "§pol_ok" \
+        rc=§(LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" 2>/dev/null)
+        pol_ok=false; printf '%s\n' "§rc" | grep -q "^ip policy Gor4akovNET" && pol_ok=true
+        dns_ov=false; printf '%s\n' "§rc" | grep -q "^opkg dns-override" && dns_ov=true
+        zram_on=false; printf '%s\n' "§rc" | grep -q "^[[:space:]]*zram" && zram_on=true
+        ent_ok=false; [ -x /opt/bin/opkg ] && ent_ok=true
+        printf '{"sys":{"model":"%s","ndms":"%s","up_sec":%s,"load":"%s","cpus":%s,"ct":%s,"ct_max":%s,"mem":%s,"disk":%s,"temp24":"%s","temp5":"%s","zram":%s},"wan":{"dev":"%s","ip":"%s","spd":"%s","gw":"%s","policy_ok":%s,"nfq_rules":%s,"ent_ok":%s,"agh_inst":%s,"dns_ov":%s},"svc":{"nfqws2":%s,"gvsub":%s,"adguard":%s,"tg_tunnel":%s,"http_tunnel":%s,"warp":%s,"z2k_panel":%s,"scheduler":%s},"ver":{"z2k_local":"%s","agh":"%s","z2u":%s},"z2k":%s}\n' \
+          "§model" "§ndms" "§up_sec" "§load" "§cpu_cnt" "§ct_cnt" "§ct_max" "§mem_json" "§disk_json" "§t24" "§t5" "§zram_on" \
+          "§wan_dev" "§wan" "§wan_spd" "§wan_gw" "§pol_ok" "§nfq_rules" "§ent_ok" "§agh_inst" "§dns_ov" \
           "§(has_ps '/nfqws2')" "§(has_ps 'z2k-detect')" "§agh_up" \
           "§(has_pt 1443)" "§(has_pt 1444)" "§(has_ps 'z2k-warpd')" "§(has_pt 8088)" \
           "§(has_ps 'z2k-scheduler')" \
@@ -144,31 +154,131 @@ object MonitorScripts {
         wl_arr=§(list_to_json "§wl_file")
         raw_cfg=§(head -n 200 /opt/zapret2/config 2>/dev/null | awk '$AWK_ESC BEGIN{printf "["} /^[A-Z0-9_]+=/{printf "%s\"%s\"", (n++?",":""), esc(§0)} END{printf "]"}')
         [ -n "§raw_cfg" ] || raw_cfg='[]'
-        printf '{"z2k":%s,"warp":%s,"policy":%s,"autohost":%s,"extra":%s,"whitelist":%s,"wl_file":"%s","cfg_lines":%s}\n' \
-          "§zst" "§wst" "§pst" "§ahl" "§ex_arr" "§wl_arr" "§wl_file" "§raw_cfg"
+        nfq_pkts=§(iptables -t mangle -L -v -n 2>/dev/null | awk '$AWK_ESC /NFQUEUE/{a[++n]=sprintf("%s pkts | %s B | %s", §1, §2, esc(§0))} END{printf "["; for(i=1;i<=n;i++)printf "%s\"%s\"", (i>1?",":""), a[i]; printf "]"}')
+        [ -n "§nfq_pkts" ] || nfq_pkts='[]'
+        pools=§(awk '$AWK_ESC /^[A-Z0-9_]*STRAT|AUTOCIRCULAR|CUSTOM_LIST/{printf "%s\"%s\"", (n++?",":""), esc(§0)}' /opt/zapret2/config 2>/dev/null | awk 'BEGIN{printf "["}{print}END{printf "]"}')
+        [ -n "§pools" ] || pools='[]'
+        # Извлечь реальные пулы из config или extra_strats
+        pool_info=§(grep -hE '^(RKN_TCP|YT_TCP|GV_TCP|YT_QUIC|DISCORD_UDP|AUTOCIRCULAR)=' /opt/zapret2/config /opt/zapret2/extra_strats/pool*.conf 2>/dev/null | head -n 20 | awk '$AWK_ESC BEGIN{printf "["} {printf "%s\"%s\"", (n++?",":""), esc(§0)} END{printf "]"}')
+        [ -n "§pool_info" ] || pool_info='[]'
+        printf '{"z2k":%s,"warp":%s,"policy":%s,"autohost":%s,"extra":%s,"whitelist":%s,"wl_file":"%s","cfg_lines":%s,"nfq_pkts":%s,"pool_info":%s}\n' \
+          "§zst" "§wst" "§pst" "§ahl" "§ex_arr" "§wl_arr" "§wl_file" "§raw_cfg" "§nfq_pkts" "§pool_info"
         """
     )
 
-    val CMD_WARP_STATUS = sh("""
-        winst=false
-        if [ -x /opt/sbin/z2k-warpd ] || [ -f /opt/sbin/z2k-warpd ] || [ -x /opt/zapret2/z2k-warp.sh ] || [ -f /opt/zapret2/z2k-warp.sh ]; then winst=true; fi
-        wrun=false
-        if pgrep -f z2k-warpd >/dev/null 2>&1; then wrun=true
-        elif ps w 2>/dev/null | grep -q '[z]2k-warpd'; then wrun=true
-        elif ps 2>/dev/null | grep -q '[z]2k-warpd'; then wrun=true
-        fi
-        printf '{"ok":true,"installed":%s,"running":%s}\n' "§winst" "§wrun"
-        """)
-
-    val CMD_WARP_GAMES = sh(
+    val CMD_WARP_FULL = sh(
         """
         panel_up=true
         if command -v nc >/dev/null 2>&1; then nc -z -w 1 127.0.0.1 8088 2>/dev/null || panel_up=false; fi
-        g=''
-        if [ "§panel_up" = true ]; then g=§(curl -fsS -m 5 http://127.0.0.1:8088/cgi-bin/api/warp/games 2>/dev/null || echo ''); fi
-        case "§g" in '{'*) printf '%s\n' "§g" ;; *) echo '{"ok":false,"games":[]}' ;; esac
+        cp_get() { if [ "§panel_up" = true ]; then curl -fsS "§@" 2>/dev/null || echo ''; else echo ''; fi; }
+
+        wst=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/warp/status)
+        case "§wst" in '{'*) ;; *)
+          if [ -x /opt/zapret2/z2k-warp.sh ]; then
+            wst=§(sh /opt/zapret2/z2k-warp.sh status --json 2>/dev/null || sh /opt/zapret2/z2k-warp.sh status 2>/dev/null || echo '')
+          fi
+          case "§wst" in '{'*) ;; *)
+            winst=false; [ -x /opt/sbin/z2k-warpd ] || [ -f /opt/sbin/z2k-warpd ] || [ -f /opt/zapret2/z2k-warp.sh ] && winst=true
+            wrun=false; ps w 2>/dev/null | grep -q '[z]2k-warpd' && wrun=true
+            tr=§(awk -F= '/^Z2K_WARP_TRANSPORT=/{gsub(/["'"'"']/,"",§2); print §2; exit}' /opt/zapret2/config 2>/dev/null)
+            wst="{\"ok\":true,\"installed\":§winst,\"running\":§wrun,\"ready\":§wrun,\"transport\":\"§{tr:-auto}\"}"
+            ;;
+          esac
+          ;;
+        esac
+
+        wgames=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/warp/games)
+        case "§wgames" in '{'*) ;; *) wgames='{"ok":false,"games":[]}' ;; esac
+
+        wlists=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/warp/lists)
+        case "§wlists" in '{'*) ;; *)
+          wlists=§(awk '$AWK_ESC BEGIN{printf "{\"ok\":true,\"domains\":["} {gsub(/\r/,"");sub(/#.*/,"");gsub(/^[[:space:]]+|[[:space:]]+§/,""); if(§0!="") printf "%s\"%s\"", (n++?",":""), esc(§0)} END{printf "]}"}' /opt/zapret2/lists/warp-domains.txt 2>/dev/null || echo '{"ok":true,"domains":[]}')
+          ;;
+        esac
+
+        wexcl=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/warp/exclude)
+        case "§wexcl" in '{'*) ;; *)
+          wexcl=§(awk '$AWK_ESC BEGIN{printf "{\"ok\":true,\"domains\":["} {gsub(/\r/,"");sub(/#.*/,"");gsub(/^[[:space:]]+|[[:space:]]+§/,""); if(§0!="") printf "%s\"%s\"", (n++?",":""), esc(§0)} END{printf "]}"}' /opt/zapret2/lists/warp-exclude.txt 2>/dev/null || echo '{"ok":true,"domains":[]}')
+          ;;
+        esac
+
+        wdevs=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/warp/devices)
+        case "§wdevs" in '{'*) ;; *) wdevs='{"ok":false,"devices":[]}' ;; esac
+
+        tun_ip=§(ip -4 addr show z2ktun0 2>/dev/null | awk '/inet /{print §2; exit}' | tr -d '\r\n"\\')
+        tun_mtu=§(cat /sys/class/net/z2ktun0/mtu 2>/dev/null | tr -dc '0-9')
+        w_ram=§(ps w 2>/dev/null | awk '/[z]2k-warpd/{pid=§1; exit} END{if(pid!=""){while((getline l < ("/proc/"pid"/status"))>0){if(l~/^VmRSS:/){split(l,p," "); printf "%.1f", p[2]/1024; exit}}}}')
+        printf '{"status":%s,"games":%s,"lists":%s,"exclude":%s,"devices":%s,"tun_ip":"%s","tun_mtu":"%s","ram_mb":"%s"}\n' \
+          "§wst" "§wgames" "§wlists" "§wexcl" "§wdevs" "§tun_ip" "§tun_mtu" "§w_ram"
         """
     )
+
+    val CMD_WARP_TRACE = sh(
+        """
+        echo "=== Проверка канала через Cloudflare WARP ==="
+        if ip link show z2ktun0 >/dev/null 2>&1; then
+          curl -fsSL --interface z2ktun0 --connect-timeout 5 --max-time 8 https://cloudflare.com/cdn-cgi/trace 2>&1 || echo "Не удалось связаться через z2ktun0"
+        else
+          echo "Интерфейс z2ktun0 не поднят — включите WARP."
+        fi
+        """
+    )
+
+    fun warpTransportCmd(mode: String): String = sh(
+        """
+        m='${sq(mode)}'
+        resp=§(curl -sS -m 10 -X POST -H 'Referer: http://127.0.0.1:8088/' -d "transport=${ue(mode)}" 'http://127.0.0.1:8088/cgi-bin/api/warp/transport' 2>/dev/null || true)
+        if printf '%s' "§resp" | grep -q '"ok":true'; then
+          echo "§resp"
+        else
+          CFG="/opt/zapret2/config"
+          [ -f "§CFG" ] && sed -i '/^Z2K_WARP_TRANSPORT=/d' "§CFG" && printf 'Z2K_WARP_TRANSPORT="%s"\n' "§m" >> "§CFG"
+          [ -x /opt/zapret2/z2k-warp.sh ] && sh /opt/zapret2/z2k-warp.sh restart 2>&1 || true
+          echo "OK: Транспорт WARP -> §m"
+        fi
+        """
+    )
+
+    fun warpReregisterCmd(): String = sh(
+        """__LONG__
+        resp=§(curl -sS -m 20 -X POST -H 'Referer: http://127.0.0.1:8088/' 'http://127.0.0.1:8088/cgi-bin/api/warp/reregister' 2>/dev/null || true)
+        if printf '%s' "§resp" | grep -q '"ok":true'; then
+          echo "§resp"
+        elif [ -x /opt/zapret2/z2k-warp.sh ]; then
+          sh /opt/zapret2/z2k-warp.sh reregister 2>&1 || { rm -f /opt/zapret2/warp*.conf /opt/etc/z2k-warp* 2>/dev/null; sh /opt/zapret2/z2k-warp.sh enable 2>&1; }
+        else
+          echo "ERR: z2k-warp.sh не найден"
+        fi
+        """
+    )
+
+    fun warpDomainRuleCmd(kind: String, domain: String, add: Boolean): String {
+        val clean = domain.trim().lowercase()
+        val ep = when {
+            kind == "exclude" && add -> "warp/exclude/add"
+            kind == "exclude" && !add -> "warp/exclude/delete"
+            add -> "warp/lists/add"
+            else -> "warp/lists/delete"
+        }
+        val file = if (kind == "exclude") "/opt/zapret2/lists/warp-exclude.txt" else "/opt/zapret2/lists/warp-domains.txt"
+        return sh(
+            """
+            d='${sq(clean)}'; f='${sq(file)}'
+            resp=§(curl -sS -m 8 -X POST -H 'Referer: http://127.0.0.1:8088/' -d "domain=${ue(clean)}" "http://127.0.0.1:8088/cgi-bin/api/$ep" 2>/dev/null || true)
+            mkdir -p /opt/zapret2/lists && touch "§f"
+            if [ "${if (add) 1 else 0}" = "1" ]; then
+              grep -qxF "§d" "§f" || printf '%s\n' "§d" >> "§f"
+            else
+              awk -v t="§d" '{gsub(/\r/,""); x=§0; gsub(/^[[:space:]]+|[[:space:]]+§/,"",x); if(x!=t) print §0}' "§f" > "§f.tmp" && mv -f "§f.tmp" "§f"
+            fi
+            [ -x /opt/zapret2/z2k-warp.sh ] && sh /opt/zapret2/z2k-warp.sh reload >/dev/null 2>&1 || true
+            echo "OK: §d"
+            """
+        )
+    }
+
+    fun warpDeviceToggleCmd(ipOrMac: String, enable: Boolean): String =
+        z2kApiJob("warp/devices/toggle", "ip=${ue(ipOrMac)}&enabled=${if (enable) 1 else 0}", 12)
 
     val CMD_DNS_NET = sh(
         """
@@ -208,7 +318,7 @@ object MonitorScripts {
           qcnt=§(wc -l < /opt/etc/AdGuardHome/data/querylog.json 2>/dev/null | head -n1 | tr -dc '0-9')
         fi
         [ -n "§qcnt" ] || qcnt=0
-        qlog=§(tail -n 25 /opt/etc/AdGuardHome/data/querylog.json 2>/dev/null | awk '
+        qlog=§(tail -n 30 /opt/etc/AdGuardHome/data/querylog.json 2>/dev/null | awk '
           $AWK_ESC
           function jstr(line, key,   pat, pos, rest, q) {
             pat="\"" key "\":\""
@@ -304,7 +414,6 @@ object MonitorScripts {
               if(cur=="ap0" && l ~ /^[[:space:]]*ft enable§/) ft=1
               if(cur=="w1" && l ~ /^[[:space:]]*target-waketime§/) twt1=1
             }
-            # Parse discovered AccessPoints
             ns=split(aps_raw, slines, "\n")
             cur_ap=""; blk=""; ap_json=""
             for(i=1;i<=ns;i++) {
@@ -338,15 +447,43 @@ object MonitorScripts {
         deny_macs=§(awk '/^[[:space:]]*host [0-9a-f:]+ deny/{print §2}' /tmp/.gp_rc | tr '\n' ' ')
         conf_macs=§(awk '/^[[:space:]]*host [0-9a-f:]+ conform/{print §2}' /tmp/.gp_rc | tr '\n' ' ')
         g4_macs=§(awk '/^[[:space:]]*host [0-9a-f:]+ policy Gor4akovNET/{print §2}' /tmp/.gp_rc | tr '\n' ' ')
-        devs=§(DM="§deny_macs" CM="§conf_macs" GM="§g4_macs" awk '
+        # Сбор shape_rate, schedule и активных таймеров /tmp/gbox_timers/*
+        extra_meta=§(awk '/^[[:space:]]*host [0-9a-f:]+ (traffic-shape rate|schedule) /{print}' /tmp/.gp_rc)
+        now_s=§(date +%s 2>/dev/null || echo 0)
+        timers_txt=""
+        for tf in /tmp/gbox_timer_*.meta; do
+          [ -r "§tf" ] || continue
+          timers_txt="§{timers_txt}§(cat "§tf" 2>/dev/null)
+"
+        done
+        devs=§(DM="§deny_macs" CM="§conf_macs" GM="§g4_macs" EM="§extra_meta" TM="§timers_txt" NOWS="§now_s" awk '
           $AWK_ESC
+          BEGIN {
+            ne=split(ENVIRON["EM"], el, "\n")
+            for(i=1;i<=ne;i++){
+              split(el[i], ep, " ")
+              if(ep[3]=="traffic-shape") sh[tolower(ep[2])]=ep[5]+0
+              if(ep[3]=="schedule") sc[tolower(ep[2])]=ep[4]
+            }
+            nt=split(ENVIRON["TM"], tl, "\n")
+            for(i=1;i<=nt;i++){
+              if(tl[i]=="") continue
+              split(tl[i], tp, "|")
+              rem=tp[2]-ENVIRON["NOWS"]
+              if(rem>0) tmr[tolower(tp[1])]=int(rem/60)"м ("tp[3]")"
+            }
+          }
           function flush(){
             if(mac!=""){
+              lm=tolower(mac)
               pol=(index(" " ENVIRON["DM"] " ", " " mac " ")>0)?"deny":"permit"
               gpol=(index(" " ENVIRON["GM"] " ", " " mac " ")>0 || tolower(ifc) ~ /gor4akov/)?"Gor4akovNET":"Default"
               cnf=(index(" " ENVIRON["CM"] " ", " " mac " ")>0)?"true":"false"
-              printf "%s{\"mac\":\"%s\",\"ip\":\"%s\",\"hostname\":\"%s\",\"name\":\"%s\",\"iface\":\"%s\",\"ap\":\"%s\",\"link\":\"%s\",\"speed\":\"%s\",\"rx\":%.0f,\"tx\":%.0f,\"policy\":\"%s\",\"route_pol\":\"%s\",\"prio\":%d,\"conform\":%s,\"rssi\":\"%s\",\"mode\":\"%s\",\"txrate\":\"%s\"}",
-                (cnt?",":""), esc(mac), esc(ip), esc(hn), esc(nm), esc(ifc), esc(ap), esc(lk), esc(sp), rx+0, tx+0, pol, esc(gpol), (pr>0?pr:6), cnf, esc(rssi), esc(md), esc(txr)
+              shape=(lm in sh)?sh[lm]:0
+              sched=(lm in sc)?sc[lm]:""
+              tmr_s=(lm in tmr)?tmr[lm]:""
+              printf "%s{\"mac\":\"%s\",\"ip\":\"%s\",\"hostname\":\"%s\",\"name\":\"%s\",\"iface\":\"%s\",\"ap\":\"%s\",\"link\":\"%s\",\"speed\":\"%s\",\"rx\":%.0f,\"tx\":%.0f,\"policy\":\"%s\",\"route_pol\":\"%s\",\"prio\":%d,\"conform\":%s,\"shape_kbps\":%d,\"sched\":\"%s\",\"timer\":\"%s\",\"rssi\":\"%s\",\"mode\":\"%s\",\"txrate\":\"%s\"}",
+                (cnt?",":""), esc(mac), esc(ip), esc(hn), esc(nm), esc(ifc), esc(ap), esc(lk), esc(sp), rx+0, tx+0, pol, esc(gpol), (pr>0?pr:6), cnf, shape, esc(sched), esc(tmr_s), esc(rssi), esc(md), esc(txr)
               cnt++
             }
             mac="";ip="";hn="";nm="";ifc="";ap="";lk="";sp="";rx=0;tx=0;pr=6;rssi="";md="";txr="";in_i=0;in_ts=0
@@ -396,22 +533,92 @@ object MonitorScripts {
 
     val CMD_SERVICES = sh(
         """
+        mem_tot_kb=§(awk '/^MemTotal:/{print §2; exit}' /proc/meminfo 2>/dev/null | tr -dc '0-9')
+        [ -n "§mem_tot_kb" ] || mem_tot_kb=262144
+        mem_free_mb=§(awk '/^MemAvailable:/{a=§2} /^MemFree:/{f=§2} END{print int((a>0?a:f)/1024)}' /proc/meminfo 2>/dev/null)
         ps_w=§(ps w 2>/dev/null)
-        ns_l=§(netstat -lnt 2>/dev/null)
-        chk_s() {
-          s_path="/opt/etc/init.d/§1"
-          inst=false; [ -x "§s_path" ] && inst=true
-          up=false
-          if [ -n "§2" ] && printf '%s\n' "§ps_w" | grep -q "§2"; then up=true; fi
-          if [ -n "§3" ] && printf '%s\n' "§ns_l" | grep -q ":§3 "; then up=true; fi
-          printf '{"id":"%s","inst":%s,"up":%s}' "§1" "§inst" "§up"
-        }
-        agh_id="S99adguardhome"
-        [ -x /opt/etc/init.d/S99AdGuardHome ] && agh_id="S99AdGuardHome"
-        agh_up=false; printf '%s\n' "§ps_w" | grep -q '[A]dGuardHome' && agh_up=true
-        agh_inst=false; [ -x "/opt/etc/init.d/§agh_id" ] || [ -x /opt/sbin/AdGuardHome ] && agh_inst=true
-        agh_json="{\"id\":\"§agh_id\",\"inst\":§agh_inst,\"up\":§agh_up}"
-        svcs="[§(chk_s S99zapret2 '/nfqws2' ''),§{agh_json},§(chk_s S98tg-tunnel '' 1443),§(chk_s S51z2k-warp 'z2k-warpd' ''),§(chk_s S96z2k-webpanel '' 8088),§(chk_s S99z2k-scheduler 'z2k-scheduler' ''),§(chk_s S97z2k-http-tunnel '' 1444),§(chk_s S10cron 'crond' '')]"
+        ns_p=§(netstat -lntp 2>/dev/null || netstat -lnt 2>/dev/null)
+        # Построить статистику по процессам (/proc/<pid>/status VmRSS и /proc/<pid>/stat CPU)
+        proc_stats=""
+        for stf in /proc/[0-9]*/status; do
+          pid=§{stf#/proc/}; pid=§{pid%/status}
+          [ -r "§stf" ] || continue
+          rss_kb=§(awk '/^VmRSS:/{print §2+0; exit}' "§stf" 2>/dev/null)
+          cmd=§(tr '\0' ' ' < "/proc/§pid/cmdline" 2>/dev/null | head -c 160)
+          [ -n "§cmd" ] || cmd=§(awk '/^Name:/{print §2; exit}' "§stf" 2>/dev/null)
+          pcpu=§(printf '%s\n' "§ps_w" | awk -v p="§pid" '§1==p{for(i=1;i<=NF;i++)if(§i ~ /^[0-9]+(\.[0-9]+)?%§/){gsub(/%/,"",§i); print §i; exit}}')
+          proc_stats="§{proc_stats}§pid|§{rss_kb:-0}|§{pcpu:-0}|§cmd
+"
+        done
+
+        # Автоскан всех /opt/etc/init.d/S*
+        svcs_json=""
+        for ini in /opt/etc/init.d/S*; do
+          [ -e "§ini" ] || continue
+          id=§(basename "§ini")
+          inst=false; [ -x "§ini" ] && inst=true
+          pat=§(awk -F= '/^(PROCS|DESC|NAME)=/{gsub(/["'"'"']/,"",§2); if(§2!=""){print §2; exit}}' "§ini" 2>/dev/null)
+          case "§id" in
+            *zapret*) pat="nfqws2" ;;
+            *AdGuard*|*adguard*) pat="AdGuardHome" ;;
+            *warp*) pat="z2k-warpd" ;;
+            *tg-tunnel*) pat="tg-mtproxy" ;;
+            *http-tunnel*) pat="z2k-http" ;;
+            *webpanel*|*lighttpd*) pat="lighttpd" ;;
+            *scheduler*) pat="z2k-scheduler" ;;
+            *cron*) pat="crond" ;;
+            *dropbear*) pat="dropbear" ;;
+          esac
+          res=§(PS="§proc_stats" NS="§ns_p" PAT="§pat" MEM="§mem_tot_kb" awk '$AWK_ESC BEGIN{
+            pat=tolower(ENVIRON["PAT"]); mem=ENVIRON["MEM"]+0
+            n=split(ENVIRON["PS"], lines, "\n")
+            tot_rss=0; tot_cpu=0; pids=""
+            for(i=1;i<=n;i++){
+              if(lines[i]=="") continue
+              split(lines[i], a, "|")
+              if(pat!="" && index(tolower(a[4]), pat)>0){
+                tot_rss+=a[2]+0; tot_cpu+=a[3]+0; pids=(pids==""?a[1]:pids","a[1])
+              }
+            }
+            ports=""
+            m=split(ENVIRON["NS"], nl, "\n")
+            for(i=1;i<=m;i++){
+              if(pat!="" && index(tolower(nl[i]), pat)>0){
+                split(nl[i], np, " ")
+                split(np[4], hp, ":"); pt=hp[length(hp)]
+                if(pt ~ /^[0-9]+§/ && index(ports, ":"pt)==0) ports=(ports==""?":"pt:ports",:"pt)
+              }
+            }
+            rmb=tot_rss/1024; rpct=(mem>0?tot_rss*100/mem:0)
+            printf "%d|%.1f|%.1f|%.1f|%s|%s", (pids!=""?1:0), rmb, rpct, tot_cpu, esc(pids), esc(ports)
+          }')
+          up_i=§(echo "§res" | cut -d'|' -f1)
+          up=false; [ "§up_i" = "1" ] && up=true
+          ram_mb=§(echo "§res" | cut -d'|' -f2)
+          ram_pct=§(echo "§res" | cut -d'|' -f3)
+          cpu_pct=§(echo "§res" | cut -d'|' -f4)
+          pids=§(echo "§res" | cut -d'|' -f5)
+          ports=§(echo "§res" | cut -d'|' -f6)
+          item="{\"id\":\"§id\",\"inst\":§inst,\"up\":§up,\"ram_mb\":§{ram_mb:-0},\"ram_pct\":§{ram_pct:-0},\"cpu\":§{cpu_pct:-0},\"pids\":\"§pids\",\"ports\":\"§ports\"}"
+          svcs_json="§{svcs_json}§([ -n "§svcs_json" ] && echo ',')§item"
+        done
+
+        top_procs=§(PS="§proc_stats" awk '$AWK_ESC BEGIN{
+          n=split(ENVIRON["PS"], lines, "\n")
+          for(i=1;i<=n;i++){
+            if(lines[i]=="") continue
+            split(lines[i], a, "|")
+            if(a[2]+0 > 512){
+              c=a[4]; if(length(c)>55) c=substr(c,1,55)
+              printf "%08d|%s|%.1f|%s|%s\n", a[2]+0, a[1], a[2]/1024, a[3], esc(c)
+            }
+          }
+        }' | sort -rn | head -n 10 | awk 'BEGIN{printf "["}{split(§0,p,"|"); printf "%s{\"pid\":\"%s\",\"ram_mb\":%s,\"cpu\":%s,\"cmd\":\"%s\"}", (n++?",":""), p[2], p[3]+0, p[4]+0, p[5]} END{printf "]"}')
+        [ -n "§top_procs" ] || top_procs='[]'
+
+        cron_jobs=§(grep -hvE '^[[:space:]]*$|^[[:space:]]*#' /opt/var/spool/cron/crontabs/root /opt/etc/crontab 2>/dev/null | head -n 25 | awk '$AWK_ESC BEGIN{printf "["} {printf "%s\"%s\"", (n++?",":""), esc(§0)} END{printf "]"}')
+        [ -n "§cron_jobs" ] || cron_jobs='[]'
+
         rc=§(LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" 2>/dev/null)
         cifs=false; printf '%s\n' "§rc" | grep -q '^service cifs§' && cifs=true
         webdav=false; printf '%s\n' "§rc" | awk '/^(ip http webdav|webdav enable)/{f=1} END{exit !f}' && webdav=true
@@ -420,8 +627,28 @@ object MonitorScripts {
         opkg_cnt=§(opkg list-installed 2>/dev/null | wc -l | head -n1 | tr -dc '0-9')
         [ -n "§opkg_cnt" ] || opkg_cnt=0
         disks=§(df -Pm 2>/dev/null | awk '$AWK_ESC NR>1 && (§6=="/opt" || §6 ~ /^\/tmp\/mnt\//){gsub(/%/,"",§5); printf "%s{\"mnt\":\"%s\",\"tot\":%d,\"used\":%d,\"avail\":%d,\"pct\":%d}", (n++?",":""), esc(§6), §2+0, §3+0, §4+0, §5+0}')
-        printf '{"svcs":%s,"ndms":{"cifs":%s,"webdav":%s,"zram":%s,"usb2":%s},"opkg_cnt":%s,"disks":[%s]}\n' \
-          "§svcs" "§cifs" "§webdav" "§zram" "§usb2" "§opkg_cnt" "§disks"
+        printf '{"svcs":[%s],"top_procs":%s,"cron":%s,"mem_tot_mb":%d,"mem_free_mb":%d,"ndms":{"cifs":%s,"webdav":%s,"zram":%s,"usb2":%s},"opkg_cnt":%s,"disks":[%s]}\n' \
+          "§svcs_json" "§top_procs" "§cron_jobs" "§((mem_tot_kb/1024))" "§{mem_free_mb:-0}" "§cifs" "§webdav" "§zram" "§usb2" "§opkg_cnt" "§disks"
+        """
+    )
+
+    fun addCronJobCmd(expr: String, cmd: String): String = sh(
+        """
+        mkdir -p /opt/var/spool/cron/crontabs
+        cf="/opt/var/spool/cron/crontabs/root"
+        touch "§cf"
+        printf '%s %s\n' '${sq(expr.trim())}' '${sq(cmd.trim())}' >> "§cf"
+        [ -x /opt/etc/init.d/S10cron ] && /opt/etc/init.d/S10cron restart >/dev/null 2>&1 || true
+        echo "OK: Задача Cron добавлена"
+        """
+    )
+
+    fun delCronJobCmd(exactLine: String): String = sh(
+        """
+        cf="/opt/var/spool/cron/crontabs/root"
+        [ -f "§cf" ] && awk -v t='${sq(exactLine)}' '{if(§0!=t) print §0}' "§cf" > "§cf.tmp" && mv -f "§cf.tmp" "§cf"
+        [ -x /opt/etc/init.d/S10cron ] && /opt/etc/init.d/S10cron restart >/dev/null 2>&1 || true
+        echo "OK: Задача Cron удалена"
         """
     )
 
@@ -438,12 +665,92 @@ object MonitorScripts {
         """
     )
 
-    val CMD_PROBE_SITES = sh(
+    val CMD_PROBE_SITES_JSON = sh(
         """
-        for u in https://www.youtube.com https://discord.com https://www.instagram.com https://chatgpt.com https://web.telegram.org https://rutracker.org; do
-          res=§(curl -IsS --max-time 4 -o /dev/null -w 'HTTP %{http_code} • %{time_total}s' "§u" 2>&1)
-          echo "§u -> §res"
-        done
+        TMPP="/tmp/.gbox_probes_§$"
+        rm -f "§TMPP"
+        chk() {
+          cat="§1"; host="§2"; url="§3"
+          res=§(curl -IsS -L --connect-timeout 4 --max-time 6 -o /dev/null -w '%{http_code}|%{time_namelookup}|%{time_appconnect}|%{time_total}' "§url" 2>/dev/null || echo '000|0|0|0')
+          printf '%s|%s|%s\n' "§cat" "§host" "§res" >> "§TMPP"
+        }
+        chk "Видео" "youtube.com" "https://www.youtube.com" &
+        chk "Видео" "youtu.be" "https://youtu.be" &
+        chk "Видео" "googlevideo" "https://redirector.googlevideo.com" &
+        chk "Видео" "twitch.tv" "https://www.twitch.tv" &
+        chk "Видео" "vimeo.com" "https://vimeo.com" &
+        chk "Видео" "soundcloud" "https://soundcloud.com" &
+        chk "Мессенджеры" "discord.com" "https://discord.com" &
+        chk "Мессенджеры" "gateway.dc" "https://gateway.discord.gg" &
+        chk "Мессенджеры" "web.tg" "https://web.telegram.org" &
+        chk "Мессенджеры" "signal.org" "https://signal.org" &
+        chk "Соцсети" "instagram.com" "https://www.instagram.com" &
+        chk "Соцсети" "facebook.com" "https://www.facebook.com" &
+        chk "Соцсети" "x.com" "https://x.com" &
+        chk "Соцсети" "threads.net" "https://www.threads.net" &
+        chk "ИИ" "chatgpt.com" "https://chatgpt.com" &
+        chk "ИИ" "claude.ai" "https://claude.ai" &
+        chk "ИИ" "gemini.google" "https://gemini.google.com" &
+        chk "ИИ" "perplexity.ai" "https://www.perplexity.ai" &
+        chk "Dev/Игры" "github.com" "https://github.com" &
+        chk "Dev/Игры" "rutracker.org" "https://rutracker.org" &
+        chk "Dev/Игры" "store.steam" "https://store.steampowered.com" &
+        chk "Dev/Игры" "spotify.com" "https://open.spotify.com" &
+        chk "Контроль РФ" "gosuslugi.ru" "https://www.gosuslugi.ru" &
+        chk "Контроль РФ" "vk.com" "https://vk.com" &
+        wait
+        awk '$AWK_ESC BEGIN{printf "{\"sites\":["} {
+          split(§0, p, "|")
+          code=p[3]+0; dns=int((p[4]+0)*1000); tls=int((p[5]+0)*1000); tot=int((p[6]+0)*1000)
+          ok=(code>=200 && code<500)?"true":"false"
+          printf "%s{\"cat\":\"%s\",\"host\":\"%s\",\"code\":%d,\"dns_ms\":%d,\"tls_ms\":%d,\"tot_ms\":%d,\"ok\":%s}",
+            (n++?",":""), esc(p[1]), esc(p[2]), code, dns, tls, tot, ok
+        } END{printf "]}"}' "§TMPP"
+        rm -f "§TMPP"
+        """
+    )
+
+    val CMD_BENCH_SNAPSHOT = sh(
+        """
+        ping_1=§(ping -c 3 -W 2 1.1.1.1 2>/dev/null | awk -F'/' '/round-trip|rtt/{print §5+0; exit}')
+        [ -n "§ping_1" ] || ping_1=0
+        yt=§(curl -IsS -L --connect-timeout 4 --max-time 6 -o /dev/null -w '%{http_code}|%{time_namelookup}|%{time_total}' https://www.youtube.com 2>/dev/null || echo '000|0|0')
+        dc=§(curl -IsS -L --connect-timeout 4 --max-time 6 -o /dev/null -w '%{http_code}|%{time_total}' https://discord.com 2>/dev/null || echo '000|0')
+        ram_free=§(awk '/^MemAvailable:/{a=§2} /^MemFree:/{f=§2} END{print int((a>0?a:f)/1024)}' /proc/meminfo 2>/dev/null)
+        rc=§(LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" 2>/dev/null)
+        ppe_hw=false; printf '%s\n' "§rc" | grep -q '^ppe hardware§' && ppe_hw=true
+        ppe_sw=false; printf '%s\n' "§rc" | grep -q '^ppe software§' && ppe_sw=true
+        zram=false; printf '%s\n' "§rc" | grep -q '^[[:space:]]*zram§' && zram=true
+        ct_max=§(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null | tr -dc '0-9')
+        copt=false; grep -q '^  cache_optimistic: true' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null && copt=true
+        yt_code=§(echo "§yt" | cut -d'|' -f1); dns_ms=§(echo "§yt" | cut -d'|' -f2 | awk '{print int(§1*1000)}'); yt_ms=§(echo "§yt" | cut -d'|' -f3 | awk '{print int(§1*1000)}')
+        dc_code=§(echo "§dc" | cut -d'|' -f1); dc_ms=§(echo "§dc" | cut -d'|' -f2 | awk '{print int(§1*1000)}')
+        printf '{"ping_ms":%.1f,"yt_code":%d,"yt_ms":%d,"dns_ms":%d,"dc_code":%d,"dc_ms":%d,"ram_free_mb":%d,"ct_max":%d,"ppe_hw":%s,"ppe_sw":%s,"zram":%s,"cache_opt":%s}\n' \
+          "§ping_1" "§{yt_code:-0}" "§{yt_ms:-0}" "§{dns_ms:-0}" "§{dc_code:-0}" "§{dc_ms:-0}" "§{ram_free:-0}" "§{ct_max:-32768}" "§ppe_hw" "§ppe_sw" "§zram" "§copt"
+        """
+    )
+
+    fun applyOptimizerBundleCmd(
+        enableZram: Boolean,
+        enablePpeHw: Boolean,
+        enablePpeSw: Boolean,
+        enableCacheOpt: Boolean,
+        boostConntrack: Boolean
+    ): String = sh(
+        """__LONG__
+        ndm_cmds=""
+        ${if (enableZram) "LD_LIBRARY_PATH= /bin/ndmc -c 'zram' >/dev/null 2>&1 || true" else ""}
+        ${if (enablePpeHw) "LD_LIBRARY_PATH= /bin/ndmc -c 'ppe hardware' >/dev/null 2>&1 || true" else ""}
+        ${if (enablePpeSw) "LD_LIBRARY_PATH= /bin/ndmc -c 'ppe software' >/dev/null 2>&1 || true" else ""}
+        ${if (boostConntrack) "LD_LIBRARY_PATH= /bin/ndmc -c 'ip conntrack max-entries 65536' >/dev/null 2>&1 || true" else ""}
+        LD_LIBRARY_PATH= /bin/ndmc -c 'system configuration save' >/dev/null 2>&1 || true
+        if [ "${if (enableCacheOpt) 1 else 0}" = "1" ] && [ -f /opt/etc/AdGuardHome/AdGuardHome.yaml ]; then
+          cp -f /opt/etc/AdGuardHome/AdGuardHome.yaml /opt/etc/AdGuardHome/AdGuardHome.yaml.bak 2>/dev/null || true
+          sed -i 's/^  cache_optimistic: .*/  cache_optimistic: true/' /opt/etc/AdGuardHome/AdGuardHome.yaml
+          $AGH_INIT_DETECT
+          [ -n "§AGH_INI" ] && "§AGH_INI" restart >/dev/null 2>&1 || true
+        fi
+        echo "OK: Оптимизации применены"
         """
     )
 
@@ -464,10 +771,11 @@ object MonitorScripts {
             "curl -sS -m 12 -X POST -H 'Referer: http://127.0.0.1:8088/' -d '${sq(postData)}' '$url'"
         }
         return sh(
-            """
+            """__LONG__
             resp=§($cmd 2>&1)
             printf '%s\n' "§resp"
-            jid=§(printf '%s' "§resp" | sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
+            jid=§(printf '%s' "§resp" | sed -n 's/.*"job":"\([^"]*\)".*/\1/p')
+            [ -n "§jid" ] || jid=§(printf '%s' "§resp" | sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
             if [ -n "§jid" ]; then
               i=0
               while [ §i -lt $waitSec ]; do
@@ -497,7 +805,7 @@ object MonitorScripts {
 
     fun toggleZ2k(feature: String, value: Int): String = sh(
         """
-        resp=§(curl -sS -m 10 -X POST -H 'Referer: http://127.0.0.1:8088/' -d 'feature=${sq(feature)}&value=$value' 'http://127.0.0.1:8088/cgi-bin/api/toggle' 2>/dev/null || true)
+        resp=§(curl -sS -m 10 -X POST -H 'Referer: http://127.0.0.1:8088/' -d 'feature=${ue(feature)}&value=$value' 'http://127.0.0.1:8088/cgi-bin/api/toggle' 2>/dev/null || true)
         if printf '%s' "§resp" | grep -q '"ok":true'; then
           echo "§resp"
         else
@@ -522,7 +830,7 @@ object MonitorScripts {
 
     fun setZ2kModeCmd(mode: String): String = sh(
         """
-        resp=§(curl -sS -m 10 -X POST -H 'Referer: http://127.0.0.1:8088/' -d 'mode=${sq(mode)}' 'http://127.0.0.1:8088/cgi-bin/api/mode' 2>/dev/null || true)
+        resp=§(curl -sS -m 10 -X POST -H 'Referer: http://127.0.0.1:8088/' -d 'mode=${ue(mode)}' 'http://127.0.0.1:8088/cgi-bin/api/mode' 2>/dev/null || true)
         if printf '%s' "§resp" | grep -q '"ok":true'; then
           echo "§resp"
         else
@@ -547,9 +855,79 @@ object MonitorScripts {
         fi
         """
     )
-    fun warpGameToggleCmd(name: String, v: Int): String = z2kApiJob("warp/games/toggle", "name=${sq(name)}&value=$v", 15)
-    fun z2kScheduleHourCmd(h: String): String = z2kApiJob("update/schedule", "hour=${sq(h)}", 10)
-    fun strategyPickCmd(domain: String, mode: String): String = z2kApiJob("strategy/pick", "domain=${sq(domain.trim())}&mode=${sq(mode)}", 65)
+    fun warpGameToggleCmd(name: String, v: Int): String = z2kApiJob("warp/games/toggle", "name=${ue(name)}&value=$v", 15)
+    fun z2kScheduleHourCmd(h: String): String = z2kApiJob("update/schedule", "hour=${ue(h)}", 10)
+
+    /**
+     * Valid z2k modes: tcp13 | tcp12 | mixed | quic | voice
+     * Uses HTTP panel job API (:8088) with automatic SSH actions.sh fallback.
+     */
+    fun strategyPickCmd(domain: String, mode: String): String {
+        val cleanDomain = domain.trim().lowercase().removePrefix("https://").removePrefix("http://").substringBefore("/")
+        val mappedMode = when (mode.lowercase()) {
+            "tcp" -> "tcp13"
+            "udp" -> "quic"
+            "tcp13", "tcp12", "mixed", "quic", "voice" -> mode.lowercase()
+            else -> "tcp13"
+        }
+        return sh(
+            """__LONG__
+            d='${sq(cleanDomain)}'; m='${sq(mappedMode)}'
+            resp=§(curl -sS -m 10 -X POST -H 'Referer: http://127.0.0.1:8088/' -d "domain=${ue(cleanDomain)}&mode=${ue(mappedMode)}" 'http://127.0.0.1:8088/cgi-bin/api/strategy/pick' 2>/dev/null || true)
+            jid=§(printf '%s' "§resp" | sed -n 's/.*"job":"\([^"]*\)".*/\1/p')
+            [ -n "§jid" ] || jid=§(printf '%s' "§resp" | sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
+            if [ -n "§jid" ]; then
+              i=0
+              last=""
+              while [ §i -lt 90 ]; do
+                sleep 1
+                jr=§(curl -sS -m 5 "http://127.0.0.1:8088/cgi-bin/api/job?id=§jid" 2>/dev/null || break)
+                last="§jr"
+                case "§jr" in *'"done":true'*|*'"status":"done"'*|*'"status":"error"'*) break ;; esac
+                i=§((i+1))
+              done
+              printf '%s\n' "§last"
+            elif [ -r /opt/zapret2/webpanel/cgi/actions.sh ]; then
+              echo "[INFO] Веб-панель :8088 недоступна — запускаю подбор напрямую через actions.sh..."
+              . /opt/zapret2/webpanel/cgi/actions.sh 2>/dev/null || true
+              if command -v strategy_pick_run >/dev/null 2>&1; then
+                strategy_pick_run "§d" "§m" 2>&1
+                command -v strategy_pick_last >/dev/null 2>&1 && strategy_pick_last 2>&1 || true
+              else
+                echo "ERR: strategy_pick_run не найден в actions.sh"
+              fi
+            else
+              echo "ERR: Панель :8088 не запущена и actions.sh не найден. Включите S96z2k-webpanel в разделе Службы."
+            fi
+            """
+        )
+    }
+
+    fun strategyApplyPoolCmd(pool: String, domain: String, strategy: String): String = sh(
+        """
+        resp=§(curl -sS -m 12 -X POST -H 'Referer: http://127.0.0.1:8088/' -d "pool=${ue(pool)}&domain=${ue(domain)}&strategy=${ue(strategy)}" 'http://127.0.0.1:8088/cgi-bin/api/strategy/pool/save' 2>/dev/null || true)
+        if printf '%s' "§resp" | grep -q '"ok":true'; then
+          echo "§resp"
+        elif [ -r /opt/zapret2/webpanel/cgi/actions.sh ]; then
+          . /opt/zapret2/webpanel/cgi/actions.sh 2>/dev/null || true
+          if command -v strategy_pool_save >/dev/null 2>&1; then
+            strategy_pool_save '${sq(pool)}' '${sq(domain)}' '${sq(strategy)}' 2>&1
+          else
+            echo "ERR: strategy_pool_save недоступен"
+          fi
+        else
+          echo "§{resp:-ERR: не удалось сохранить стратегию в пул}"
+        fi
+        """
+    )
+
+    val RESET_AUTOCIRCULAR_CMD = sh(
+        """
+        rm -rf /opt/zapret2/extra_strats/cache/autocircular/* 2>/dev/null || true
+        [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart 2>&1 || true
+        echo "OK: Кэш autocircular сброшен, nfqws2 перезапущен"
+        """
+    )
 
     fun setPolicyCmd(name: String, exclude: Int): String = sh(
         """
@@ -559,47 +937,65 @@ object MonitorScripts {
           sed -i '/^POLICY_NAME=/d;/^POLICY_EXCLUDE=/d' "§CFG"
           printf 'POLICY_NAME="%s"\nPOLICY_EXCLUDE=%d\n' '${sq(name.trim())}' '$exclude' >> "§CFG"
         }
-        curl -sS -m 6 -X POST -H 'Referer: http://127.0.0.1:8088/' -d 'name=${sq(name.trim())}&exclude=$exclude' 'http://127.0.0.1:8088/cgi-bin/api/policy/save' >/dev/null 2>&1 || true
+        curl -sS -m 6 -X POST -H 'Referer: http://127.0.0.1:8088/' -d 'name=${ue(name.trim())}&exclude=$exclude' 'http://127.0.0.1:8088/cgi-bin/api/policy/save' >/dev/null 2>&1 || true
         [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart 2>&1 || true
         echo "OK: Политика=${sq(name.trim())}, exclude=$exclude"
         """
     )
 
-    fun addExtraDomain(d: String): String = sh(
-        """
-        mkdir -p /opt/zapret2/lists
-        touch /opt/zapret2/lists/extra-domains.txt
-        grep -qxF '${sq(d)}' /opt/zapret2/lists/extra-domains.txt || printf '%s\n' '${sq(d)}' >> /opt/zapret2/lists/extra-domains.txt
-        curl -sS -m 5 -X POST -H 'Referer: http://127.0.0.1:8088/' -d 'domain=${sq(d)}' 'http://127.0.0.1:8088/cgi-bin/api/extra-domains/add' >/dev/null 2>&1 || true
-        [ -x /opt/etc/init.d/S99zapret2 ] && (/opt/etc/init.d/S99zapret2 reload >/dev/null 2>&1 || /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true)
-        echo "OK: Добавлен ${sq(d)}"
-        """
-    )
+    fun addExtraDomain(d: String): String {
+        val clean = d.trim().lowercase()
+        if (!clean.matches(Regex("""^[a-z0-9.-]+$""")) || !clean.contains('.')) {
+            return "echo 'ERR: Некорректный домен'"
+        }
+        return sh(
+            """
+            mkdir -p /opt/zapret2/lists
+            touch /opt/zapret2/lists/extra-domains.txt
+            grep -qxF '${sq(clean)}' /opt/zapret2/lists/extra-domains.txt || printf '%s\n' '${sq(clean)}' >> /opt/zapret2/lists/extra-domains.txt
+            curl -sS -m 5 -X POST -H 'Referer: http://127.0.0.1:8088/' -d 'domain=${ue(clean)}' 'http://127.0.0.1:8088/cgi-bin/api/extra-domains/add' >/dev/null 2>&1 || true
+            [ -x /opt/etc/init.d/S99zapret2 ] && (/opt/etc/init.d/S99zapret2 reload >/dev/null 2>&1 || /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true)
+            echo "OK: Добавлен ${sq(clean)}"
+            """
+        )
+    }
 
-    fun delListDomain(path: String, d: String): String = sh(
-        """
-        p='${sq(path)}'; t='${sq(d)}'
-        [ -f "§p" ] && cp -f "§p" "§p.bak"
-        awk -v target="§t" '{gsub(/\r/,""); x=§0; gsub(/^[[:space:]]+|[[:space:]]+§/,"",x); if(x!=target) print §0}' "§p" > "§p.tmp" && mv -f "§p.tmp" "§p"
-        [ -x /opt/etc/init.d/S99zapret2 ] && (/opt/etc/init.d/S99zapret2 reload >/dev/null 2>&1 || /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true)
-        echo "OK: Удалён §t"
-        """
-    )
+    fun delListDomain(path: String, d: String): String {
+        val clean = d.trim().lowercase()
+        if (clean.isBlank() || clean.contains('\n') || clean.contains('\r')) {
+            return "echo 'ERR: Некорректный домен'"
+        }
+        return sh(
+            """
+            p='${sq(path)}'; t='${sq(clean)}'
+            [ -f "§p" ] && cp -f "§p" "§p.bak"
+            awk -v target="§t" '{gsub(/\r/,""); x=§0; gsub(/^[[:space:]]+|[[:space:]]+§/,"",x); if(x!=target) print §0}' "§p" > "§p.tmp" && mv -f "§p.tmp" "§p"
+            [ -x /opt/etc/init.d/S99zapret2 ] && (/opt/etc/init.d/S99zapret2 reload >/dev/null 2>&1 || /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true)
+            echo "OK: Удалён §t"
+            """
+        )
+    }
 
-    fun addWhitelistDomain(d: String, wlPath: String = "/opt/zapret2/lists/whitelist.txt"): String = sh(
-        """
-        mkdir -p /opt/zapret2/lists
-        wp='${sq(wlPath)}'
-        [ -n "§wp" ] || wp="/opt/zapret2/lists/whitelist.txt"
-        touch "§wp"
-        grep -qxF '${sq(d)}' "§wp" || printf '%s\n' '${sq(d)}' >> "§wp"
-        curl -sS -m 5 -X POST -H 'Referer: http://127.0.0.1:8088/' -d 'domain=${sq(d)}' 'http://127.0.0.1:8088/cgi-bin/api/whitelist/add' >/dev/null 2>&1 || true
-        [ -x /opt/etc/init.d/S99zapret2 ] && (/opt/etc/init.d/S99zapret2 reload >/dev/null 2>&1 || /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true)
-        echo "OK: ${sq(d)} добавлен в исключения"
-        """
-    )
+    fun addWhitelistDomain(d: String, wlPath: String = "/opt/zapret2/lists/whitelist.txt"): String {
+        val clean = d.trim().lowercase()
+        if (!clean.matches(Regex("""^[a-z0-9.-]+$""")) || !clean.contains('.')) {
+            return "echo 'ERR: Некорректный домен'"
+        }
+        return sh(
+            """
+            mkdir -p /opt/zapret2/lists
+            wp='${sq(wlPath)}'
+            [ -n "§wp" ] || wp="/opt/zapret2/lists/whitelist.txt"
+            touch "§wp"
+            grep -qxF '${sq(clean)}' "§wp" || printf '%s\n' '${sq(clean)}' >> "§wp"
+            curl -sS -m 5 -X POST -H 'Referer: http://127.0.0.1:8088/' -d 'domain=${ue(clean)}' 'http://127.0.0.1:8088/cgi-bin/api/whitelist/add' >/dev/null 2>&1 || true
+            [ -x /opt/etc/init.d/S99zapret2 ] && (/opt/etc/init.d/S99zapret2 reload >/dev/null 2>&1 || /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true)
+            echo "OK: ${sq(clean)} добавлен в исключения"
+            """
+        )
+    }
 
-    fun delAutohostDomain(d: String): String = z2kApiJob("autohostlist-domains/delete", "domain=${sq(d)}", 15)
+    fun delAutohostDomain(d: String): String = z2kApiJob("autohostlist-domains/delete", "domain=${ue(d)}", 15)
 
     fun setAghKeyCmd(key: String, enable: Boolean): String {
         val k = sq(key)
@@ -670,6 +1066,73 @@ object MonitorScripts {
         )
     }
 
+    fun adguardBootstrapInitCmd(): String = sh(
+        """__LONG__
+        AGH_BIN="/opt/sbin/AdGuardHome"
+        [ -x /opt/bin/AdGuardHome ] && AGH_BIN="/opt/bin/AdGuardHome"
+        if [ ! -x "§AGH_BIN" ]; then
+          opkg update >/dev/null 2>&1 && opkg install adguardhome-go 2>&1 || true
+          [ -x /opt/bin/AdGuardHome ] && AGH_BIN="/opt/bin/AdGuardHome"
+        fi
+        [ -x "§AGH_BIN" ] || { echo "ERR: Бинарник AdGuardHome не найден"; exit 1; }
+        mkdir -p /opt/etc/AdGuardHome /opt/var/log
+        if [ ! -s /opt/etc/AdGuardHome/AdGuardHome.yaml ]; then
+          cat > /opt/etc/AdGuardHome/AdGuardHome.yaml << 'EOFAGH'
+http:
+  address: 0.0.0.0:3000
+users: []
+dns:
+  bind_hosts:
+    - 0.0.0.0
+  port: 53
+  upstream_dns:
+    - https://dns.quad9.net/dns-query
+    - https://cloudflare-dns.com/dns-query
+  bootstrap_dns:
+    - 9.9.9.9
+    - 1.1.1.1
+  upstream_mode: parallel
+  cache_size: 4194304
+  cache_optimistic: true
+querylog:
+  enabled: true
+  interval: 24h
+  size_memory: 2000
+filters:
+  - enabled: true
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
+    name: AdGuard DNS filter
+    id: 1
+schema_version: 29
+EOFAGH
+        fi
+        $AGH_INIT_DETECT
+        if [ -z "§AGH_INI" ]; then
+          AGH_INI="/opt/etc/init.d/S99AdGuardHome"
+          {
+            printf '#!/bin/sh\nENABLED=yes\nBIN="%s"\nARGS="-c /opt/etc/AdGuardHome/AdGuardHome.yaml -w /opt/etc/AdGuardHome --no-check-update"\n' "§AGH_BIN"
+            cat << 'EOFINI'
+case "$1" in
+  start) ps w 2>/dev/null | grep -q '[A]dGuardHome' || nohup "$BIN" $ARGS >/opt/var/log/AdGuardHome.log 2>&1 & ;;
+  stop) killall AdGuardHome 2>/dev/null || true ;;
+  restart) $0 stop; sleep 1; $0 start ;;
+esac
+EOFINI
+          } > "§AGH_INI"
+          chmod +x "§AGH_INI"
+        fi
+        "§AGH_INI" restart >/dev/null 2>&1 || "§AGH_INI" start >/dev/null 2>&1 || true
+        sleep 2
+        if { netstat -ln 2>/dev/null || ss -ln 2>/dev/null; } | grep -q ':53 '; then
+          LD_LIBRARY_PATH= /bin/ndmc -c "opkg dns-override" >/dev/null 2>&1
+          LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1
+          echo "OK: AdGuard Home запущен и dns-override включён"
+        else
+          echo "WARN: AdGuard запущен, но :53 ещё не слушается"
+        fi
+        """
+    )
+
     fun ndmcSaveCmd(vararg cmds: String): String = sh(
         cmds.joinToString("\n") { "LD_LIBRARY_PATH= /bin/ndmc -c '${sq(it)}'" } +
             "\nLD_LIBRARY_PATH= /bin/ndmc -c 'system configuration save'\necho OK"
@@ -698,7 +1161,7 @@ object MonitorScripts {
     }
 
     fun setWifiSsidCmd(ssid: String): String {
-        val s = ssid.trim()
+        val s = GboxScripts.sanitizeSsid(ssid)
         return ndmcSaveCmd(
             "interface WifiMaster0/AccessPoint0 ssid $s",
             "interface WifiMaster1/AccessPoint0 ssid $s"
@@ -715,29 +1178,116 @@ object MonitorScripts {
         """
     )
 
-    fun setHostPolicyRouteCmd(mac: String, policyName: String?): String = sh(
-        """
-        m='${sq(mac)}'
-        if [ -n '${sq(policyName ?: "")}' ]; then
-          LD_LIBRARY_PATH= /bin/ndmc -c "ip hotspot host §m policy ${sq(policyName ?: "")}"
-        else
-          LD_LIBRARY_PATH= /bin/ndmc -c "no ip hotspot host §m policy"
-        fi
-        LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1
-        [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true
-        echo "OK: Политика маршрутизации для §m обновлена"
-        """
-    )
+    fun setHostPolicyRouteCmd(mac: String, policyName: String?): String {
+        val cleanMac = GboxScripts.sanitizeMac(mac)
+        if (cleanMac.length < 11) return "echo 'ERR: Некорректный MAC'; exit 1"
+        return sh(
+            """
+            m='${sq(cleanMac)}'
+            if [ -n '${sq(policyName ?: "")}' ]; then
+              LD_LIBRARY_PATH= /bin/ndmc -c "ip hotspot host §m policy ${sq(policyName ?: "")}"
+            else
+              LD_LIBRARY_PATH= /bin/ndmc -c "no ip hotspot host §m policy"
+            fi
+            LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1
+            [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true
+            echo "OK: Политика маршрутизации для §m обновлена"
+            """
+        )
+    }
 
-    fun setHostPriorityCmd(mac: String, prio: Int, conform: Boolean): String = ndmcSaveCmd(
-        "ip hotspot host $mac permit",
-        "ip hotspot host $mac priority ${prio.coerceIn(1, 7)}",
-        if (conform) "ip hotspot host $mac conform" else "ip hotspot host $mac no conform"
-    )
+    fun setHostPriorityCmd(mac: String, prio: Int, conform: Boolean): String {
+        val cleanMac = GboxScripts.sanitizeMac(mac)
+        if (cleanMac.length < 11) return "echo 'ERR: Некорректный MAC'; exit 1"
+        return ndmcSaveCmd(
+            "ip hotspot host $cleanMac permit",
+            "ip hotspot host $cleanMac priority ${prio.coerceIn(1, 7)}",
+            if (conform) "ip hotspot host $cleanMac conform" else "ip hotspot host $cleanMac no conform"
+        )
+    }
 
-    fun setHostShapeCmd(mac: String, kbps: Int): String = ndmcSaveCmd(
-        if (kbps > 0) "ip hotspot host $mac traffic-shape rate $kbps" else "ip hotspot host $mac no traffic-shape"
-    )
+    fun setHostShapeCmd(mac: String, kbps: Int): String {
+        val cleanMac = GboxScripts.sanitizeMac(mac)
+        if (cleanMac.length < 11) return "echo 'ERR: Некорректный MAC'; exit 1"
+        return ndmcSaveCmd(
+            if (kbps > 0) "ip hotspot host $cleanMac traffic-shape rate $kbps" else "ip hotspot host $cleanMac no traffic-shape"
+        )
+    }
+
+    fun setHostTimerCmd(mac: String, minutes: Int, mode: String): String {
+        val cleanMac = GboxScripts.sanitizeMac(mac)
+        if (cleanMac.length < 11) return "echo 'ERR: Некорректный MAC'; exit 1"
+        val key = cleanMac.replace(":", "").lowercase()
+        if (minutes <= 0) {
+            return sh(
+                """
+                pidf="/tmp/gbox_timer_${key}.pid"
+                [ -f "§pidf" ] && kill §(cat "§pidf" 2>/dev/null) 2>/dev/null || true
+                rm -f "/tmp/gbox_timer_${key}."*
+                echo "OK: Таймер для $cleanMac отменён"
+                """
+            )
+        }
+        val sec = minutes * 60
+        val expireAtCmd = "expr \$(date +%s) + $sec"
+        val startNdm = when (mode) {
+            "permit" -> "ip hotspot host $cleanMac permit"
+            "gor4akov" -> "ip hotspot host $cleanMac policy Gor4akovNET"
+            else -> "ip hotspot host $cleanMac permit"
+        }
+        val endNdm = when (mode) {
+            "permit" -> "ip hotspot host $cleanMac deny"
+            "gor4akov" -> "no ip hotspot host $cleanMac policy"
+            else -> "ip hotspot host $cleanMac deny"
+        }
+        return sh(
+            """
+            pidf="/tmp/gbox_timer_${key}.pid"
+            [ -f "§pidf" ] && kill §(cat "§pidf" 2>/dev/null) 2>/dev/null || true
+            LD_LIBRARY_PATH= /bin/ndmc -c '${sq(startNdm)}' >/dev/null 2>&1
+            LD_LIBRARY_PATH= /bin/ndmc -c 'system configuration save' >/dev/null 2>&1
+            exp=§($expireAtCmd 2>/dev/null || echo 0)
+            printf '%s|%s|%s\n' '${sq(cleanMac)}' "§exp" '${sq(mode)}' > "/tmp/gbox_timer_${key}.meta"
+            (
+              sleep $sec
+              LD_LIBRARY_PATH= /bin/ndmc -c '${sq(endNdm)}' >/dev/null 2>&1
+              LD_LIBRARY_PATH= /bin/ndmc -c 'system configuration save' >/dev/null 2>&1
+              rm -f "/tmp/gbox_timer_${key}.meta" "/tmp/gbox_timer_${key}.pid"
+            ) >/dev/null 2>&1 &
+            echo $! > "§pidf"
+            echo "OK: Таймер на ${minutes} мин для $cleanMac запущен на роутере"
+            """
+        )
+    }
+
+    fun setHostScheduleCmd(mac: String, startHour: Int, stopHour: Int, enable: Boolean): String {
+        val cleanMac = GboxScripts.sanitizeMac(mac)
+        if (cleanMac.length < 11) return "echo 'ERR: Некорректный MAC'; exit 1"
+        val schedName = "g4_${cleanMac.replace(":", "").takeLast(6).lowercase()}"
+        return if (!enable) {
+            ndmcSaveCmd(
+                "no ip hotspot host $cleanMac schedule",
+                "no schedule $schedName"
+            )
+        } else {
+            ndmcSaveCmd(
+                "schedule $schedName",
+                "schedule $schedName action start 0 ${startHour.coerceIn(0, 23)} *",
+                "schedule $schedName action stop 0 ${stopHour.coerceIn(0, 23)} *",
+                "ip hotspot host $cleanMac schedule $schedName"
+            )
+        }
+    }
+
+    fun setHostStaticIpCmd(mac: String, ip: String, name: String): String {
+        val cleanMac = GboxScripts.sanitizeMac(mac)
+        if (cleanMac.length < 11) return "echo 'ERR: Некорректный MAC'; exit 1"
+        val cmds = mutableListOf<String>()
+        if (ip.isNotBlank()) cmds.add("ip dhcp host $cleanMac ${ip.trim()}")
+        if (name.isNotBlank()) cmds.add("ip hotspot host $cleanMac name ${name.trim().replace("\"", "")}")
+        if (cmds.isEmpty()) return "echo 'ERR: Укажите IP или имя'"
+        return ndmcSaveCmd(*cmds.toTypedArray())
+    }
 
     fun svcCmd(id: String, action: String): String = sh(
         "/opt/etc/init.d/${sq(id)} ${sq(action)} 2>&1"
@@ -788,17 +1338,21 @@ object MonitorScripts {
         else -> sh("dmesg 2>/dev/null | tail -n 70")
     }
 
-    fun wolCmd(mac: String): String = sh(
-        """
-        m='${sq(mac)}'
-        if LD_LIBRARY_PATH= /bin/ndmc -c "ip hotspot wake §m" 2>/dev/null | grep -qiE 'error|such command|invalid'; then
-          bcast=§(ip -4 addr show br0 2>/dev/null | awk '/inet /{print §4; exit}')
-          [ -n "§bcast" ] || bcast="255.255.255.255"
-          LC_ALL=C awk -v m="§m" 'BEGIN{m=tolower(m);gsub(/:/,"",m);h="0123456789abcdef";p="";for(i=0;i<6;i++)p=p sprintf("%c",255);for(i=1;i<=16;i++)for(j=1;j<=12;j+=2){v=(index(h,substr(m,j,1))-1)*16+(index(h,substr(m,j+1,1))-1);p=p sprintf("%c",v)}printf "%s",p}' | nc -u -w1 "§bcast" 9 2>/dev/null || true
-        fi
-        echo "OK: WoL отправлен на §m"
-        """
-    )
+    fun wolCmd(mac: String): String {
+        val cleanMac = GboxScripts.sanitizeMac(mac)
+        if (cleanMac.length < 11) return "echo 'ERR: Некорректный MAC'; exit 1"
+        return sh(
+            """
+            m='${sq(cleanMac)}'
+            if LD_LIBRARY_PATH= /bin/ndmc -c "ip hotspot wake §m" 2>/dev/null | grep -qiE 'error|such command|invalid'; then
+              bcast=§(ip -4 addr show br0 2>/dev/null | awk '/inet /{print §4; exit}')
+              [ -n "§bcast" ] || bcast="255.255.255.255"
+              LC_ALL=C awk -v m="§m" 'BEGIN{m=tolower(m);gsub(/:/,"",m);h="0123456789abcdef";p="";for(i=0;i<6;i++)p=p sprintf("%c",255);for(i=1;i<=16;i++)for(j=1;j<=12;j+=2){v=(index(h,substr(m,j,1))-1)*16+(index(h,substr(m,j+1,1))-1);p=p sprintf("%c",v)}printf "%s",p}' | nc -u -w1 "§bcast" 9 2>/dev/null || true
+            fi
+            echo "OK: WoL отправлен на §m"
+            """
+        )
+    }
 
     fun listDirCmd(dir: String): String = sh(
         """
@@ -841,24 +1395,117 @@ object MonitorScripts {
         """
     )
 
+    fun restoreBakFileCmd(path: String): String = sh(
+        """
+        p='${sq(path)}'
+        [ -f "§p.bak" ] || { echo "ERR: Резервная копия .bak не найдена"; exit 1; }
+        cp -f "§p.bak" "§p" && echo "OK: Восстановлено из .bak"
+        """
+    )
+
     fun mkdirCmd(path: String): String = sh("mkdir -p '${sq(path)}' 2>&1 && echo 'OK: Папка создана'")
     fun touchFileCmd(path: String): String = sh("touch '${sq(path)}' 2>&1 && echo 'OK: Файл создан'")
     fun rmPathCmd(path: String): String = sh("rm -rf '${sq(path)}' 2>&1 && echo 'OK: Удалено'")
 
+    val CMD_TORCH_LIVE = sh(
+        """
+        snap_dev() { awk 'NR>2{gsub(/:/,"",§1); if(§1~/^(eth|br|ra|rai|wg|z2k|tun|ppp)/) printf "%s %s %s %s %s %s %s\n", §1, §2, §3, §4, §10, §11, §12}' /proc/net/dev; }
+        a=§(snap_dev)
+        sleep 1
+        b=§(snap_dev)
+        ifaces=§(awk -v A="§a" -v B="§b" '$AWK_ESC BEGIN{
+          na=split(A,la,"\n"); for(i=1;i<=na;i++){split(la[i],p," "); r1[p[1]]=p[2]; rp1[p[1]]=p[3]; rd1[p[1]]=p[4]; t1[p[1]]=p[5]; tp1[p[1]]=p[6]; td1[p[1]]=p[7]}
+          nb=split(B,lb,"\n"); printf "["
+          for(i=1;i<=nb;i++){
+            split(lb[i],p," "); dev=p[1]; if(dev=="") continue
+            dr=(p[2]-r1[dev])*8/1000; dt=(p[5]-t1[dev])*8/1000
+            pps=(p[3]-rp1[dev])+(p[6]-tp1[dev])
+            drops=(p[4]-rd1[dev])+(p[7]-td1[dev])
+            printf "%s{\"dev\":\"%s\",\"rx_kbps\":%.1f,\"tx_kbps\":%.1f,\"pps\":%.0f,\"drops\":%.0f}", (n++?",":""), esc(dev), (dr<0?0:dr), (dt<0?0:dt), (pps<0?0:pps), (drops<0?0:drops)
+          }
+          printf "]"
+        }')
+        hs_names=§(LD_LIBRARY_PATH= /bin/ndmc -c "show ip hotspot" 2>/dev/null | awk '/^[[:space:]]*ip:/{ip=§2} /^[[:space:]]*name:/{sub(/^[^:]*:[[:space:]]*/,""); nm=§0; if(ip!="") print ip"="nm; ip=""; nm=""}')
+        qmap=§(tail -n 120 /opt/etc/AdGuardHome/data/querylog.json 2>/dev/null | awk '{
+          if(match(§0, /"QH":"([^"]+)"/, q) && match(§0, /"Answer":\[[^\]]*"([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)"/, a)) print a[1]"="q[1]
+        }')
+        flows=§(HN="§hs_names" QM="§qmap" awk '$AWK_ESC BEGIN{
+          nh=split(ENVIRON["HN"], hl, "\n"); for(i=1;i<=nh;i++){split(hl[i],p,"="); if(p[1]!="") names[p[1]]=p[2]}
+          nq=split(ENVIRON["QM"], ql, "\n"); for(i=1;i<=nq;i++){split(ql[i],p,"="); if(p[1]!="") doms[p[1]]=p[2]}
+        }
+        NR<=220{
+          proto=§3; st=""; src=""; dst=""; dport=""; by=0
+          for(i=1;i<=NF;i++){
+            if(§i ~ /^(ESTABLISHED|SYN_SENT|TIME_WAIT|CLOSE|ASSURED)/) st=§i
+            if(§i ~ /^src=/ && src=="") src=substr(§i,5)
+            if(§i ~ /^dst=/ && dst=="") dst=substr(§i,5)
+            if(§i ~ /^dport=/ && dport=="") dport=substr(§i,7)
+            if(§i ~ /^bytes=/) by+=substr(§i,7)+0
+          }
+          if(src=="") next
+          sn=(src in names)?names[src]:src
+          dn=(dst in doms)?doms[dst]:dst
+          key=sn"|"dst"|"dport"|"proto
+          cnt[key]++; bytes[key]+=by; state[key]=(st!=""?st:"UDP"); host[key]=dn
+        }
+        END{
+          printf "["; c=0
+          for(k in cnt){
+            if(c>=35) break
+            split(k, p, "|")
+            printf "%s{\"src\":\"%s\",\"dst\":\"%s\",\"host\":\"%s\",\"port\":\"%s\",\"proto\":\"%s\",\"st\":\"%s\",\"conns\":%d,\"bytes\":%.0f}",
+              (c++?",":""), esc(p[1]), esc(p[2]), esc(host[k]), esc(p[3]), esc(p[4]), esc(state[k]), cnt[k], bytes[k]
+          }
+          printf "]"
+        }' /proc/net/nf_conntrack 2>/dev/null)
+        [ -n "§flows" ] || flows='[]'
+        acct=§(cat /proc/sys/net/netfilter/nf_conntrack_acct 2>/dev/null | tr -dc '0-9')
+        printf '{"ifaces":%s,"flows":%s,"acct":%s}\n' "§{ifaces:-[]}" "§flows" "§{acct:-0}"
+        """
+    )
+
     fun probeHostCmd(host: String, mode: String): String {
-        val h = sq(host.trim().ifEmpty { "1.1.1.1" })
+        val h = sq(host.trim().ifEmpty { "youtube.com" })
         return when (mode) {
             "ping" -> sh("ping -c 5 -W 2 '$h' 2>&1")
             "trace" -> sh("traceroute -n -w 2 -m 15 '$h' 2>&1 || tracepath -n '$h' 2>&1")
             "dns" -> sh("nslookup '$h' 127.0.0.1 2>&1")
+            "dns_cmp" -> sh(
+                """
+                echo "=== Сравнение DNS для '$h' ==="
+                for srv in "127.0.0.1 (Роутер/AGH)" "1.1.1.1 (Cloudflare)" "8.8.8.8 (Google)" "77.88.8.8 (Yandex)"; do
+                  ip="${'$'}{srv%% *}"
+                  ans=§(nslookup '$h' "§ip" 2>&1 | awk '/^Address/{a=§NF} END{print a}')
+                  echo "§srv -> §{ans:-таймаут/подмена}"
+                done
+                """
+            )
+            "dpi" -> sh(
+                """
+                echo "=== Диагностика DPI / TLS ClientHello: '$h' ==="
+                curl -vI --connect-timeout 5 --max-time 8 "https://$h" 2>&1 | grep -iE 'Trying|Connected|SSL connection|ALPN|HTTP/|subject:|issuer:|error|reset|timed out' | head -n 25
+                echo "--- Статус NFQUEUE mangle ---"
+                iptables -t mangle -L -v -n 2>/dev/null | grep -E 'Chain|NFQUEUE' | head -n 15
+                """
+            )
+            "tcpdump" -> sh(
+                """
+                if ! command -v tcpdump >/dev/null 2>&1; then
+                  echo "tcpdump не установлен. Установите его в разделе Службы -> пакет 'tcpdump'."
+                else
+                  echo "=== Захват первых 25 пакетов (5с) для '$h' ==="
+                  timeout 5 tcpdump -nn -c 25 host '$h' 2>&1 || tcpdump -nn -c 25 2>&1 | head -n 25
+                fi
+                """
+            )
             "http" -> sh("curl -IsS --max-time 6 'https://$h' 2>&1 | head -n 20")
-            "conntrack" -> sh("awk '{for(i=1;i<=NF;i++) if(§i~/^src=/){s=substr(§i,5); c[s]++; break}} END{for(k in c) printf \"%5d  %s\n\", c[k], k}' /proc/net/nf_conntrack 2>/dev/null | sort -rn | head -n 20")
+            "conntrack" -> sh("awk '{for(i=1;i<=NF;i++) if(§i~/^src=/){s=substr(§i,5); c[s]++; break}} END{for(k in c) printf \"%5d  %s\\n\", c[k], k}' /proc/net/nf_conntrack 2>/dev/null | sort -rn | head -n 20")
             "ports" -> sh("netstat -tulnp 2>/dev/null || netstat -lnt 2>/dev/null")
             "traffic" -> sh(
                 """
-                a=§(awk 'NR>2{gsub(/:/,"",§1); if(§1~/^(eth|br|ra|rai|wg|tun|ppp)/) print §1, §2, §10}' /proc/net/dev)
+                a=§(awk 'NR>2{gsub(/:/,"",§1); if(§1~/^(eth|br|ra|rai|wg|z2k|tun|ppp)/) print §1, §2, §10}' /proc/net/dev)
                 sleep 1
-                b=§(awk 'NR>2{gsub(/:/,"",§1); if(§1~/^(eth|br|ra|rai|wg|tun|ppp)/) print §1, §2, §10}' /proc/net/dev)
+                b=§(awk 'NR>2{gsub(/:/,"",§1); if(§1~/^(eth|br|ra|rai|wg|z2k|tun|ppp)/) print §1, §2, §10}' /proc/net/dev)
                 awk -v A="§a" -v B="§b" 'BEGIN{
                   na=split(A,la,"\n"); for(i=1;i<=na;i++){split(la[i],p," "); r1[p[1]]=p[2]; t1[p[1]]=p[3]}
                   nb=split(B,lb,"\n"); for(i=1;i<=nb;i++){split(lb[i],p," "); if(p[1]!=""){dr=(p[2]-r1[p[1]])*8/1000; dt=(p[3]-t1[p[1]])*8/1000; printf "%-14s ↓ %8.1f kbps   ↑ %8.1f kbps\n", p[1], dr, dt}}

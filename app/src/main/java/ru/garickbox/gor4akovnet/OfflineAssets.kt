@@ -9,6 +9,7 @@ import org.json.JSONObject
 data class OfflineManifestInfo(
     val available: Boolean,
     val z2kTag: String,
+    val adguardTag: String,
     val archesReady: List<String>,
     val totalMb: Float
 )
@@ -20,11 +21,18 @@ object OfflineAssets {
     private fun readAssetBytes(context: Context, path: String): ByteArray =
         context.assets.open(path).use { it.readBytes() }
 
+    private fun resolveVariantAsset(context: Context, xzPath: String, gzPath: String): Pair<String, Boolean>? = when {
+        assetExists(context, xzPath) -> xzPath to true
+        assetExists(context, gzPath) -> gzPath to false
+        else -> null
+    }
+
     fun inspectManifest(context: Context): OfflineManifestInfo {
         return runCatching {
             val json = JSONObject(readAssetBytes(context, "offline/manifest.json").toString(Charsets.UTF_8))
             val ent = json.optJSONObject("entware")
             val z2k = json.optJSONObject("z2k")
+            val agh = json.optJSONObject("adguard")
             val arches = mutableListOf<String>()
             var totalBytes = 0L
             ent?.keys()?.forEach { k ->
@@ -37,14 +45,19 @@ object OfflineAssets {
             }
             totalBytes += z2k?.optLong("repo_size", 0L) ?: 0L
             totalBytes += z2k?.optLong("zapret2_size", 0L) ?: 0L
+            val aghArches = agh?.optJSONObject("arches")
+            aghArches?.keys()?.forEach { k ->
+                totalBytes += aghArches.optJSONObject(k)?.optLong("size", 0L) ?: 0L
+            }
             OfflineManifestInfo(
                 available = arches.isNotEmpty(),
                 z2kTag = z2k?.optString("tag", "unknown") ?: "unknown",
+                adguardTag = agh?.optString("tag", "-") ?: "-",
                 archesReady = arches,
                 totalMb = totalBytes / 1024f / 1024f
             )
         }.getOrElse {
-            OfflineManifestInfo(false, "-", emptyList(), 0f)
+            OfflineManifestInfo(false, "-", "-", emptyList(), 0f)
         }
     }
 
@@ -57,22 +70,28 @@ object OfflineAssets {
         onLog: (String) -> Unit
     ): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
-            val assetPath = "offline/entware/${passport.entwareInstaller}"
-            if (!assetExists(context, assetPath)) {
-                error("Оффлайн-архив $assetPath не найден в APK.")
-            }
+            val gzName = passport.entwareInstaller
+            val xzName = gzName.removeSuffix(".gz") + ".xz"
+            val resolved = resolveVariantAsset(context, "offline/entware/$xzName", "offline/entware/$gzName")
+                ?: error("Офлайн-архив $gzName/.xz не найден в APK.")
             if (targetMedia.freeMb in 1..15) {
                 error("Накопитель ${targetMedia.label} почти заполнен (${targetMedia.freeMb} МБ свободно, нужно минимум 16 МБ).")
             }
-            val bytes = readAssetBytes(context, assetPath)
-            onLog("Читаю из APK ${passport.entwareInstaller} (${bytes.size / 1024} КБ)...")
+
+            val rawAsset = readAssetBytes(context, resolved.first)
+            val bytes = if (resolved.second) {
+                onLog("Распаковываю ${resolved.first.substringAfterLast('/')} (${rawAsset.size / 1024} КБ) -> .tar.gz для NDMS...")
+                Gboxcore.decompressXzToGz(rawAsset)
+            } else {
+                rawAsset
+            }
+            onLog("Подготовлен $gzName (${bytes.size / 1024} КБ)")
 
             val session = RciSession(passport.host, user, pass)
             session.ensureAuth()
 
             if (passport.hasWebdavComp) {
                 onLog("Включаю WebDAV на роутере...")
-                // NDMS 4.x/5.x syntax + NDMS 3.x fallback (ignored cleanly if unsupported)
                 runCatching {
                     session.parseCli(listOf(
                         "ip http webdav",
@@ -101,15 +120,13 @@ object OfflineAssets {
 
                 val shareName = if (targetMedia.isInternalStorage) "storage" else targetMedia.label.ifBlank { targetMedia.name }
                 val candidates = listOf(
-                    "/install" to "/install/${passport.entwareInstaller}",
-                    "/$shareName/install" to "/$shareName/install/${passport.entwareInstaller}",
-                    "/webdav/$shareName/install" to "/webdav/$shareName/install/${passport.entwareInstaller}",
-                    "/webdav/install" to "/webdav/install/${passport.entwareInstaller}",
-                    "" to "/${passport.entwareInstaller}"
+                    "/install" to "/install/$gzName",
+                    "/$shareName/install" to "/$shareName/install/$gzName",
+                    "/webdav/$shareName/install" to "/webdav/$shareName/install/$gzName",
+                    "/webdav/install" to "/webdav/install/$gzName",
+                    "" to "/$gzName"
                 )
 
-                // BUG-T5/T6: сначала пробуем ТОЛЬКО первый живой порт с первым кандидатом.
-                // Если не вышло — перебираем остальное, но НЕ больше 90 секунд суммарно.
                 var uploadedPath: String? = null
                 var livePort: Int? = null
                 for (port in portsToTry) {
@@ -121,12 +138,13 @@ object OfflineAssets {
                 onLog("WebDAV живой на порту $livePort, пробую залить ${bytes.size / 1024} КБ...")
                 val deadline = System.currentTimeMillis() + 90_000L
                 for ((dir, path) in candidates) {
-                    if (System.currentTimeMillis() > deadline) {
+                    val remaining = (deadline - System.currentTimeMillis()).toInt()
+                    if (remaining <= 4000) {
                         onLog("[WARN] WebDAV PUT исчерпал 90с — прерываю перебор")
                         break
                     }
                     if (dir.isNotBlank()) session.mkcolWebDav(livePort, dir)
-                    val putRes = session.putWebDavFile(livePort, path, bytes)
+                    val putRes = session.putWebDavFile(livePort, path, bytes, readTimeoutMs = remaining)
                     if (putRes.isSuccess) {
                         uploadedPath = "$livePort:$path"
                         onLog("Залито по WebDAV -> http://${passport.host}:$livePort$path (${putRes.getOrNull()})")
@@ -146,7 +164,7 @@ object OfflineAssets {
                     return@runCatching "Entware загружен на роутер и запущен на $diskId. Подождите ~40 сек пока распакуется Dropbear SSH :222!"
                 }
             }
-            error("WebDAV недоступен или не включён — переходите к инструкции ручного копирования /install/${passport.entwareInstaller}.")
+            error("WebDAV недоступен или не включён — переходите к инструкции ручного копирования /install/$gzName.")
         }
     }
 
@@ -157,49 +175,99 @@ object OfflineAssets {
         sshUser: String,
         sshPass: String,
         entwareArch: String,
+        includeAdguard: Boolean = false,
         onLog: (String) -> Unit
     ): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            val ipksPath = "offline/ipks/ipks-$entwareArch.tar.gz"
-            val z2kRepoPath = "offline/z2k/z2k-repo.tar.gz"
-            val zapret2Path = "offline/z2k/zapret2-openwrt-embedded.tar.gz"
-
-            Gboxcore.runRouterSSH(host, sshPort, sshUser, sshPass, "mkdir -p /opt/gor4akov-offline/ipks /opt/gor4akov-offline/z2k")
-
-            if (assetExists(context, ipksPath)) {
-                val data = readAssetBytes(context, ipksPath)
-                onLog("Отправка офлайн-пакетов ($entwareArch, ${data.size / 1024} КБ) -> роутер...")
-                Gboxcore.pushBytesSSH(host, sshPort, sshUser, sshPass, "/opt/gor4akov-offline/ipks.tar.gz", data)
-                val sizeOut = Gboxcore.runRouterSSH(host, sshPort, sshUser, sshPass, "wc -c < /opt/gor4akov-offline/ipks.tar.gz 2>/dev/null | tr -d ' '")
-                val remoteSize = sizeOut.trim().toLongOrNull() ?: 0L
-                if (remoteSize != data.size.toLong()) {
-                    error("Офлайн-пакеты обрезаны при передаче: локально ${data.size} Б, на роутере ${remoteSize} Б.")
-                }
-            } else {
-                onLog("Внимание: $ipksPath отсутствует в APK — будут использованы пакеты из сети.")
+            val optFreeKb = Gboxcore.runRouterSSH(host, sshPort, sshUser, sshPass, "df -Pk /opt 2>/dev/null | awk 'NR==2{print \$4}'")
+                .trim().toLongOrNull() ?: 0L
+            val neededKb = if (includeAdguard) 65_000L else 28_000L
+            if (optFreeKb in 1 until neededKb) {
+                error("На /opt свободно всего ${optFreeKb / 1024} МБ, нужно минимум ${neededKb / 1024} МБ для распаковки.")
             }
 
-            if (assetExists(context, z2kRepoPath)) {
-                val data = readAssetBytes(context, z2kRepoPath)
-                onLog("Отправка z2k-enhanced (${data.size / 1024} КБ) -> роутер...")
-                Gboxcore.pushBytesSSH(host, sshPort, sshUser, sshPass, "/opt/gor4akov-offline/z2k-repo.tar.gz", data)
-                val sizeOut = Gboxcore.runRouterSSH(host, sshPort, sshUser, sshPass, "wc -c < /opt/gor4akov-offline/z2k-repo.tar.gz 2>/dev/null | tr -d ' '")
-                val remoteSize = sizeOut.trim().toLongOrNull() ?: 0L
-                if (remoteSize != data.size.toLong()) {
-                    error("z2k-enhanced обрезан при передаче: локально ${data.size} Б, на роутере ${remoteSize} Б.")
+            Gboxcore.runRouterSSH(host, sshPort, sshUser, sshPass, "mkdir -p /opt/gor4akov-offline/ipks /opt/gor4akov-offline/z2k /opt/sbin")
+
+            suspend fun pushTarPayload(label: String, xzAsset: String, gzAsset: String, remoteTarGz: String) {
+                val resolved = resolveVariantAsset(context, xzAsset, gzAsset)
+                if (resolved == null) {
+                    onLog("Внимание: $xzAsset отсутствует в APK — будут использованы пакеты из сети.")
+                    return
+                }
+                val data = readAssetBytes(context, resolved.first)
+                onLog("Отправка $label (${data.size / 1024} КБ) -> роутер...")
+                if (resolved.second) {
+                    Gboxcore.pushXzAsGzSSH(host, sshPort, sshUser, sshPass, remoteTarGz, data)
+                    val ok = Gboxcore.runRouterSSH(host, sshPort, sshUser, sshPass, "tar -tzf '$remoteTarGz' >/dev/null 2>&1 && echo OK || echo BAD")
+                    if (!ok.contains("OK")) error("$label повреждён при потоковой распаковке на роутер.")
+                } else {
+                    Gboxcore.pushBytesSSH(host, sshPort, sshUser, sshPass, remoteTarGz, data)
+                    val sizeOut = Gboxcore.runRouterSSH(host, sshPort, sshUser, sshPass, "wc -c < '$remoteTarGz' 2>/dev/null | tr -d ' '")
+                    val remoteSize = sizeOut.trim().toLongOrNull() ?: 0L
+                    if (remoteSize != data.size.toLong()) {
+                        error("$label обрезан при передаче: локально ${data.size} Б, на роутере $remoteSize Б.")
+                    }
                 }
             }
 
-            if (assetExists(context, zapret2Path)) {
-                val data = readAssetBytes(context, zapret2Path)
-                onLog("Отправка движка nfqws2 / zapret2 (${data.size / 1024} КБ) -> роутер...")
-                Gboxcore.pushBytesSSH(host, sshPort, sshUser, sshPass, "/opt/gor4akov-offline/openwrt-embedded.tar.gz", data)
-                val sizeOut = Gboxcore.runRouterSSH(host, sshPort, sshUser, sshPass, "wc -c < /opt/gor4akov-offline/openwrt-embedded.tar.gz 2>/dev/null | tr -d ' '")
-                val remoteSize = sizeOut.trim().toLongOrNull() ?: 0L
-                if (remoteSize != data.size.toLong()) {
-                    error("nfqws2/zapret2 обрезан при передаче: локально ${data.size} Б, на роутере ${remoteSize} Б.")
+            pushTarPayload(
+                "офлайн-пакетов ($entwareArch)",
+                "offline/ipks/ipks-$entwareArch.tar.xz",
+                "offline/ipks/ipks-$entwareArch.tar.gz",
+                "/opt/gor4akov-offline/ipks.tar.gz"
+            )
+            pushTarPayload(
+                "z2k-enhanced",
+                "offline/z2k/z2k-repo.tar.xz",
+                "offline/z2k/z2k-repo.tar.gz",
+                "/opt/gor4akov-offline/z2k-repo.tar.gz"
+            )
+            pushTarPayload(
+                "движка nfqws2 / zapret2",
+                "offline/z2k/zapret2-openwrt-embedded.tar.xz",
+                "offline/z2k/zapret2-openwrt-embedded.tar.gz",
+                "/opt/gor4akov-offline/openwrt-embedded.tar.gz"
+            )
+
+            if (includeAdguard) {
+                val aghAsset = "offline/adguard/AdGuardHome-$entwareArch.bin.xz"
+                if (assetExists(context, aghAsset)) {
+                    val xzBytes = readAssetBytes(context, aghAsset)
+                    onLog("Передача офлайн AdGuard Home (${xzBytes.size / 1024} КБ в .xz -> /opt/sbin/AdGuardHome)...")
+                    Gboxcore.pushXzBinarySSH(host, sshPort, sshUser, sshPass, "/opt/sbin/AdGuardHome", xzBytes)
+                    val sz = Gboxcore.runRouterSSH(host, sshPort, sshUser, sshPass, "wc -c < /opt/sbin/AdGuardHome 2>/dev/null | tr -d ' '")
+                        .trim().toLongOrNull() ?: 0L
+                    if (sz < 5_000_000L) {
+                        error("Бинарник AdGuardHome не дописан на роутер ($sz Б).")
+                    }
+                    onLog("[OK] AdGuard Home развёрнут в /opt/sbin/AdGuardHome (${sz / 1024 / 1024} МБ)")
+                } else {
+                    onLog("Внимание: офлайн AdGuardHome ($aghAsset) не найден в APK — попробуем opkg из сети.")
                 }
             }
+        }
+    }
+
+    suspend fun pushSingleAdguardOverSSH(
+        context: Context,
+        host: String,
+        sshPort: Int,
+        sshUser: String,
+        sshPass: String,
+        entwareArch: String,
+        onLog: (String) -> Unit
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val aghAsset = "offline/adguard/AdGuardHome-$entwareArch.bin.xz"
+            if (!assetExists(context, aghAsset)) {
+                error("Офлайн AdGuardHome для $entwareArch не найден в APK.")
+            }
+            val xzBytes = readAssetBytes(context, aghAsset)
+            onLog("Отправка AdGuard Home v1.0.0 (${xzBytes.size / 1024} КБ .xz) -> /opt/sbin/AdGuardHome...")
+            Gboxcore.pushXzBinarySSH(host, sshPort, sshUser, sshPass, "/opt/sbin/AdGuardHome", xzBytes)
+            val sz = Gboxcore.runRouterSSH(host, sshPort, sshUser, sshPass, "wc -c < /opt/sbin/AdGuardHome 2>/dev/null | tr -d ' '")
+                .trim().toLongOrNull() ?: 0L
+            if (sz < 5_000_000L) error("Бинарник AdGuardHome повреждён ($sz Б)")
         }
     }
 }

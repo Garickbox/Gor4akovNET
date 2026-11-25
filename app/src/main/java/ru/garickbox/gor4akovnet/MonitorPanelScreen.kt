@@ -1,8 +1,10 @@
 package ru.garickbox.gor4akovnet
 
-import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.util.Base64
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
@@ -42,6 +44,7 @@ import androidx.core.content.FileProvider
 import gboxcore.Gboxcore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -70,41 +73,27 @@ private enum class MonitorPage(
     NAT_PPE(MonitorGroup.NET, "PPE & Порты", Icons.Rounded.Security, "nat_ppe"),
     Z2K_MODES(MonitorGroup.BYPASS, "Zapret2 (z2k)", Icons.Rounded.Shield, "z2k"),
     WARP(MonitorGroup.BYPASS, "WARP & Игры", Icons.Rounded.Public, "warp"),
-    Z2K_LISTS(MonitorGroup.BYPASS, "Списки & Подбор", Icons.Rounded.List, "z2k"),
+    Z2K_LISTS(MonitorGroup.BYPASS, "Подбор & Списки", Icons.Rounded.List, "z2k"),
     WIFI(MonitorGroup.WIFI, "Wi-Fi & Слоты AP", Icons.Rounded.Wifi, "wifi"),
     DEVICES(MonitorGroup.WIFI, "Клиенты", Icons.Rounded.Devices, "devices"),
-    BACKUPS(MonitorGroup.TOOLS, "Бэкапы", Icons.Rounded.Save, "backups"),
+    BACKUPS(MonitorGroup.TOOLS, "Бэкапы v2", Icons.Rounded.Save, "backups"),
     FILES(MonitorGroup.TOOLS, "X-plore Файлы", Icons.Rounded.Folder, "files"),
     TORCH(MonitorGroup.TOOLS, "Torch & Трафик", Icons.Rounded.NetworkCheck, "torch"),
     LOGS_SSH(MonitorGroup.TOOLS, "Логи & SSH", Icons.Rounded.Terminal, "logs")
 }
 
-private fun isReadOnlyCmd(cmd: String): Boolean {
-    // Изменяющие команды НЕ ретраим — иначе opkg upgrade / warp install выполнятся дважды
-    val dangerous = listOf(
-        "opkg upgrade", "opkg install", "opkg remove",
-        "z2k-warp", "warpInstall", "install.sh", "installer", "reboot",
-        "S99", "S98", "S97", "S96", "S51",
-        "/opt/etc/init.d", "togglez2k", "warpgametoggle",
-        "wol ", "wakeonlan"
-    )
-    val lower = cmd.lowercase()
-    return dangerous.none { lower.contains(it.lowercase()) }
-}
-
-private suspend fun runSshRetry(prefs: Prefs, cmd: String): String {
+private suspend fun runSshCmd(prefs: Prefs, cmd: String, readOnly: Boolean = false): String {
     val host = prefs.routerHost.ifBlank { "192.168.1.1" }
     val port = prefs.sshPort
-    val allowRetry = isReadOnlyCmd(cmd)
     return withContext(Dispatchers.IO) {
         try {
             val first = Gboxcore.runRouterSSH(host, port, prefs.sshUser, prefs.sshPass, cmd)
-            if (!allowRetry || first.isNotBlank()) return@withContext first
+            if (!readOnly || first.isNotBlank()) return@withContext first
             Thread.sleep(250)
             Gboxcore.runRouterSSH(host, port, prefs.sshUser, prefs.sshPass, cmd)
         } catch (e: Throwable) {
             val msg = e.message.orEmpty()
-            if (allowRetry && (msg.contains("EOF", true) || msg.contains("closed", true))) {
+            if (readOnly && (msg.contains("EOF", true) || msg.contains("closed", true))) {
                 Thread.sleep(250)
                 Gboxcore.runRouterSSH(host, port, prefs.sshUser, prefs.sshPass, cmd)
             } else throw e
@@ -118,7 +107,6 @@ private fun parseJsonOut(raw: String, tag: String): JSONObject {
         val preview = raw.trim().take(180)
         throw IllegalArgumentException(if (preview.isBlank()) "$tag: пустой ответ роутера" else "$tag (не JSON): $preview")
     }
-    // Берём ПЕРВЫЙ сбалансированный {} — игнорируем мусор до/после и второй JSON
     var depth = 0
     var inStr = false
     var esc = false
@@ -154,6 +142,12 @@ private fun formatBytes(b: Double): String = when {
     else -> String.format("%.0f Б", b)
 }
 
+private fun formatSizeMb(bytes: Long): String = when {
+    bytes >= 1024L * 1024L -> String.format("%.1f МБ", bytes / 1048576.0)
+    bytes >= 1024L -> "${bytes / 1024L} КБ"
+    else -> "$bytes Б"
+}
+
 private fun decodeB64(b64: String): String {
     if (b64.isBlank()) return ""
     return runCatching { String(Base64.decode(b64, Base64.DEFAULT), Charsets.UTF_8) }.getOrDefault("")
@@ -162,6 +156,7 @@ private fun decodeB64(b64: String): String {
 @Composable
 fun MonitorPanelScreen(
     prefs: Prefs,
+    passport: RouterPassport? = null,
     onBackupSaved: (BackupEntry) -> Unit,
     onBack: () -> Unit
 ) {
@@ -175,19 +170,59 @@ fun MonitorPanelScreen(
     var loading by remember { mutableStateOf(false) }
     var loadGen by remember { mutableIntStateOf(0) }
     var statusMsg by remember { mutableStateOf("") }
-    var errMsg by remember { mutableStateOf("") }
+    var pageErrMsg by remember { mutableStateOf("") }
+    var actionErrMsg by remember { mutableStateOf("") }
 
     var helpTopic by remember { mutableStateOf<MonitorHelpTopic?>(null) }
     var svcModalKey by remember { mutableStateOf<String?>(null) }
+    var confirmStopDropbear by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     var overview by remember { mutableStateOf<JSONObject?>(null) }
     var services by remember { mutableStateOf<JSONObject?>(null) }
     var wanNet by remember { mutableStateOf<JSONObject?>(null) }
     var dnsNet by remember { mutableStateOf<JSONObject?>(null) }
     var bypass by remember { mutableStateOf<JSONObject?>(null) }
-    var warpGames by remember { mutableStateOf<JSONObject?>(null) }
+    var warpFull by remember { mutableStateOf<JSONObject?>(null) }
     var wifiDevs by remember { mutableStateOf<JSONObject?>(null) }
 
+    // Sites probe & Optimizer Do/Posle
+    var siteProbeJson by remember { mutableStateOf<JSONObject?>(null) }
+    var diagOut by remember { mutableStateOf("") }
+    var benchBaseline by remember {
+        mutableStateOf(
+            runCatching {
+                if (prefs.benchmarkBaselineJson.isNotBlank()) JSONObject(prefs.benchmarkBaselineJson) else null
+            }.getOrNull()
+        )
+    }
+    var benchAfter by remember { mutableStateOf<JSONObject?>(null) }
+
+    // Sub-outputs
+    var opkgOut by remember { mutableStateOf("") }
+    var benchOut by remember { mutableStateOf("") }
+    var dnsProbeOut by remember { mutableStateOf("") }
+    var siteProbeOut by remember { mutableStateOf("") }
+    var pickOut by remember { mutableStateOf("") }
+    var warpTraceOut by remember { mutableStateOf("") }
+    var torchHost by remember { mutableStateOf("1.1.1.1") }
+    var torchOut by remember { mutableStateOf("") }
+    var torchLive by remember { mutableStateOf(false) }
+    var torchData by remember { mutableStateOf<JSONObject?>(null) }
+    var logsOut by remember { mutableStateOf("") }
+    var logSrc by remember { mutableStateOf("agh") }
+    var logFilter by remember { mutableStateOf("") }
+    var consoleOut by remember { mutableStateOf("") }
+    var customCmd by remember { mutableStateOf("") }
+
+    // Inputs
+    var domainInput by remember { mutableStateOf("") }
+    var wlInput by remember { mutableStateOf("") }
+    var pickDomain by remember { mutableStateOf("youtube.com") }
+    var devSearch by remember { mutableStateOf("") }
+    var devFilter by remember { mutableStateOf("all") }
+    var selectedDevice by remember { mutableStateOf<JSONObject?>(null) }
+
+    // Files
     var dirPath by remember { mutableStateOf("/opt/zapret2") }
     var dirData by remember { mutableStateOf<JSONObject?>(null) }
     var fileModalPath by remember { mutableStateOf("") }
@@ -197,29 +232,15 @@ fun MonitorPanelScreen(
     var newEntryMode by remember { mutableStateOf<String?>(null) }
     var newEntryName by remember { mutableStateOf("") }
 
-    var diagOut by remember { mutableStateOf("") }
-    var opkgOut by remember { mutableStateOf("") }
-    var benchOut by remember { mutableStateOf("") }
-    var dnsProbeOut by remember { mutableStateOf("") }
-    var siteProbeOut by remember { mutableStateOf("") }
-    var pickOut by remember { mutableStateOf("") }
-    var torchHost by remember { mutableStateOf("1.1.1.1") }
-    var torchOut by remember { mutableStateOf("") }
-    var logsOut by remember { mutableStateOf("") }
-    var logSrc by remember { mutableStateOf("agh") }
-    var logFilter by remember { mutableStateOf("") }
-    var consoleOut by remember { mutableStateOf("") }
-    var customCmd by remember { mutableStateOf("") }
-
-    var domainInput by remember { mutableStateOf("") }
-    var wlInput by remember { mutableStateOf("") }
-    var pickDomain by remember { mutableStateOf("youtube.com") }
-    var devSearch by remember { mutableStateOf("") }
-
+    // Backups
     var backupsList by remember { mutableStateOf(prefs.listBackups()) }
+    var backupEst by remember { mutableStateOf("") }
+    var includeMediaBackup by remember { mutableStateOf(false) }
     var restoreEntry by remember { mutableStateOf<BackupEntry?>(null) }
     var backupPreviewText by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var confirmSystemRestore by remember { mutableStateOf<BackupEntry?>(null) }
 
+    // SSH dialog
     var showCreds by remember { mutableStateOf(false) }
     var confirmReboot by remember { mutableStateOf(false) }
     var sshHost by remember { mutableStateOf(prefs.routerHost.ifBlank { "192.168.1.1" }) }
@@ -227,9 +248,32 @@ fun MonitorPanelScreen(
     var sshPort by remember { mutableStateOf(prefs.sshPort.toString()) }
     var sshPass by remember { mutableStateOf(prefs.sshPass) }
     var showPass by remember { mutableStateOf(false) }
+    var bruteBusy by remember { mutableStateOf(false) }
+
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri != null) {
+            scope.launch {
+                loading = true
+                actionErrMsg = ""
+                val res = withContext(Dispatchers.IO) { prefs.importBackupFromUri(uri) }
+                res.onSuccess { entry ->
+                    onBackupSaved(entry)
+                    backupsList = prefs.listBackups()
+                    statusMsg = "Импортирован: ${entry.label} (${formatSizeMb(entry.sizeBytes)})"
+                }.onFailure {
+                    actionErrMsg = "Импорт не удался: ${it.message}"
+                }
+                loading = false
+            }
+        }
+    }
 
     fun showTopic(key: String) {
         helpTopic = MonitorHelp.topics[key]
+    }
+
+    fun showToggleHelp(key: String) {
+        MonitorHelp.toggleHelps[key]?.let { helpTopic = it }
     }
 
     fun showQuickHelp(title: String, what: String, why: String, rec: String, caution: String = "") {
@@ -243,13 +287,13 @@ fun MonitorPanelScreen(
     fun openDir(target: String) {
         scope.launch {
             loading = true
-            errMsg = ""
+            pageErrMsg = ""
             try {
-                val j = parseJsonOut(runSshRetry(prefs, MonitorScripts.listDirCmd(target)), "Файлы")
+                val j = parseJsonOut(runSshCmd(prefs, MonitorScripts.listDirCmd(target), readOnly = true), "Файлы")
                 dirData = j
                 dirPath = j.optString("path", target)
             } catch (e: Throwable) {
-                errMsg = e.message ?: "Ошибка чтения каталога"
+                pageErrMsg = e.message ?: "Ошибка чтения каталога"
             } finally {
                 loading = false
             }
@@ -259,12 +303,12 @@ fun MonitorPanelScreen(
     fun openFile(path: String) {
         scope.launch {
             loading = true
-            errMsg = ""
+            actionErrMsg = ""
             try {
-                val j = parseJsonOut(runSshRetry(prefs, MonitorScripts.readFileCmd(path)), "Файл")
+                val j = parseJsonOut(runSshCmd(prefs, MonitorScripts.readFileCmd(path), readOnly = true), "Файл")
                 val er = j.optString("err")
                 if (er.isNotBlank()) {
-                    errMsg = er
+                    actionErrMsg = er
                 } else {
                     fileModalPath = path
                     fileModalTrunc = j.optBoolean("trunc", false)
@@ -272,7 +316,7 @@ fun MonitorPanelScreen(
                     fileModalOpen = true
                 }
             } catch (e: Throwable) {
-                errMsg = e.message ?: "Ошибка чтения файла"
+                actionErrMsg = e.message ?: "Ошибка чтения файла"
             } finally {
                 loading = false
             }
@@ -280,6 +324,7 @@ fun MonitorPanelScreen(
     }
 
     fun loadPage(target: MonitorPage, force: Boolean = false) {
+        pageErrMsg = ""
         if (target == MonitorPage.BACKUPS) {
             refreshBackups()
             return
@@ -291,49 +336,51 @@ fun MonitorPanelScreen(
         val gen = ++loadGen
         scope.launch {
             loading = true
-            errMsg = ""
             try {
                 when (target) {
                     MonitorPage.OVERVIEW -> if (overview == null || force) {
-                        overview = parseJsonOut(runSshRetry(prefs, MonitorScripts.buildOverviewCmd(force)), "Обзор")
+                        overview = parseJsonOut(runSshCmd(prefs, MonitorScripts.buildOverviewCmd(force), readOnly = true), "Обзор")
                     }
                     MonitorPage.SERVICES, MonitorPage.STORAGE -> if (services == null || force) {
-                        services = parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_SERVICES), "Службы")
+                        services = parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_SERVICES, readOnly = true), "Службы")
                     }
                     MonitorPage.WAN -> if (wanNet == null || force) {
-                        wanNet = parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_WAN_NET), "WAN")
+                        wanNet = parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_WAN_NET, readOnly = true), "WAN")
                     }
                     MonitorPage.DNS -> if (dnsNet == null || force) {
-                        dnsNet = parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_DNS_NET), "AdGuard DNS")
+                        dnsNet = parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_DNS_NET, readOnly = true), "AdGuard DNS")
                     }
                     MonitorPage.NAT_PPE -> {
-                        if (dnsNet == null || force) dnsNet = parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_DNS_NET), "PPE/Порты")
-                        if (wifiDevs == null || force) wifiDevs = parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_WIFI_DEVICES), "Клиенты")
+                        if (dnsNet == null || force) dnsNet = parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_DNS_NET, readOnly = true), "PPE/Порты")
+                        if (wifiDevs == null || force) wifiDevs = parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_WIFI_DEVICES, readOnly = true), "Клиенты")
                     }
                     MonitorPage.Z2K_MODES, MonitorPage.Z2K_LISTS -> if (bypass == null || force) {
-                        bypass = parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_BYPASS_STATE), "Zapret2")
+                        bypass = parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_BYPASS_STATE, readOnly = true), "Zapret2")
                     }
-                    MonitorPage.WARP -> {
-                        // Всегда перезаписываем bypass.warp объектом — никогда не оставляем строку от CMD_BYPASS_STATE
-                        try {
-                            bypass = JSONObject().put("warp", parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_WARP_STATUS), "WARP"))
-                        } catch (e: Throwable) {
-                            bypass = JSONObject().put("warp", JSONObject().put("installed", false).put("running", false))
-                            errMsg = "WARP статус: ${e.message ?: "нет ответа"}"
-                        }
-                        if (warpGames == null || force) runCatching { warpGames = parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_WARP_GAMES), "Игры WARP") }
+                    MonitorPage.WARP -> if (warpFull == null || force) {
+                        warpFull = parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_WARP_FULL, readOnly = true), "WARP")
                     }
                     MonitorPage.WIFI, MonitorPage.DEVICES -> if (wifiDevs == null || force) {
-                        wifiDevs = parseJsonOut(runSshRetry(prefs, MonitorScripts.CMD_WIFI_DEVICES), "Wi-Fi/Клиенты")
+                        wifiDevs = parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_WIFI_DEVICES, readOnly = true), "Wi-Fi/Клиенты")
+                    }
+                    MonitorPage.TORCH -> if (torchData == null || force) {
+                        torchData = parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_TORCH_LIVE, readOnly = true), "Live Torch")
                     }
                     MonitorPage.LOGS_SSH -> if (logsOut.isBlank() || force) {
-                        logsOut = runSshRetry(prefs, MonitorScripts.fetchLog(logSrc))
+                        logsOut = runSshCmd(prefs, MonitorScripts.fetchLog(logSrc), readOnly = true)
                     }
-                    MonitorPage.TORCH, MonitorPage.FILES, MonitorPage.BACKUPS -> {}
+                    MonitorPage.FILES, MonitorPage.BACKUPS -> {}
                 }
             } catch (e: Throwable) {
-                errMsg = e.message ?: "Нет связи по SSH"
-                Telemetry.recordError(prefs, "monitor_${target.name.lowercase()}", errMsg, overview?.optJSONObject("sys")?.optString("model") ?: "", overview?.optJSONObject("sys")?.optString("ndms") ?: "", countAsFail = false)
+                pageErrMsg = e.message ?: "Нет связи по SSH"
+                Telemetry.recordError(
+                    prefs,
+                    "monitor_${target.name.lowercase()}",
+                    pageErrMsg,
+                    overview?.optJSONObject("sys")?.optString("model") ?: "",
+                    overview?.optJSONObject("sys")?.optString("ndms") ?: "",
+                    countAsFail = false
+                )
             } finally {
                 if (gen == loadGen) loading = false
             }
@@ -345,22 +392,115 @@ fun MonitorPanelScreen(
         cmd: String,
         reload: MonitorPage? = null,
         delayMs: Long = 350L,
+        readOnly: Boolean = false,
         onOutput: ((String) -> Unit)? = null
     ) {
         scope.launch {
             loading = true
-            errMsg = ""
+            actionErrMsg = ""
             statusMsg = "$label..."
             try {
-                val res = runSshRetry(prefs, cmd)
+                val res = runSshCmd(prefs, cmd, readOnly = readOnly)
                 if (onOutput != null) onOutput(res)
                 statusMsg = "$label: готово"
                 if (delayMs > 0) delay(delayMs)
                 reload?.let { loadPage(it, force = true) }
             } catch (e: Throwable) {
-                errMsg = "$label: ${e.message}"
+                actionErrMsg = "$label: ${e.message}"
                 statusMsg = ""
-                Telemetry.recordError(prefs, "monitor_action", errMsg, countAsFail = false)
+                Telemetry.recordError(prefs, "monitor_action", actionErrMsg, countAsFail = false)
+            } finally {
+                loading = false
+            }
+        }
+    }
+
+    fun run24SiteProbe() {
+        scope.launch {
+            loading = true
+            actionErrMsg = ""
+            statusMsg = "Проверка 24 популярных сайтов..."
+            try {
+                val raw = runSshCmd(prefs, MonitorScripts.CMD_PROBE_SITES_JSON, readOnly = true)
+                siteProbeJson = parseJsonOut(raw, "Тест 24 сайтов")
+                statusMsg = "Тест 24 сайтов завершён"
+            } catch (e: Throwable) {
+                actionErrMsg = "Тест сайтов: ${e.message}"
+            } finally {
+                loading = false
+            }
+        }
+    }
+
+    fun measureBenchmark(saveAsBaseline: Boolean) {
+        scope.launch {
+            loading = true
+            actionErrMsg = ""
+            statusMsg = if (saveAsBaseline) "Замер точки «До»..." else "Контрольный замер «После»..."
+            try {
+                val snap = parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_BENCH_SNAPSHOT, readOnly = true), "Замер")
+                if (saveAsBaseline || benchBaseline == null) {
+                    benchBaseline = snap
+                    prefs.benchmarkBaselineJson = snap.toString()
+                    benchAfter = null
+                } else {
+                    benchAfter = snap
+                }
+                statusMsg = "Замер завершён"
+            } catch (e: Throwable) {
+                actionErrMsg = "Замер: ${e.message}"
+            } finally {
+                loading = false
+            }
+        }
+    }
+
+    fun installOrBootstrapAdguard() {
+        scope.launch {
+            loading = true
+            actionErrMsg = ""
+            statusMsg = "Установка / настройка AdGuard Home v1.0.0..."
+            try {
+                val host = prefs.routerHost.ifBlank { "192.168.1.1" }
+                val arch = passport?.entwareArch ?: "aarch64-k3.10"
+                val pushRes = OfflineAssets.pushSingleAdguardOverSSH(
+                    context = ctx,
+                    host = host,
+                    sshPort = prefs.sshPort,
+                    sshUser = prefs.sshUser,
+                    sshPass = prefs.sshPass,
+                    entwareArch = arch
+                ) { msg -> statusMsg = msg }
+                if (pushRes.isFailure) {
+                    statusMsg = "Офлайн бинарник пропущен — пробую opkg / конфиг..."
+                }
+                val bootOut = runSshCmd(prefs, MonitorScripts.adguardBootstrapInitCmd(), readOnly = false)
+                dnsProbeOut = bootOut
+                statusMsg = "AdGuard Home настроен"
+                loadPage(MonitorPage.DNS, force = true)
+            } catch (e: Throwable) {
+                actionErrMsg = "AdGuard: ${e.message}"
+            } finally {
+                loading = false
+            }
+        }
+    }
+
+    fun estimateBackupSize() {
+        scope.launch {
+            loading = true
+            actionErrMsg = ""
+            try {
+                val raw = runSshCmd(prefs, GboxScripts.ESTIMATE_BACKUP_SIZE_CMD, readOnly = true)
+                val line = raw.lines().firstOrNull { it.startsWith("EST|") } ?: ""
+                val p = line.split("|")
+                backupEst = if (p.size >= 4) {
+                    "Система (/opt + конфиг): ~${p[1]} МБ (до сжатия) • Носители: ${p[2]} МБ (${p[3]})"
+                } else {
+                    raw.take(180)
+                }
+            } catch (e: Throwable) {
+                actionErrMsg = "Оценка размера: ${e.message}"
             } finally {
                 loading = false
             }
@@ -370,24 +510,38 @@ fun MonitorPanelScreen(
     fun createFullBackup() {
         scope.launch {
             loading = true
-            errMsg = ""
-            statusMsg = "Создание полного бэкапа (.tar.gz)..."
+            actionErrMsg = ""
+            statusMsg = if (includeMediaBackup) "Потоковый 100%-бэкап (включая USB/Storage)..." else "Потоковый бэкап v2 (/opt + конфиг)..."
+            val tempFile = prefs.allocateStreamBackupTempFile(
+                if (includeMediaBackup) "Полный_100pct" else "Полный_снимок_v2",
+                "tar.gz"
+            )
             try {
                 val host = prefs.routerHost.ifBlank { "192.168.1.1" }
-                val model = overview?.optJSONObject("sys")?.optString("model")?.ifBlank { "Router" } ?: "Router"
-                val bytes = withContext(Dispatchers.IO) {
-                    Gboxcore.pullBytesSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, GboxScripts.FULL_BACKUP_TAR_CMD)
+                val model = overview?.optJSONObject("sys")?.optString("model")?.ifBlank { passport?.model ?: "Router" }
+                    ?: (passport?.model ?: "Router")
+                val cmd = GboxScripts.buildFullBackupCmd(includeUserMedia = includeMediaBackup)
+                val writtenBytes = withContext(Dispatchers.IO) {
+                    Gboxcore.pullFileSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, cmd, tempFile.absolutePath)
                 }
-                if (bytes != null && bytes.size > 64) {
-                    val b = prefs.saveBinaryBackup("Полный_снимок", model, bytes, "tar.gz")
+                if (writtenBytes > 128L) {
+                    val b = prefs.commitStreamedBackupFile(
+                        file = tempFile,
+                        label = if (includeMediaBackup) "Полный 100% + USB" else "Полный снимок v2",
+                        model = model,
+                        format = "tar_v2",
+                        isProtected = false
+                    )
                     onBackupSaved(b)
                     refreshBackups()
-                    statusMsg = "Полный бэкап сохранён (${b.sizeBytes / 1024} КБ)"
+                    statusMsg = "Бэкап сохранён: ${formatSizeMb(b.sizeBytes)}"
                 } else {
-                    errMsg = "Архив бэкапа оказался пустым"
+                    tempFile.delete()
+                    actionErrMsg = "Архив бэкапа оказался пустым ($writtenBytes Б)"
                 }
             } catch (e: Throwable) {
-                errMsg = "Ошибка бэкапа: ${e.message}"
+                tempFile.delete()
+                actionErrMsg = "Ошибка бэкапа: ${e.message}"
             } finally {
                 loading = false
             }
@@ -397,43 +551,54 @@ fun MonitorPanelScreen(
     fun createConfigBackup() {
         scope.launch {
             loading = true
-            errMsg = ""
-            statusMsg = "Сохранение startup-config..."
+            actionErrMsg = ""
+            statusMsg = "Сохранение startup/running-config..."
             try {
                 val host = prefs.routerHost.ifBlank { "192.168.1.1" }
-                val model = overview?.optJSONObject("sys")?.optString("model")?.ifBlank { "Router" } ?: "Router"
+                val model = overview?.optJSONObject("sys")?.optString("model")?.ifBlank { passport?.model ?: "Router" }
+                    ?: (passport?.model ?: "Router")
                 val cfgRes = RciClient.fetchRunningConfig(host, prefs.rciUser, prefs.rciPass)
                 val text = cfgRes.getOrElse {
-                    runSshRetry(prefs, "LD_LIBRARY_PATH= /bin/ndmc -c 'show running-config'")
+                    runSshCmd(prefs, "LD_LIBRARY_PATH= /bin/ndmc -c 'show running-config'", readOnly = true)
                 }
+                if (text.isBlank()) error("Пустой ответ конфигурации")
                 val b = prefs.saveBackup("NDMS_Config", model, text)
                 onBackupSaved(b)
                 refreshBackups()
-                statusMsg = "Конфиг сохранён (${b.sizeBytes / 1024} КБ)"
+                statusMsg = "Конфиг сохранён (${formatSizeMb(b.sizeBytes)})"
             } catch (e: Throwable) {
-                errMsg = "Ошибка сохранения конфига: ${e.message}"
+                actionErrMsg = "Ошибка сохранения конфига: ${e.message}"
             } finally {
                 loading = false
             }
         }
     }
 
-    fun executeArchiveRestore(entry: BackupEntry, mode: String) {
+    fun executeBackupRestore(entry: BackupEntry, mode: String) {
         scope.launch {
             loading = true
-            errMsg = ""
-            statusMsg = "Передача бэкапа и восстановление..."
+            actionErrMsg = ""
+            statusMsg = "Восстановление бэкапа (${entry.label})..."
             try {
                 val host = prefs.routerHost.ifBlank { "192.168.1.1" }
-                val bytes = withContext(Dispatchers.IO) { File(entry.filePath).readBytes() }
-                withContext(Dispatchers.IO) {
-                    Gboxcore.pushBytesSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, "/tmp/gbox_restore.tar.gz", bytes)
+                if (entry.filePath.endsWith(".tar.gz", true)) {
+                    val bytes = withContext(Dispatchers.IO) { File(entry.filePath).readBytes() }
+                    withContext(Dispatchers.IO) {
+                        Gboxcore.pushBytesSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, "/tmp/gbox_restore.tar.gz", bytes)
+                    }
+                    val out = runSshCmd(prefs, GboxScripts.restoreArchiveCmd(mode), readOnly = false)
+                    statusMsg = out.lines().lastOrNull { it.isNotBlank() } ?: "Откат завершён"
+                } else {
+                    val cfgText = withContext(Dispatchers.IO) { prefs.readBackupText(entry) }
+                    if (cfgText.isBlank()) error("Файл конфигурации пуст")
+                    val rciRes = RciClient.restoreRunningConfig(host, prefs.rciUser, prefs.rciPass, cfgText)
+                    rciRes.onSuccess { (ok, fail) ->
+                        statusMsg = "NDMS конфиг применён: $ok строк ОК, пропущено/ошибок $fail"
+                    }.onFailure { throw it }
                 }
-                val out = runSshRetry(prefs, GboxScripts.restoreArchiveCmd(mode))
-                statusMsg = out.lines().lastOrNull { it.isNotBlank() } ?: "Восстановление выполнено"
                 loadPage(MonitorPage.OVERVIEW, true)
             } catch (e: Throwable) {
-                errMsg = "Ошибка отката: ${e.message}"
+                actionErrMsg = "Ошибка отката: ${e.message}"
             } finally {
                 loading = false
             }
@@ -451,16 +616,29 @@ fun MonitorPanelScreen(
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             ctx.startActivity(Intent.createChooser(intent, "Экспорт бэкапа"))
-        }.onFailure { errMsg = "Не удалось поделиться: ${it.message}" }
+        }.onFailure { actionErrMsg = "Не удалось поделиться: ${it.message}" }
+    }
+
+    // Live Torch auto-poller when user stays on TORCH with Live ON
+    LaunchedEffect(page, torchLive) {
+        while (isActive && page == MonitorPage.TORCH && torchLive) {
+            runCatching {
+                val raw = runSshCmd(prefs, MonitorScripts.CMD_TORCH_LIVE, readOnly = true)
+                torchData = parseJsonOut(raw, "Live Torch")
+            }
+            delay(2000L)
+        }
     }
 
     LaunchedEffect(Unit) { loadPage(MonitorPage.OVERVIEW, false) }
-    LaunchedEffect(statusMsg) { if (statusMsg.isNotBlank()) { delay(4000); statusMsg = "" } }
+    LaunchedEffect(statusMsg) { if (statusMsg.isNotBlank()) { delay(4500); statusMsg = "" } }
 
     val deadApWarn = remember(wifiDevs) {
         val aps = wifiDevs?.optJSONObject("wifi")?.optJSONArray("aps")
         aps != null && (0 until aps.length()).any { aps.optJSONObject(it)?.optBoolean("dead") == true }
     }
+
+    val activeErr = actionErrMsg.ifBlank { pageErrMsg }
 
     Column(
         modifier = Modifier
@@ -490,8 +668,8 @@ fun MonitorPanelScreen(
                 Column(Modifier.padding(start = 2.dp)) {
                     Text("${page.group.title} › ${page.label}", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Box(Modifier.size(6.dp).clip(CircleShape).background(if (errMsg.isBlank()) Color(0xFF22C55E) else Color(0xFFF59E0B)))
-                        Text("SSH ${prefs.routerHost}:${prefs.sshPort}", color = Color(0xFF94A3B8), fontSize = 9.sp)
+                        Box(Modifier.size(6.dp).clip(CircleShape).background(if (activeErr.isBlank()) Color(0xFF22C55E) else Color(0xFFF59E0B)))
+                        Text("SSH ${prefs.routerHost.ifBlank { "192.168.1.1" }}:${prefs.sshPort}", color = Color(0xFF94A3B8), fontSize = 9.sp)
                     }
                 }
             }
@@ -517,19 +695,22 @@ fun MonitorPanelScreen(
         if (statusMsg.isNotBlank()) {
             Text(statusMsg, color = Color(0xFF86EFAC), fontSize = 11.sp, modifier = Modifier.fillMaxWidth().background(Color(0xFF052E16)).padding(horizontal = 10.dp, vertical = 4.dp))
         }
-        if (errMsg.isNotBlank()) {
+        if (activeErr.isNotBlank()) {
             Row(
                 modifier = Modifier.fillMaxWidth().background(Color(0xFF451A03)).padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(errMsg, color = Color(0xFFFDE68A), fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = { loadPage(page, true) }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp), modifier = Modifier.height(24.dp)) {
+                Text(activeErr, color = Color(0xFFFDE68A), fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    TextButton(onClick = { actionErrMsg = ""; loadPage(page, true) }, contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp), modifier = Modifier.height(24.dp)) {
                         Text("Повтор", fontSize = 10.sp, color = Color(0xFF93C5FD))
                     }
-                    TextButton(onClick = { showCreds = true }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp), modifier = Modifier.height(24.dp)) {
+                    TextButton(onClick = { showCreds = true }, contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp), modifier = Modifier.height(24.dp)) {
                         Text("SSH", fontSize = 10.sp, color = Color.White)
+                    }
+                    TextButton(onClick = { actionErrMsg = ""; pageErrMsg = "" }, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp), modifier = Modifier.height(24.dp)) {
+                        Text("✕", fontSize = 10.sp, color = Color(0xFFFCA5A5))
                     }
                 }
             }
@@ -607,46 +788,81 @@ fun MonitorPanelScreen(
             ) {
                 when (page) {
                     MonitorPage.OVERVIEW -> OverviewPage(
+                        prefs = prefs,
+                        passport = passport,
                         data = overview,
+                        siteProbeJson = siteProbeJson,
+                        benchBefore = benchBaseline,
+                        benchAfter = benchAfter,
                         diagOut = diagOut,
+                        busy = loading,
                         onTopicHelp = ::showTopic,
                         onSvcClick = { svcModalKey = it },
-                        onProbe = { runAction("Проверка сайтов", MonitorScripts.CMD_PROBE_SITES, onOutput = { diagOut = it }) },
-                        onAutoDiag = { runAction("Автодиагностика", GboxScripts.AUTO_DIAG_REPAIR_SCRIPT, onOutput = { diagOut = it }) },
+                        onProbe24 = { run24SiteProbe() },
+                        onAutoDiag = { runAction("Авторемонт", GboxScripts.AUTO_DIAG_REPAIR_SCRIPT, MonitorPage.OVERVIEW, onOutput = { diagOut = it }) },
                         onUpdateLists = { runAction("Обновление списков z2k", MonitorScripts.Z2K_UPDATE_CMD, MonitorPage.OVERVIEW, onOutput = { diagOut = it }) },
+                        onBenchBefore = { measureBenchmark(saveAsBaseline = true) },
+                        onBenchAfter = { measureBenchmark(saveAsBaseline = false) },
+                        onApplyOptimize = { zram, ppeHw, ppeSw, cOpt, ct ->
+                            runAction("Автооптимизация роутера", MonitorScripts.applyOptimizerBundleCmd(zram, ppeHw, ppeSw, cOpt, ct), MonitorPage.OVERVIEW, delayMs = 800L)
+                        },
                         onReboot = { confirmReboot = true }
                     )
                     MonitorPage.SERVICES -> ServicesPage(
                         data = services,
                         opkgOut = opkgOut,
+                        busy = loading,
                         onTopicHelp = ::showTopic,
-                        onSvcAct = { id, act -> runAction("$act $id", MonitorScripts.svcCmd(id, act), MonitorPage.SERVICES, 700L) },
-                        onOpkg = { lbl, cmd -> runAction(lbl, cmd, onOutput = { opkgOut = it }) }
+                        onHelpGuide = { guide ->
+                            helpTopic = MonitorHelpTopic(
+                                title = "${guide.title} (${guide.port})",
+                                what = guide.summary,
+                                why = guide.details,
+                                recommend = guide.tips,
+                                caution = if (guide.configPath.isNotBlank()) "Конфиг: ${guide.configPath}" else ""
+                            )
+                        },
+                        onSvcAct = { id, act ->
+                            if (id.contains("dropbear", true) && (act == "stop" || act == "restart")) {
+                                confirmStopDropbear = id to act
+                            } else {
+                                runAction("$act $id", MonitorScripts.svcCmd(id, act), MonitorPage.SERVICES, 700L)
+                            }
+                        },
+                        onCronAdd = { expr, cmd -> runAction("Добавить Cron", MonitorScripts.addCronJobCmd(expr, cmd), MonitorPage.SERVICES, 500L) },
+                        onCronDel = { line -> runAction("Удалить Cron", MonitorScripts.delCronJobCmd(line), MonitorPage.SERVICES, 400L) },
+                        onOpkg = { lbl, cmd, ro -> runAction(lbl, cmd, reload = if (ro) null else MonitorPage.SERVICES, readOnly = ro, onOutput = { opkgOut = it }) }
                     )
                     MonitorPage.STORAGE -> StoragePage(
                         data = services,
                         onTopicHelp = ::showTopic,
-                        onQuickHelp = ::showQuickHelp,
+                        onToggleHelp = ::showToggleHelp,
                         onAction = { lbl, cmd -> runAction(lbl, cmd, MonitorPage.STORAGE, 500L) }
                     )
                     MonitorPage.WAN -> WanPage(
                         data = wanNet,
                         benchOut = benchOut,
+                        busy = loading,
                         onTopicHelp = ::showTopic,
-                        onBench = { runAction("Замер WAN", MonitorScripts.CMD_BENCH_WAN, onOutput = { benchOut = it }) }
+                        onBench = { runAction("Замер WAN", MonitorScripts.CMD_BENCH_WAN, readOnly = true, onOutput = { benchOut = it }) }
                     )
                     MonitorPage.DNS -> DnsPage(
                         data = dnsNet,
                         probeOut = dnsProbeOut,
+                        busy = loading,
                         onTopicHelp = ::showTopic,
-                        onQuickHelp = ::showQuickHelp,
+                        onToggleHelp = ::showToggleHelp,
+                        onInstallAdguard = { installOrBootstrapAdguard() },
                         onAction = { lbl, cmd -> runAction(lbl, cmd, MonitorPage.DNS, 800L) },
-                        onProbe = { runAction("Тест DNS", MonitorScripts.CMD_PROBE_DNS, onOutput = { dnsProbeOut = it }) }
+                        onQuickBypassDomain = { dom -> runAction("+Обход $dom", MonitorScripts.addExtraDomain(dom)) },
+                        onQuickWhitelistDomain = { dom -> runAction("+Исключение $dom", MonitorScripts.addWhitelistDomain(dom)) },
+                        onProbe = { runAction("Тест DNS", MonitorScripts.CMD_PROBE_DNS, readOnly = true, onOutput = { dnsProbeOut = it }) }
                     )
                     MonitorPage.NAT_PPE -> NatPpePage(
                         data = dnsNet,
                         devicesData = wifiDevs,
                         onTopicHelp = ::showTopic,
+                        onToggleHelp = ::showToggleHelp,
                         onQuickHelp = ::showQuickHelp,
                         onAction = { lbl, cmd -> runAction(lbl, cmd, MonitorPage.NAT_PPE, 500L) }
                     )
@@ -654,14 +870,16 @@ fun MonitorPanelScreen(
                         data = bypass,
                         probeOut = siteProbeOut,
                         onTopicHelp = ::showTopic,
-                        onQuickHelp = ::showQuickHelp,
+                        onToggleHelp = ::showToggleHelp,
                         onAction = { lbl, cmd -> runAction(lbl, cmd, MonitorPage.Z2K_MODES, 600L) },
-                        onProbe = { runAction("Проверка сайтов", MonitorScripts.CMD_PROBE_SITES, onOutput = { siteProbeOut = it }) }
+                        onProbe = { runAction("Проверка сайтов", GboxScripts.VERIFY_BYPASS_SCRIPT, readOnly = true, onOutput = { siteProbeOut = it }) }
                     )
                     MonitorPage.WARP -> WarpPage(
-                        bypass = bypass,
-                        gamesData = warpGames,
+                        data = warpFull,
+                        traceOut = warpTraceOut,
+                        busy = loading,
                         onTopicHelp = ::showTopic,
+                        onTrace = { runAction("Проверка Cloudflare Trace", MonitorScripts.CMD_WARP_TRACE, readOnly = true, onOutput = { warpTraceOut = it }) },
                         onAction = { lbl, cmd -> runAction(lbl, cmd, MonitorPage.WARP, 700L) }
                     )
                     MonitorPage.Z2K_LISTS -> BypassListsPage(
@@ -673,27 +891,43 @@ fun MonitorPanelScreen(
                         pickDomain = pickDomain,
                         onPickChange = { pickDomain = it },
                         pickOut = pickOut,
+                        busy = loading,
                         onTopicHelp = ::showTopic,
                         onAction = { lbl, cmd -> runAction(lbl, cmd, MonitorPage.Z2K_LISTS, 600L) },
-                        onPick = { d, m -> runAction("Подбор стратегии ($d)", MonitorScripts.strategyPickCmd(d, m), onOutput = { pickOut = it }) }
+                        onPick = { d, m -> runAction("Подбор стратегии ($d · $m)", MonitorScripts.strategyPickCmd(d, m), onOutput = { pickOut = it }) },
+                        onApplyPool = { pool, dom, strat ->
+                            runAction("Применить в пул $pool", MonitorScripts.strategyApplyPoolCmd(pool, dom, strat), MonitorPage.Z2K_LISTS, 600L) {
+                                pickOut = if (pickOut.isBlank()) it else "$pickOut\n$it"
+                            }
+                        }
                     )
                     MonitorPage.WIFI -> WifiPage(
                         data = wifiDevs,
                         onTopicHelp = ::showTopic,
+                        onToggleHelp = ::showToggleHelp,
                         onAction = { lbl, cmd -> runAction(lbl, cmd, MonitorPage.WIFI, 800L) }
                     )
                     MonitorPage.DEVICES -> DevicesPage(
                         data = wifiDevs,
                         search = devSearch,
                         onSearchChange = { devSearch = it },
+                        filterMode = devFilter,
+                        onFilterChange = { devFilter = it },
                         onTopicHelp = ::showTopic,
+                        onSelectDevice = { selectedDevice = it },
                         onAction = { lbl, cmd -> runAction(lbl, cmd, MonitorPage.DEVICES, 700L) }
                     )
                     MonitorPage.BACKUPS -> BackupsPage(
                         backups = backupsList,
+                        estText = backupEst,
+                        includeMedia = includeMediaBackup,
+                        onToggleMedia = { includeMediaBackup = it },
+                        busy = loading,
                         onTopicHelp = ::showTopic,
+                        onEstimate = { estimateBackupSize() },
                         onCreateFull = { createFullBackup() },
                         onCreateCfg = { createConfigBackup() },
+                        onImport = { importLauncher.launch(arrayOf("*/*")) },
                         onShare = { shareBackupFile(it) },
                         onRestore = { restoreEntry = it },
                         onViewTxt = { e -> backupPreviewText = e.label to prefs.readBackupText(e) },
@@ -705,6 +939,7 @@ fun MonitorPanelScreen(
                         onTopicHelp = ::showTopic,
                         onOpenDir = ::openDir,
                         onOpenFile = ::openFile,
+                        onRestoreBak = { full -> runAction("Откат .bak", MonitorScripts.restoreBakFileCmd(full.removeSuffix(".bak"))) { openDir(dirPath) } },
                         onNewDir = { newEntryName = ""; newEntryMode = "dir" },
                         onNewFile = { newEntryName = ""; newEntryMode = "file" },
                         onDeleteEntry = { full -> runAction("Удалить ${full.substringAfterLast('/')}", MonitorScripts.rmPathCmd(full)) { openDir(dirPath) } }
@@ -712,10 +947,15 @@ fun MonitorPanelScreen(
                     MonitorPage.TORCH -> TorchPage(
                         host = torchHost,
                         onHostChange = { torchHost = it },
+                        liveData = torchData,
+                        liveEnabled = torchLive,
+                        onToggleLive = { torchLive = it },
                         out = torchOut,
+                        busy = loading,
                         onTopicHelp = ::showTopic,
+                        onEnableAcct = { runAction("Включение conntrack_acct", "sysctl -w net.netfilter.nf_conntrack_acct=1 2>&1", MonitorPage.TORCH, 300L) },
                         onCopy = { clipboard.setText(AnnotatedString(torchOut)); statusMsg = "Скопировано" },
-                        onRun = { mode -> runAction("Утилита $mode", MonitorScripts.probeHostCmd(torchHost, mode), onOutput = { torchOut = it }) }
+                        onRun = { mode -> runAction("Torch: $mode", MonitorScripts.probeHostCmd(torchHost, mode), readOnly = true, onOutput = { torchOut = it }) }
                     )
                     MonitorPage.LOGS_SSH -> LogsSshPage(
                         logSrc = logSrc,
@@ -728,7 +968,7 @@ fun MonitorPanelScreen(
                         onTopicHelp = ::showTopic,
                         onSelectLog = { src ->
                             logSrc = src
-                            runAction("Лог $src", MonitorScripts.fetchLog(src), onOutput = { logsOut = it })
+                            runAction("Лог $src", MonitorScripts.fetchLog(src), readOnly = true, onOutput = { logsOut = it })
                         },
                         onRunCmd = { cmd -> runAction("SSH", cmd, onOutput = { consoleOut = it }) },
                         onCopy = { txt -> clipboard.setText(AnnotatedString(txt)); statusMsg = "Скопировано" }
@@ -738,6 +978,7 @@ fun MonitorPanelScreen(
         }
     }
 
+    // Help Modal
     helpTopic?.let { tp ->
         AlertDialog(
             onDismissRequest = { helpTopic = null },
@@ -754,15 +995,50 @@ fun MonitorPanelScreen(
         )
     }
 
+    // Dropbear danger confirmation
+    confirmStopDropbear?.let { (id, act) ->
+        AlertDialog(
+            onDismissRequest = { confirmStopDropbear = null },
+            title = { Text("Осторожно: SSH Dropbear", fontSize = 15.sp, fontWeight = FontWeight.Bold) },
+            text = { Text("Остановка $id отключит доступ по SSH (:222) — приложение потеряет связь до ручного перезапуска через веб-интерфейс роутера. Рестарт обычно безопасен (1–2 сек). Продолжить?", fontSize = 12.5.sp) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmStopDropbear = null
+                        runAction("$act $id", MonitorScripts.svcCmd(id, act), MonitorPage.SERVICES, 700L)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
+                ) { Text("Да, выполнить $act") }
+            },
+            dismissButton = { TextButton(onClick = { confirmStopDropbear = null }) { Text("Отмена") } }
+        )
+    }
+
+    // Client Rich Management Dialog
+    selectedDevice?.let { dev ->
+        DeviceManageDialog(
+            dev = dev,
+            busy = loading,
+            onDismiss = { selectedDevice = null },
+            onExec = { lbl, cmd, closeDialog ->
+                if (closeDialog) selectedDevice = null
+                runAction(lbl, cmd, MonitorPage.DEVICES, 700L)
+            },
+            onPingDevice = { ip ->
+                selectedDevice = null
+                torchHost = ip
+                page = MonitorPage.TORCH
+                runAction("Ping $ip", MonitorScripts.probeHostCmd(ip, "ping"), readOnly = true, onOutput = { torchOut = it })
+            }
+        )
+    }
+
+    // Overview Service Pill Modal
     svcModalKey?.let { key ->
         val guide = MonitorHelp.services[key]
         val svcObj = overview?.optJSONObject("svc")
         val isUp = svcObj?.optBoolean(key, false) == true
-        val warpObj = bypass?.optJSONObject("warp")
-        val warpStrSvc = if (warpObj == null) bypass?.optString("warp").orEmpty() else ""
-        val warpInstalled = warpObj?.optBoolean("installed", false) == true ||
-            warpObj?.optBoolean("running", false) == true ||
-            warpStrSvc == "true" || warpStrSvc == "1"
+        val warpInstalled = svcObj?.optBoolean("warp", false) == true || warpFull?.optJSONObject("status")?.optBoolean("installed") == true
         val initMap = mapOf(
             "nfqws2" to "S99zapret2", "adguard" to "S99AdGuardHome",
             "tg_tunnel" to "S98tg-tunnel", "http_tunnel" to "S97z2k-http-tunnel", "warp" to "S51z2k-warp",
@@ -820,25 +1096,59 @@ fun MonitorPanelScreen(
         )
     }
 
+    // Restore Mode Dialog (supports tar_v1, tar_v2, AND .txt NDMS config)
     restoreEntry?.let { entry ->
+        val isTar = entry.filePath.endsWith(".tar.gz", true)
         AlertDialog(
             onDismissRequest = { restoreEntry = null },
             title = { Text("Восстановление из бэкапа", fontSize = 15.sp, fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("${entry.label} (${entry.timestamp})", color = Color(0xFF93C5FD), fontSize = 12.sp)
-                    Text("Выберите режим восстановления на роутер (${entry.model}):", color = Color(0xFFCBD5E1), fontSize = 12.sp)
-                    Button(
-                        onClick = { restoreEntry = null; executeArchiveRestore(entry, "bypass") },
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text("1. Только обход (/opt/zapret2)", fontSize = 12.sp) }
-                    OutlinedButton(
-                        onClick = { restoreEntry = null; executeArchiveRestore(entry, "full") },
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text("2. Полный /opt (zapret2 + AdGuard)", fontSize = 12.sp) }
+                    Text("Устройство: ${entry.model} • ${formatSizeMb(entry.sizeBytes)}", color = Color(0xFF94A3B8), fontSize = 11.sp)
+                    if (isTar) {
+                        Text("Выберите глубину отката (совместимо с v1 и v2):", color = Color(0xFFCBD5E1), fontSize = 12.sp)
+                        Button(
+                            onClick = { restoreEntry = null; executeBackupRestore(entry, "bypass") },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("1. Только обход (/opt/zapret2 + hooks)", fontSize = 11.5.sp) }
+                        OutlinedButton(
+                            onClick = { restoreEntry = null; executeBackupRestore(entry, "opt_full") },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("2. Весь /opt (/opt/etc, AdGuard, SSH, Cron)", fontSize = 11.5.sp) }
+                        OutlinedButton(
+                            onClick = { restoreEntry = null; confirmSystemRestore = entry },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFBBF24))
+                        ) { Text("3. 100% Полный откат (+ NDMS config + USB)", fontSize = 11.sp) }
+                    } else {
+                        Text("Это снимок конфигурации роутера (.txt). Применение прогонит команды через RCI (пропуская смену паролей/пользователей) и сохранит конфиг.", color = Color(0xFFCBD5E1), fontSize = 12.sp)
+                        Button(
+                            onClick = { restoreEntry = null; executeBackupRestore(entry, "ndms_txt") },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("Применить NDMS конфиг по RCI", fontSize = 12.sp) }
+                    }
                 }
             },
             confirmButton = { TextButton(onClick = { restoreEntry = null }) { Text("Отмена") } }
+        )
+    }
+
+    confirmSystemRestore?.let { entry ->
+        AlertDialog(
+            onDismissRequest = { confirmSystemRestore = null },
+            title = { Text("Подтвердите 100% откат", fontSize = 15.sp, fontWeight = FontWeight.Bold) },
+            text = { Text("Будут перезаписаны /opt, пользовательские файлы носителя (если есть в архиве) и конфигурация NDMS (Wi-Fi, политики, порты). Во время применения Wi-Fi может кратковременно переподключиться.", fontSize = 12.sp) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmSystemRestore = null
+                        executeBackupRestore(entry, "system_full")
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706))
+                ) { Text("Откатить систему полностью") }
+            },
+            dismissButton = { TextButton(onClick = { confirmSystemRestore = null }) { Text("Отмена") } }
         )
     }
 
@@ -873,12 +1183,18 @@ fun MonitorPanelScreen(
                 }
             },
             confirmButton = {
-                if (!fileModalTrunc) {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     TextButton(onClick = {
-                        val b64 = Base64.encodeToString(fileModalText.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
                         fileModalOpen = false
-                        runAction("Сохранение файла", MonitorScripts.writeFileCmd(fileModalPath, b64))
-                    }) { Text("Сохранить (.bak)") }
+                        runAction("Откат .bak", MonitorScripts.restoreBakFileCmd(fileModalPath.removeSuffix(".bak")))
+                    }) { Text("Откатить .bak", color = Color(0xFFFBBF24), fontSize = 11.sp) }
+                    if (!fileModalTrunc) {
+                        TextButton(onClick = {
+                            val b64 = Base64.encodeToString(fileModalText.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+                            fileModalOpen = false
+                            runAction("Сохранение файла", MonitorScripts.writeFileCmd(fileModalPath, b64))
+                        }) { Text("Сохранить (.bak)") }
+                    }
                 }
             },
             dismissButton = { TextButton(onClick = { fileModalOpen = false }) { Text("Закрыть") } }
@@ -933,6 +1249,31 @@ fun MonitorPanelScreen(
                             }
                         }
                     )
+                    OutlinedButton(
+                        enabled = !bruteBusy,
+                        onClick = {
+                            scope.launch {
+                                bruteBusy = true
+                                val p = sshPort.toIntOrNull() ?: 222
+                                val found = withContext(Dispatchers.IO) {
+                                    runCatching { Gboxcore.tryPasswordsSSH(sshHost.ifBlank { "192.168.1.1" }, p, sshUser, prefs.rciPass) }.getOrNull()
+                                }
+                                if (found != null) {
+                                    sshPass = found
+                                    statusMsg = "Пароль SSH подобран!"
+                                } else {
+                                    actionErrMsg = "Стандартный пароль SSH не подошёл — введите вручную"
+                                }
+                                bruteBusy = false
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        if (bruteBusy) CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                        else Icon(Icons.Rounded.Tune, null, Modifier.size(15.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (bruteBusy) "Подбор..." else "Автоподбор пароля SSH", fontSize = 11.5.sp)
+                    }
                 }
             },
             confirmButton = {
@@ -986,7 +1327,7 @@ private fun MiniCard(title: String, helpClick: (() -> Unit)? = null, content: @C
     Surface(color = Color(0xFF0F172A), shape = RoundedCornerShape(9.dp), border = BorderStroke(1.dp, Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text(title, color = Color(0xFF93C5FD), fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                Text(title, color = Color(0xFF93C5FD), fontSize = 11.5.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 if (helpClick != null) HelpBadge(helpClick)
             }
             content()
@@ -1064,13 +1405,22 @@ private fun MonoBox(text: String, onCopy: (() -> Unit)? = null) {
 
 @Composable
 private fun OverviewPage(
+    prefs: Prefs,
+    passport: RouterPassport?,
     data: JSONObject?,
+    siteProbeJson: JSONObject?,
+    benchBefore: JSONObject?,
+    benchAfter: JSONObject?,
     diagOut: String,
+    busy: Boolean,
     onTopicHelp: (String) -> Unit,
     onSvcClick: (String) -> Unit,
-    onProbe: () -> Unit,
+    onProbe24: () -> Unit,
     onAutoDiag: () -> Unit,
     onUpdateLists: () -> Unit,
+    onBenchBefore: () -> Unit,
+    onBenchAfter: () -> Unit,
+    onApplyOptimize: (Boolean, Boolean, Boolean, Boolean, Boolean) -> Unit,
     onReboot: () -> Unit
 ) {
     val sys = data?.optJSONObject("sys")
@@ -1079,6 +1429,60 @@ private fun OverviewPage(
     val wan = data?.optJSONObject("wan")
     val svc = data?.optJSONObject("svc")
     val ver = data?.optJSONObject("ver")
+
+    // Health traffic light
+    if (data != null) {
+        val entOk = wan?.optBoolean("ent_ok", false) == true
+        val nfqUp = svc?.optBoolean("nfqws2", false) == true
+        val nfqRules = wan?.optInt("nfq_rules", 0) ?: 0
+        val aghInst = wan?.optBoolean("agh_inst", false) == true
+        val aghUp = svc?.optBoolean("adguard", false) == true
+        val dnsOv = wan?.optBoolean("dns_ov", false) == true
+        val polOk = wan?.optBoolean("policy_ok", false) == true
+
+        val warns = mutableListOf<String>()
+        if (!entOk) warns.add("Entware не смонтирован")
+        if (!nfqUp) warns.add("nfqws2 остановлен")
+        if (nfqRules == 0) warns.add("нет правил NFQUEUE")
+        if (dnsOv && !aghUp) warns.add("dns-override при спящем AdGuard!")
+        if (!polOk) warns.add("политика Gor4akovNET выкл")
+        if (aghInst && !aghUp && !dnsOv) warns.add("AdGuard остановлен")
+
+        val isGreen = warns.isEmpty()
+        val isRed = !entOk || !nfqUp || (dnsOv && !aghUp)
+        val bannerColor = when {
+            isRed -> Color(0xFF450A0A)
+            !isGreen -> Color(0xFF451A03)
+            else -> Color(0xFF052E16)
+        }
+        val borderColor = when {
+            isRed -> Color(0xFFEF4444)
+            !isGreen -> Color(0xFFF59E0B)
+            else -> Color(0xFF22C55E)
+        }
+        Surface(color = bannerColor, shape = RoundedCornerShape(9.dp), border = BorderStroke(1.dp, borderColor.copy(0.65f)), modifier = Modifier.fillMaxWidth()) {
+            Row(Modifier.padding(9.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        when {
+                            isRed -> "Критично: ${warns.joinToString(", ")}"
+                            !isGreen -> "Внимание: ${warns.joinToString(", ")}"
+                            else -> "Светофор: все системы работают штатно"
+                        },
+                        color = borderColor,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text("NFQUEUE правил: $nfqRules • Entware: ${if (entOk) "OK" else "Нет"} • Политика: ${if (polOk) "ON" else "OFF"}", color = Color(0xFFCBD5E1), fontSize = 9.5.sp)
+                }
+                if (!isGreen) {
+                    Button(onClick = onAutoDiag, enabled = !busy, modifier = Modifier.height(28.dp), contentPadding = PaddingValues(horizontal = 8.dp)) {
+                        Text("Починить", fontSize = 10.sp)
+                    }
+                }
+            }
+        }
+    }
 
     MiniCard("${sys?.optString("model", "Keenetic / Netcraze")} • NDMS ${sys?.optString("ndms", "—")}", { onTopicHelp("overview") }) {
         val ramT = mem?.optInt("total", 0) ?: 0
@@ -1100,7 +1504,6 @@ private fun OverviewPage(
         MiniRow("Аптайм • Темп. Wi-Fi", "${formatUptime(sys?.optLong("up_sec", 0L) ?: 0L)} • ${sys?.optString("temp24", "—")}°/${sys?.optString("temp5", "—")}°C")
         val wanDev = wan?.optString("dev").orEmpty().ifBlank { "WAN" }
         MiniRow("WAN ($wanDev) • Скорость", "${wan?.optString("ip", "—")} • ${wan?.optString("spd", "—")} Мбит/с")
-        MiniRow("Политика Gor4akovNET", if (wan?.optBoolean("policy_ok") == true) "Активна" else "Не настроена", if (wan?.optBoolean("policy_ok") == true) Color(0xFF4ADE80) else Color(0xFFFBBF24))
     }
 
     MiniCard("Службы роутера (нажми для управления)", { onTopicHelp("services") }) {
@@ -1123,18 +1526,104 @@ private fun OverviewPage(
         }
     }
 
-    MiniCard("Быстрые действия") {
+    // 24-Site Probe Card
+    MiniCard("Тест 24 популярных сайтов (с роутера)") {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Button(onClick = onProbe, modifier = Modifier.weight(1f).height(34.dp), contentPadding = PaddingValues(4.dp)) { Text("Тест сайтов", fontSize = 10.5.sp) }
-            Button(onClick = onAutoDiag, modifier = Modifier.weight(1f).height(34.dp), contentPadding = PaddingValues(4.dp)) { Text("Авторемонт", fontSize = 10.5.sp) }
+            Button(onClick = onProbe24, enabled = !busy, modifier = Modifier.weight(1f).height(34.dp), contentPadding = PaddingValues(4.dp)) {
+                Text("Проверить 24 сайта", fontSize = 10.5.sp)
+            }
+            OutlinedButton(onClick = onAutoDiag, enabled = !busy, modifier = Modifier.weight(1f).height(34.dp), contentPadding = PaddingValues(4.dp)) {
+                Text("Авторемонт", fontSize = 10.5.sp)
+            }
         }
+        val sitesArr = siteProbeJson?.optJSONArray("sites")
+        if (sitesArr != null && sitesArr.length() > 0) {
+            val items = (0 until sitesArr.length()).mapNotNull { sitesArr.optJSONObject(it) }
+            val okCnt = items.count { it.optBoolean("ok") }
+            Text("Доступно: $okCnt из ${items.size}", color = if (okCnt >= items.size - 2) Color(0xFF4ADE80) else Color(0xFFFBBF24), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            val cats = items.groupBy { it.optString("cat") }
+            cats.forEach { (cat, groupItems) ->
+                Text(cat, color = Color(0xFF94A3B8), fontSize = 9.5.sp, fontWeight = FontWeight.Bold)
+                groupItems.chunked(2).forEach { rowItems ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        rowItems.forEach { s ->
+                            val ok = s.optBoolean("ok")
+                            val code = s.optInt("code", 0)
+                            val ms = s.optInt("tot_ms", 0)
+                            Surface(
+                                color = if (ok) Color(0xFF052E16) else Color(0xFF450A0A),
+                                shape = RoundedCornerShape(6.dp),
+                                border = BorderStroke(1.dp, if (ok) Color(0xFF16A34A) else Color(0xFFDC2626)),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Row(Modifier.padding(horizontal = 6.dp, vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                    Text(s.optString("host"), color = Color.White, fontSize = 9.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                    Text(if (ok) "${ms}мс" else "[$code]", color = if (ok) Color(0xFF86EFAC) else Color(0xFFFCA5A5), fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                                }
+                            }
+                        }
+                        if (rowItems.size == 1) Spacer(Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+    }
+
+    // Optimizer Do / Posle
+    var optZram by remember(data) { mutableStateOf(true) }
+    var optPpeHw by remember(data) { mutableStateOf(true) }
+    var optPpeSw by remember(data) { mutableStateOf(true) }
+    var optCache by remember(data) { mutableStateOf(true) }
+    var optCt by remember(data) { mutableStateOf(true) }
+    MiniCard("Тест и автооптимизация (До / После)") {
+        Text("Замерьте скорость, включите оптимизации ядра/AdGuard и сравните реальный прирост.", color = Color(0xFF94A3B8), fontSize = 10.sp)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            OutlinedButton(onClick = onBenchBefore, enabled = !busy, modifier = Modifier.weight(1f).height(30.dp), contentPadding = PaddingValues(3.dp)) { Text("1. Замер «До»", fontSize = 9.5.sp) }
+            Button(onClick = { onApplyOptimize(optZram, optPpeHw, optPpeSw, optCache, optCt) }, enabled = !busy, modifier = Modifier.weight(1f).height(30.dp), contentPadding = PaddingValues(3.dp)) { Text("2. Ускорить", fontSize = 9.5.sp) }
+            OutlinedButton(onClick = onBenchAfter, enabled = !busy && benchBefore != null, modifier = Modifier.weight(1f).height(30.dp), contentPadding = PaddingValues(3.dp)) { Text("3. «После»", fontSize = 9.5.sp) }
+        }
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            FilterChip(selected = optZram, onClick = { optZram = !optZram }, label = { Text("ZRAM", fontSize = 9.sp) })
+            FilterChip(selected = optPpeHw, onClick = { optPpeHw = !optPpeHw }, label = { Text("PPE HW", fontSize = 9.sp) })
+            FilterChip(selected = optPpeSw, onClick = { optPpeSw = !optPpeSw }, label = { Text("PPE SW", fontSize = 9.sp) })
+            FilterChip(selected = optCache, onClick = { optCache = !optCache }, label = { Text("Опт.Кэш DNS", fontSize = 9.sp) })
+            FilterChip(selected = optCt, onClick = { optCt = !optCt }, label = { Text("CT 65K", fontSize = 9.sp) })
+        }
+        if (benchBefore != null) {
+            val b = benchBefore
+            val a = benchAfter
+            Surface(color = Color(0xFF020617), shape = RoundedCornerShape(7.dp), border = BorderStroke(1.dp, Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(if (a != null) "Сравнение «До -> После»:" else "Базовый замер «До» (примените ускорение и нажмите «После»):", color = Color(0xFF93C5FD), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    val pB = b.optDouble("ping_ms", 0.0); val pA = a?.optDouble("ping_ms", 0.0)
+                    MiniRow("Пинг 1.1.1.1", if (pA != null) "${"%.1f".format(pB)} -> ${"%.1f".format(pA)} мс" else "${"%.1f".format(pB)} мс")
+                    val dB = b.optInt("dns_ms", 0); val dA = a?.optInt("dns_ms", 0)
+                    MiniRow("DNS резолв", if (dA != null) "$dB -> $dA мс" else "$dB мс")
+                    val yB = b.optInt("yt_ms", 0); val yA = a?.optInt("yt_ms", 0)
+                    MiniRow("YouTube TLS", if (yA != null) "$yB -> $yA мс" else "$yB мс")
+                    val dcB = b.optInt("dc_ms", 0); val dcA = a?.optInt("dc_ms", 0)
+                    MiniRow("Discord TLS", if (dcA != null) "$dcB -> $dcA мс" else "$dcB мс")
+                    val rB = b.optInt("ram_free_mb", 0); val rA = a?.optInt("ram_free_mb", 0)
+                    MiniRow("Свободно RAM", if (rA != null) "$rB -> $rA МБ" else "$rB МБ")
+                }
+            }
+        }
+    }
+
+    // Actions & QR
+    MiniCard("Системные действия") {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            OutlinedButton(onClick = onUpdateLists, modifier = Modifier.weight(1f).height(34.dp), contentPadding = PaddingValues(4.dp)) { Text("Обновить списки", fontSize = 10.5.sp) }
-            OutlinedButton(onClick = onReboot, modifier = Modifier.weight(1f).height(34.dp), contentPadding = PaddingValues(4.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFCA5A5))) {
+            OutlinedButton(onClick = onUpdateLists, enabled = !busy, modifier = Modifier.weight(1f).height(34.dp), contentPadding = PaddingValues(4.dp)) { Text("Обновить списки", fontSize = 10.5.sp) }
+            OutlinedButton(onClick = onReboot, enabled = !busy, modifier = Modifier.weight(1f).height(34.dp), contentPadding = PaddingValues(4.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFCA5A5))) {
                 Text("Ребут роутера", fontSize = 10.5.sp)
             }
         }
         if (diagOut.isNotBlank()) MonoBox(diagOut)
+    }
+
+    val activeSsid = passport?.gor4akovSsid?.ifBlank { null } ?: prefs.wifiSsid.takeIf { wan?.optBoolean("policy_ok") == true }
+    if (!activeSsid.isNullOrBlank()) {
+        WiFiQrCard(ssid = activeSsid, pass = prefs.wifiPass, subnetInfo = "Gor4akovNET")
     }
 
     DonateCard(compact = true)
@@ -1144,44 +1633,124 @@ private fun OverviewPage(
 private fun ServicesPage(
     data: JSONObject?,
     opkgOut: String,
+    busy: Boolean,
     onTopicHelp: (String) -> Unit,
+    onHelpGuide: (ServiceGuide) -> Unit,
     onSvcAct: (String, String) -> Unit,
-    onOpkg: (String, String) -> Unit
+    onCronAdd: (String, String) -> Unit,
+    onCronDel: (String) -> Unit,
+    onOpkg: (String, String, Boolean) -> Unit
 ) {
-    MiniCard("Службы Entware (/opt/etc/init.d)", { onTopicHelp("services") }) {
+    MiniCard("Службы Entware — CPU, RAM, PID и порты", { onTopicHelp("services") }) {
         val svcs = data?.optJSONArray("svcs") ?: JSONArray()
+        if (svcs.length() == 0) {
+            Text("Скрипты в /opt/etc/init.d/S* не найдены", color = Color(0xFF64748B), fontSize = 11.sp)
+        }
         for (i in 0 until svcs.length()) {
             val s = svcs.optJSONObject(i) ?: continue
             val id = s.optString("id")
             val inst = s.optBoolean("inst")
             val up = s.optBoolean("up")
-            Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
-                    Box(Modifier.size(7.dp).clip(CircleShape).background(when { up -> Color(0xFF22C55E); inst -> Color(0xFFF59E0B); else -> Color(0xFF475569) }))
-                    Text(id, color = Color.White, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                }
-                if (inst) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        OutlinedButton(onClick = { onSvcAct(id, "restart") }, modifier = Modifier.height(25.dp), contentPadding = PaddingValues(horizontal = 7.dp)) { Text("Рест.", fontSize = 9.5.sp) }
-                        OutlinedButton(onClick = { onSvcAct(id, if (up) "stop" else "start") }, modifier = Modifier.height(25.dp), contentPadding = PaddingValues(horizontal = 7.dp)) { Text(if (up) "Стоп" else "Старт", fontSize = 9.5.sp) }
+            val ramMb = s.optDouble("ram_mb", 0.0)
+            val ramPct = s.optDouble("ram_pct", 0.0)
+            val cpu = s.optDouble("cpu", 0.0)
+            val pids = s.optString("pids")
+            val ports = s.optString("ports")
+            val guide = MonitorHelp.guideForInitId(id)
+
+            Surface(
+                color = Color(0xFF111827),
+                shape = RoundedCornerShape(7.dp),
+                border = BorderStroke(1.dp, if (up) Color(0xFF14532D) else Color(0xFF1E293B)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.padding(7.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.weight(1f)) {
+                            Box(Modifier.size(7.dp).clip(CircleShape).background(when { up -> Color(0xFF22C55E); inst -> Color(0xFFF59E0B); else -> Color(0xFF475569) }))
+                            Text(id, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (guide != null) {
+                                HelpBadge { onHelpGuide(guide) }
+                            }
+                        }
+                        if (inst) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                OutlinedButton(onClick = { onSvcAct(id, "restart") }, enabled = !busy, modifier = Modifier.height(24.dp), contentPadding = PaddingValues(horizontal = 6.dp)) { Text("Рест.", fontSize = 9.sp) }
+                                OutlinedButton(onClick = { onSvcAct(id, if (up) "stop" else "start") }, enabled = !busy, modifier = Modifier.height(24.dp), contentPadding = PaddingValues(horizontal = 6.dp)) { Text(if (up) "Стоп" else "Старт", fontSize = 9.sp) }
+                            }
+                        } else {
+                            Text("не исполн.", color = Color(0xFF64748B), fontSize = 9.5.sp)
+                        }
                     }
-                } else {
-                    Text("не устан.", color = Color(0xFF475569), fontSize = 10.sp)
+                    if (up || guide != null) {
+                        val metrics = if (up) {
+                            "RAM: ${"%.1f".format(ramMb)} МБ (${"%.1f".format(ramPct)}%) • CPU: ${"%.1f".format(cpu)}% • PID: ${pids.ifBlank { "-" }}${if (ports.isNotBlank()) " • Порт: $ports" else ""}"
+                        } else {
+                            guide?.summary ?: "Остановлена"
+                        }
+                        Text(metrics, color = Color(0xFF94A3B8), fontSize = 9.5.sp, fontFamily = if (up) FontFamily.Monospace else FontFamily.Default)
+                    }
                 }
             }
         }
     }
 
+    val topProcs = data?.optJSONArray("top_procs") ?: JSONArray()
+    if (topProcs.length() > 0) {
+        MiniCard("Топ-10 процессов по памяти (всего: ${data?.optInt("mem_free_mb", 0) ?: 0} / ${data?.optInt("mem_tot_mb", 0) ?: 0} МБ свободно)") {
+            for (i in 0 until topProcs.length()) {
+                val p = topProcs.optJSONObject(i) ?: continue
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("${p.optString("pid")} ${p.optString("cmd")}", color = Color(0xFFCBD5E1), fontSize = 9.5.sp, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    Text("${"%.1f".format(p.optDouble("ram_mb", 0.0))} МБ", color = Color(0xFF93C5FD), fontSize = 9.5.sp, fontFamily = FontFamily.Monospace)
+                }
+            }
+        }
+    }
+
+    // Cron Manager
+    val cronArr = data?.optJSONArray("cron") ?: JSONArray()
+    var cronExpr by remember { mutableStateOf("0 4 * * *") }
+    var cronCmd by remember { mutableStateOf("") }
+    MiniCard("Планировщик Cron (${cronArr.length()})") {
+        for (i in 0 until cronArr.length()) {
+            val line = cronArr.optString(i)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text(line, color = Color(0xFFE2E8F0), fontSize = 10.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f))
+                IconButton(onClick = { onCronDel(line) }, modifier = Modifier.size(22.dp)) {
+                    Icon(Icons.Rounded.DeleteOutline, null, tint = Color(0xFFFCA5A5), modifier = Modifier.size(14.dp))
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(value = cronExpr, onValueChange = { cronExpr = it }, label = { Text("Расписание", fontSize = 9.sp) }, singleLine = true, textStyle = LocalTextStyle.current.copy(fontSize = 10.sp), modifier = Modifier.width(108.dp))
+            OutlinedTextField(value = cronCmd, onValueChange = { cronCmd = it }, label = { Text("Команда sh", fontSize = 9.sp) }, singleLine = true, textStyle = LocalTextStyle.current.copy(fontSize = 10.sp), modifier = Modifier.weight(1f))
+            Button(onClick = {
+                if (cronExpr.isNotBlank() && cronCmd.isNotBlank()) {
+                    onCronAdd(cronExpr, cronCmd)
+                    cronCmd = ""
+                }
+            }, enabled = !busy, modifier = Modifier.height(36.dp), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("+", fontSize = 14.sp) }
+        }
+    }
+
+    // OPKG Manager + quick chips
     var opkgQuery by remember { mutableStateOf("") }
     MiniCard("Менеджер пакетов opkg (установлено: ${data?.optInt("opkg_cnt", 0) ?: 0})") {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Button(onClick = { onOpkg("Проверка opkg", MonitorScripts.CMD_OPKG_CHECK) }, modifier = Modifier.weight(1f).height(32.dp), contentPadding = PaddingValues(4.dp)) { Text("Проверить обновления", fontSize = 10.sp) }
-            OutlinedButton(onClick = { onOpkg("opkg upgrade", MonitorScripts.CMD_OPKG_UPGRADE_ALL) }, modifier = Modifier.weight(1f).height(32.dp), contentPadding = PaddingValues(4.dp)) { Text("Обновить всё", fontSize = 10.sp) }
+            Button(onClick = { onOpkg("Проверка opkg", MonitorScripts.CMD_OPKG_CHECK, false) }, enabled = !busy, modifier = Modifier.weight(1f).height(32.dp), contentPadding = PaddingValues(4.dp)) { Text("Проверить обновления", fontSize = 10.sp) }
+            OutlinedButton(onClick = { onOpkg("opkg upgrade", MonitorScripts.CMD_OPKG_UPGRADE_ALL, false) }, enabled = !busy, modifier = Modifier.weight(1f).height(32.dp), contentPadding = PaddingValues(4.dp)) { Text("Обновить всё", fontSize = 10.sp) }
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(value = opkgQuery, onValueChange = { opkgQuery = it }, placeholder = { Text("Пакет (htop, tcpdump...)", fontSize = 10.sp) }, singleLine = true, textStyle = LocalTextStyle.current.copy(fontSize = 10.sp), modifier = Modifier.weight(1f))
-            OutlinedButton(onClick = { if (opkgQuery.isNotBlank()) onOpkg("Поиск $opkgQuery", MonitorScripts.opkgSearchCmd(opkgQuery)) }, modifier = Modifier.height(34.dp), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Найти", fontSize = 10.sp) }
-            Button(onClick = { if (opkgQuery.isNotBlank()) onOpkg("Установка $opkgQuery", MonitorScripts.opkgInstallCmd(opkgQuery)) }, modifier = Modifier.height(34.dp), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Уст.", fontSize = 10.sp) }
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            listOf("tcpdump", "htop", "nano", "mtr").forEach { pkg ->
+                AssistChip(onClick = { opkgQuery = pkg }, label = { Text("+ $pkg", fontSize = 9.5.sp) })
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(value = opkgQuery, onValueChange = { opkgQuery = it }, placeholder = { Text("Пакет...", fontSize = 10.sp) }, singleLine = true, textStyle = LocalTextStyle.current.copy(fontSize = 10.sp), modifier = Modifier.weight(1f))
+            OutlinedButton(onClick = { if (opkgQuery.isNotBlank()) onOpkg("Поиск $opkgQuery", MonitorScripts.opkgSearchCmd(opkgQuery), true) }, enabled = !busy, modifier = Modifier.height(34.dp), contentPadding = PaddingValues(horizontal = 7.dp)) { Text("Найти", fontSize = 9.5.sp) }
+            Button(onClick = { if (opkgQuery.isNotBlank()) onOpkg("Уст. $opkgQuery", MonitorScripts.opkgInstallCmd(opkgQuery), false) }, enabled = !busy, modifier = Modifier.height(34.dp), contentPadding = PaddingValues(horizontal = 7.dp)) { Text("Уст.", fontSize = 9.5.sp) }
+            OutlinedButton(onClick = { if (opkgQuery.isNotBlank()) onOpkg("Удал. $opkgQuery", MonitorScripts.opkgRemoveCmd(opkgQuery), false) }, enabled = !busy, modifier = Modifier.height(34.dp), contentPadding = PaddingValues(horizontal = 7.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFCA5A5))) { Text("Удал.", fontSize = 9.5.sp) }
         }
         if (opkgOut.isNotBlank()) MonoBox(opkgOut)
     }
@@ -1191,7 +1760,7 @@ private fun ServicesPage(
 private fun StoragePage(
     data: JSONObject?,
     onTopicHelp: (String) -> Unit,
-    onQuickHelp: (String, String, String, String, String) -> Unit,
+    onToggleHelp: (String) -> Unit,
     onAction: (String, String) -> Unit
 ) {
     val disks = data?.optJSONArray("disks") ?: JSONArray()
@@ -1204,23 +1773,23 @@ private fun StoragePage(
         }
     }
     MiniCard("Системные функции NDMS", { onTopicHelp("storage") }) {
-        MiniSwitch("Windows-сеть (SMB / CIFS)", "Общие папки флешки в локальной сети", ndms.optBoolean("cifs"), {
-            onQuickHelp("SMB / CIFS", "Доступ к файлам USB-диска как сетевая папка \\\\192.168.1.1.", "Позволяет закидывать файлы без SSH.", "Включайте только при необходимости.", "")
-        }) { v -> onAction("CIFS", MonitorScripts.ndmcSaveCmd(if (v == 1) "service cifs" else "no service cifs")) }
-        MiniSwitch("WebDAV-сервер", "Доступ по HTTP к файлам накопителя и заливка Entware", ndms.optBoolean("webdav")) { v ->
+        MiniSwitch("Windows-сеть (SMB / CIFS)", "Общие папки флешки в локальной сети", ndms.optBoolean("cifs"), { onToggleHelp("cifs") }) { v ->
+            onAction("CIFS", MonitorScripts.ndmcSaveCmd(if (v == 1) "service cifs" else "no service cifs"))
+        }
+        MiniSwitch("WebDAV-сервер", "Доступ по HTTP к файлам накопителя и заливка Entware", ndms.optBoolean("webdav"), { onToggleHelp("webdav") }) { v ->
             onAction("WebDAV", MonitorScripts.ndmcSaveCmd(if (v == 1) "ip http webdav" else "no ip http webdav", if (v == 1) "ip http webdav enable" else "no ip http webdav enable"))
         }
-        MiniSwitch("ZRAM (сжатие RAM)", "Увеличивает доступную память без износа флешки", ndms.optBoolean("zram")) { v ->
+        MiniSwitch("ZRAM (сжатие RAM)", "Увеличивает доступную память без износа флешки", ndms.optBoolean("zram"), { onToggleHelp("zram") }) { v ->
             onAction("ZRAM", MonitorScripts.ndmcSaveCmd(if (v == 1) "zram" else "no zram"))
         }
-        MiniSwitch("Режим USB 2.0", "Повышает стабильность питания на части USB-дисков", ndms.optBoolean("usb2")) { v ->
+        MiniSwitch("Режим USB 2.0", "Повышает стабильность питания и убирает помехи 2.4 ГГц", ndms.optBoolean("usb2"), { onToggleHelp("usb2") }) { v ->
             onAction("USB 2.0", MonitorScripts.ndmcSaveCmd(if (v == 1) "dev.usb.force_usb2 1" else "no dev.usb.force_usb2"))
         }
     }
 }
 
 @Composable
-private fun WanPage(data: JSONObject?, benchOut: String, onTopicHelp: (String) -> Unit, onBench: () -> Unit) {
+private fun WanPage(data: JSONObject?, benchOut: String, busy: Boolean, onTopicHelp: (String) -> Unit, onBench: () -> Unit) {
     MiniCard("Интернет и маршруты (WAN)", { onTopicHelp("wan") }) {
         val dev = data?.optString("dev").orEmpty().ifBlank { "—" }
         MiniRow("Активный WAN", "$dev • ${data?.optString("wan", "—")}")
@@ -1235,7 +1804,7 @@ private fun WanPage(data: JSONObject?, benchOut: String, onTopicHelp: (String) -
             Text("Политика маршрутизации:", color = Color(0xFF93C5FD), fontSize = 10.sp)
             MonoBox(pol)
         }
-        Button(onClick = onBench, modifier = Modifier.fillMaxWidth().height(34.dp)) {
+        Button(onClick = onBench, enabled = !busy, modifier = Modifier.fillMaxWidth().height(34.dp)) {
             Text("Замерить скорость и пинг с роутера", fontSize = 11.sp)
         }
         if (benchOut.isNotBlank()) MonoBox(benchOut)
@@ -1246,9 +1815,13 @@ private fun WanPage(data: JSONObject?, benchOut: String, onTopicHelp: (String) -
 private fun DnsPage(
     data: JSONObject?,
     probeOut: String,
+    busy: Boolean,
     onTopicHelp: (String) -> Unit,
-    onQuickHelp: (String, String, String, String, String) -> Unit,
+    onToggleHelp: (String) -> Unit,
+    onInstallAdguard: () -> Unit,
     onAction: (String, String) -> Unit,
+    onQuickBypassDomain: (String) -> Unit,
+    onQuickWhitelistDomain: (String) -> Unit,
     onProbe: () -> Unit
 ) {
     val agh = data?.optJSONObject("agh") ?: JSONObject()
@@ -1258,30 +1831,34 @@ private fun DnsPage(
     val errs = data?.optJSONArray("errs") ?: JSONArray()
     val qlog = data?.optJSONArray("qlog") ?: JSONArray()
     val port = data?.optInt("agh_port", 3000) ?: 3000
+    val aghUp = data?.optBoolean("agh_up") == true
 
-    MiniCard("AdGuard Home (:${port}) — Запросов в логе: ${data?.optInt("qcnt", 0) ?: 0}", { onTopicHelp("dns") }) {
+    MiniCard("AdGuard Home v1.0.0 (:$port) — Запросов: ${data?.optInt("qcnt", 0) ?: 0}", { onTopicHelp("dns") }) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            MiniPill(if (data?.optBoolean("agh_up") == true) "AdGuard Работает" else "AdGuard Остановлен", data?.optBoolean("agh_up") == true)
-            OutlinedButton(onClick = onProbe, modifier = Modifier.height(27.dp), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Тест DNS", fontSize = 10.sp) }
+            MiniPill(if (aghUp) "AdGuard Работает" else "AdGuard Остановлен", aghUp)
+            Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                if (!aghUp || upstreams.length() == 0) {
+                    Button(onClick = onInstallAdguard, enabled = !busy, modifier = Modifier.height(27.dp), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Развернуть AGH", fontSize = 10.sp) }
+                }
+                OutlinedButton(onClick = onProbe, enabled = !busy, modifier = Modifier.height(27.dp), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Тест DNS", fontSize = 10.sp) }
+            }
         }
-        MiniSwitch("Защита (protection_enabled)", "Общий рубильник фильтрации рекламы", agh.optBoolean("prot")) { v ->
+        MiniSwitch("Защита (protection_enabled)", "Общий рубильник фильтрации рекламы", agh.optBoolean("prot"), { onToggleHelp("agh_prot") }) { v ->
             onAction("AdGuard защита", MonitorScripts.setAghKeyCmd("protection_enabled", v == 1))
         }
-        MiniSwitch("Фильтры доменов (filtering)", "Блокировка рекламы по чёрным спискам", agh.optBoolean("filt")) { v ->
+        MiniSwitch("Фильтры доменов (filtering)", "Блокировка рекламы по чёрным спискам", agh.optBoolean("filt"), { onToggleHelp("agh_filt") }) { v ->
             onAction("Фильтры AdGuard", MonitorScripts.setAghKeyCmd("filtering_enabled", v == 1))
         }
-        MiniSwitch("Перехват DNS роутером (opkg dns-override)", "Направляет весь DNS сети на AdGuard :53", ndms.optBoolean("dns_ov"), {
-            onQuickHelp("opkg dns-override", "Переключает порт 53 с системного DNS NDMS на AdGuard Home.", "Без этой опции устройства не фильтруются.", "Обязательно отключайте перед удалением AdGuard.", "")
-        }) { v ->
+        MiniSwitch("Перехват DNS роутером (opkg dns-override)", "Направляет весь DNS сети на AdGuard :53", ndms.optBoolean("dns_ov"), { onToggleHelp("dns_ov") }) { v ->
             onAction("dns-override", MonitorScripts.ndmcSaveCmd(if (v == 1) "opkg dns-override" else "no opkg dns-override"))
         }
-        MiniSwitch("DNSSEC", "Криптографическая проверка подлинности ответов DNS", agh.optBoolean("dnssec")) { v ->
+        MiniSwitch("DNSSEC", "Криптографическая проверка подлинности ответов DNS", agh.optBoolean("dnssec"), { onToggleHelp("dnssec") }) { v ->
             onAction("DNSSEC", MonitorScripts.setAghKeyCmd("enable_dnssec", v == 1))
         }
-        MiniSwitch("Оптимистичный кэш", "Мгновенная отдача кэша с фоновым обновлением", agh.optBoolean("cache_opt")) { v ->
+        MiniSwitch("Оптимистичный кэш", "Мгновенная отдача кэша с фоновым обновлением", agh.optBoolean("cache_opt"), { onToggleHelp("cache_opt") }) { v ->
             onAction("Опт. кэш", MonitorScripts.setAghKeyCmd("cache_optimistic", v == 1))
         }
-        MiniSwitch("Блокировать IPv6 (AAAA)", "Исключает утечку трафика мимо IPv4 правил", agh.optBoolean("no_aaaa")) { v ->
+        MiniSwitch("Блокировать IPv6 (AAAA)", "Исключает утечку трафика мимо IPv4 правил", agh.optBoolean("no_aaaa"), { onToggleHelp("no_aaaa") }) { v ->
             onAction("AAAA block", MonitorScripts.setAghKeyCmd("aaaa_disabled", v == 1))
         }
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -1295,7 +1872,7 @@ private fun DnsPage(
         if (upstreams.length() > 0) {
             MonoBox((0 until upstreams.length()).joinToString("\n") { upstreams.optString(it) })
         } else {
-            Text("AdGuardHome.yaml не найден или апстримы не настроены", color = Color(0xFF64748B), fontSize = 10.sp)
+            Text("AdGuardHome.yaml не найден — нажмите «Развернуть AGH» выше.", color = Color(0xFF64748B), fontSize = 10.sp)
         }
         var customUps by remember { mutableStateOf("") }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1312,13 +1889,24 @@ private fun DnsPage(
     }
 
     if (qlog.length() > 0) {
-        MiniCard("Последние DNS-запросы (live)") {
+        MiniCard("Живой журнал DNS-запросов (нажми +z2k / +Искл.)") {
             for (i in 0 until qlog.length()) {
                 val q = qlog.optJSONObject(i) ?: continue
                 val blk = q.optBoolean("blk")
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("${q.optString("t")} • ${q.optString("dom")}", color = if (blk) Color(0xFFFCA5A5) else Color(0xFFCBD5E1), fontSize = 10.sp, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                    Text("${q.optString("ip")} ${if (blk) "[BLOCK]" else q.optString("qt")}", color = if (blk) Color(0xFFF87171) else Color(0xFF64748B), fontSize = 9.5.sp, fontFamily = FontFamily.Monospace)
+                val dom = q.optString("dom")
+                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("${q.optString("t")} • $dom", color = if (blk) Color(0xFFFCA5A5) else Color(0xFFCBD5E1), fontSize = 10.sp, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("${q.optString("ip")} • ${if (blk) "BLOCK" else q.optString("qt")}", color = if (blk) Color(0xFFF87171) else Color(0xFF64748B), fontSize = 8.5.sp, fontFamily = FontFamily.Monospace)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Surface(color = Color(0xFF172554), shape = RoundedCornerShape(4.dp), modifier = Modifier.clickable { onQuickBypassDomain(dom) }) {
+                            Text("+z2k", color = Color(0xFF93C5FD), fontSize = 8.5.sp, modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp))
+                        }
+                        Surface(color = Color(0xFF064E3B), shape = RoundedCornerShape(4.dp), modifier = Modifier.clickable { onQuickWhitelistDomain(dom) }) {
+                            Text("+Искл", color = Color(0xFF86EFAC), fontSize = 8.5.sp, modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp))
+                        }
+                    }
                 }
             }
         }
@@ -1336,6 +1924,7 @@ private fun NatPpePage(
     data: JSONObject?,
     devicesData: JSONObject?,
     onTopicHelp: (String) -> Unit,
+    onToggleHelp: (String) -> Unit,
     onQuickHelp: (String, String, String, String, String) -> Unit,
     onAction: (String, String) -> Unit
 ) {
@@ -1344,16 +1933,16 @@ private fun NatPpePage(
     val upnp = data?.optJSONArray("upnp_list") ?: JSONArray()
 
     MiniCard("Аппаратное ускорение (PPE), UPnP и Conntrack", { onTopicHelp("nat_ppe") }) {
-        MiniSwitch("Hardware NAT (ppe hardware)", "Аппаратный fast-path коммутатора", ndms.optBoolean("ppe_hw")) { v ->
+        MiniSwitch("Hardware NAT (ppe hardware)", "Аппаратный fast-path коммутатора", ndms.optBoolean("ppe_hw"), { onToggleHelp("ppe_hw") }) { v ->
             onAction("Hardware NAT", MonitorScripts.ndmcSaveCmd(if (v == 1) "ppe hardware" else "no ppe hardware"))
         }
-        MiniSwitch("Software PPE (ppe software)", "Ядерный fast-path ускоритель", ndms.optBoolean("ppe_sw")) { v ->
+        MiniSwitch("Software PPE (ppe software)", "Ядерный fast-path ускоритель", ndms.optBoolean("ppe_sw"), { onToggleHelp("ppe_sw") }) { v ->
             onAction("Software PPE", MonitorScripts.ndmcSaveCmd(if (v == 1) "ppe software" else "no ppe software"))
         }
-        MiniSwitch("UPnP", "Автоматическое открытие портов устройствами", ndms.optBoolean("upnp")) { v ->
+        MiniSwitch("UPnP", "Автоматическое открытие портов играми и торрентами", ndms.optBoolean("upnp"), { onToggleHelp("upnp") }) { v ->
             onAction("UPnP", MonitorScripts.ndmcSaveCmd(if (v == 1) "service upnp" else "no service upnp"))
         }
-        MiniSwitch("IGMP Proxy (IPTV)", "Пропуск мультикаст-потоков", ndms.optBoolean("igmp")) { v ->
+        MiniSwitch("IGMP Proxy (IPTV)", "Пропуск мультикаст-потоков ТВ провайдера", ndms.optBoolean("igmp"), { onToggleHelp("igmp") }) { v ->
             onAction("IGMP", MonitorScripts.ndmcSaveCmd(if (v == 1) "service igmp-proxy" else "no service igmp-proxy"))
         }
         val ctMax = ndms.optInt("ct_max", 32768)
@@ -1423,13 +2012,14 @@ private fun BypassModesPage(
     data: JSONObject?,
     probeOut: String,
     onTopicHelp: (String) -> Unit,
-    onQuickHelp: (String, String, String, String, String) -> Unit,
+    onToggleHelp: (String) -> Unit,
     onAction: (String, String) -> Unit,
     onProbe: () -> Unit
 ) {
     val z2k = data?.optJSONObject("z2k") ?: JSONObject()
     val pol = data?.optJSONObject("policy") ?: JSONObject()
     val cfgLines = data?.optJSONArray("cfg_lines") ?: JSONArray()
+    val nfqPkts = data?.optJSONArray("nfq_pkts") ?: JSONArray()
     val mode = z2k.optString("mode", "auto")
 
     MiniCard("Управление Zapret2 / z2k", { onTopicHelp("z2k") }) {
@@ -1444,10 +2034,10 @@ private fun BypassModesPage(
                 )
             }
         }
-        MiniSwitch("Блокировать IPv6", "Предотвращает обход правил через IPv6", z2k.optBoolean("no_ipv6")) { v ->
+        MiniSwitch("Блокировать IPv6", "Предотвращает обход правил через IPv6", z2k.optBoolean("no_ipv6"), { onToggleHelp("no_ipv6") }) { v ->
             onAction("IPv6", MonitorScripts.toggleZ2k("ipv6-disable", v))
         }
-        MiniSwitch("Autohostlist", "Автоматически добавляет заблокированные сайты при сбоях TLS", z2k.optBoolean("autohost")) { v ->
+        MiniSwitch("Autohostlist", "Автоматически добавляет заблокированные сайты при сбоях TLS", z2k.optBoolean("autohost"), { onToggleHelp("autohost") }) { v ->
             onAction("Autohostlist", MonitorScripts.toggleZ2k("autohostlist", v))
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1459,13 +2049,17 @@ private fun BypassModesPage(
 
     var polName by remember(pol) { mutableStateOf(pol.optString("name", "Gor4akovNET")) }
     var polEx by remember(pol) { mutableStateOf(pol.optInt("exclude", 0) == 1) }
-    MiniCard("Политика маршрутизации NDMS", {
-        onQuickHelp("Политика маршрутизации", "Привязывает обход Zapret2 к выбранной политике роутера (Gor4akovNET).", "Позволяет изолировать обход только для отдельной Wi-Fi сети или конкретных устройств.", "", "")
-    }) {
+    MiniCard("Политика маршрутизации NDMS") {
         OutlinedTextField(value = polName, onValueChange = { polName = it }, label = { Text("Имя политики (напр. Gor4akovNET)", fontSize = 10.sp) }, singleLine = true, textStyle = LocalTextStyle.current.copy(fontSize = 11.sp), modifier = Modifier.fillMaxWidth())
-        MiniSwitch("Инвертировать (exclude)", "Если выключено — обход работает только внутри указанной политики", polEx) { v -> polEx = v == 1 }
+        MiniSwitch("Инвертировать (exclude)", "Если выкл — обход работает только внутри указанной политики", polEx, { onToggleHelp("pol_ex") }) { v -> polEx = v == 1 }
         Button(onClick = { if (polName.isNotBlank()) onAction("Сохранить политику", MonitorScripts.setPolicyCmd(polName, if (polEx) 1 else 0)) }, modifier = Modifier.fillMaxWidth().height(32.dp)) {
             Text("Применить политику и перезапустить z2k", fontSize = 11.sp)
+        }
+    }
+
+    if (nfqPkts.length() > 0) {
+        MiniCard("Счётчики пакетов NFQUEUE (реально перехвачено)") {
+            MonoBox((0 until nfqPkts.length()).joinToString("\n") { nfqPkts.optString(it) })
         }
     }
 
@@ -1477,38 +2071,144 @@ private fun BypassModesPage(
 }
 
 @Composable
-private fun WarpPage(bypass: JSONObject?, gamesData: JSONObject?, onTopicHelp: (String) -> Unit, onAction: (String, String) -> Unit) {
-    val warpObj = bypass?.optJSONObject("warp")
-    val warpStr = if (warpObj == null) bypass?.optString("warp").orEmpty() else ""
-    val warp = warpObj ?: JSONObject()
-    val fromBypass = warpStr == "true" || warpStr == "1"
-    val installed = warp.optBoolean("installed") || warp.optBoolean("running") || fromBypass
-    val running = warp.optBoolean("running") || fromBypass
-    val games = gamesData?.optJSONArray("games") ?: JSONArray()
+private fun WarpPage(
+    data: JSONObject?,
+    traceOut: String,
+    busy: Boolean,
+    onTopicHelp: (String) -> Unit,
+    onTrace: () -> Unit,
+    onAction: (String, String) -> Unit
+) {
+    val st = data?.optJSONObject("status") ?: JSONObject()
+    val installed = st.optBoolean("installed") || st.optBoolean("running") || st.optBoolean("ready")
+    val running = st.optBoolean("running") || st.optBoolean("ready")
+    val transport = st.optString("transport", "auto")
+    val tunIp = data?.optString("tun_ip").orEmpty()
+    val tunMtu = data?.optString("tun_mtu").orEmpty()
+    val ramMb = data?.optString("ram_mb").orEmpty()
+    val games = data?.optJSONObject("games")?.optJSONArray("games") ?: JSONArray()
+    val listDoms = data?.optJSONObject("lists")?.optJSONArray("domains") ?: JSONArray()
+    val exclDoms = data?.optJSONObject("exclude")?.optJSONArray("domains") ?: JSONArray()
+    val devArr = data?.optJSONObject("devices")?.optJSONArray("devices") ?: JSONArray()
+
+    var subTab by remember { mutableIntStateOf(0) }
+    var warpDomInput by remember { mutableStateOf("") }
+    var warpExInput by remember { mutableStateOf("") }
+    var confirmRereg by remember { mutableStateOf(false) }
 
     MiniCard("Cloudflare WARP (туннель z2k)", { onTopicHelp("warp") }) {
         MiniRow("Статус", if (!installed) "Не установлен" else if (running) "Работает" else "Выключен", if (running) Color(0xFF4ADE80) else Color(0xFFFBBF24))
-        if (!installed) {
-            Button(onClick = { onAction("Установка WARP", MonitorScripts.warpInstallCmd()) }, modifier = Modifier.fillMaxWidth().height(34.dp)) {
-                Text("Установить Cloudflare WARP", fontSize = 11.sp)
+        if (installed) {
+            MiniRow("Интерфейс z2ktun0", "${tunIp.ifBlank { "не поднят" }} • MTU ${tunMtu.ifBlank { "—" }} • RAM ${ramMb.ifBlank { "—" }} МБ")
+            Text("Транспорт WARP (при блокировке WireGuard выберите MASQUE H2):", color = Color(0xFF94A3B8), fontSize = 9.5.sp)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                listOf("auto" to "Auto", "wg" to "WireGuard", "h2" to "MASQUE H2").forEach { (id, lbl) ->
+                    FilterChip(selected = transport.equals(id, true), onClick = { onAction("Транспорт $lbl", MonitorScripts.warpTransportCmd(id)) }, label = { Text(lbl, fontSize = 9.5.sp) })
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                Button(onClick = { onAction(if (running) "Стоп WARP" else "Старт WARP", MonitorScripts.toggleZ2k("game-warp", if (running) 0 else 1)) }, enabled = !busy, modifier = Modifier.weight(1f).height(32.dp), contentPadding = PaddingValues(4.dp)) {
+                    Text(if (running) "Выключить" else "Включить", fontSize = 10.sp)
+                }
+                OutlinedButton(onClick = onTrace, enabled = !busy, modifier = Modifier.weight(1f).height(32.dp), contentPadding = PaddingValues(4.dp)) {
+                    Text("Cloudflare Trace", fontSize = 10.sp)
+                }
+                OutlinedButton(onClick = { confirmRereg = true }, enabled = !busy, modifier = Modifier.weight(1f).height(32.dp), contentPadding = PaddingValues(4.dp)) {
+                    Text("Ключи заново", fontSize = 9.5.sp)
+                }
             }
         } else {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Button(onClick = { onAction(if (running) "Стоп WARP" else "Старт WARP", MonitorScripts.toggleZ2k("game-warp", if (running) 0 else 1)) }, modifier = Modifier.weight(1f).height(34.dp)) {
-                    Text(if (running) "Выключить WARP" else "Включить WARP", fontSize = 11.sp)
+            Button(onClick = { onAction("Установка WARP", MonitorScripts.warpInstallCmd()) }, enabled = !busy, modifier = Modifier.fillMaxWidth().height(34.dp)) {
+                Text("Установить Cloudflare WARP", fontSize = 11.sp)
+            }
+        }
+        if (traceOut.isNotBlank()) MonoBox(traceOut)
+    }
+
+    if (installed) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            FilterChip(selected = subTab == 0, onClick = { subTab = 0 }, label = { Text("Игры (${games.length()})", fontSize = 9.5.sp) })
+            FilterChip(selected = subTab == 1, onClick = { subTab = 1 }, label = { Text("Домены (${listDoms.length()}/${exclDoms.length()})", fontSize = 9.5.sp) })
+            FilterChip(selected = subTab == 2, onClick = { subTab = 2 }, label = { Text("Устройства (${devArr.length()})", fontSize = 9.5.sp) })
+        }
+
+        when (subTab) {
+            0 -> MiniCard("Игры и сервисы через WARP (${games.length()})") {
+                if (games.length() == 0) Text("Список игр z2k пуст (требуется активный S96z2k-webpanel :8088)", color = Color(0xFF64748B), fontSize = 10.sp)
+                for (i in 0 until games.length()) {
+                    val g = games.optJSONObject(i) ?: continue
+                    val nm = g.optString("name")
+                    val en = g.optInt("enabled", 0) == 1 || g.optBoolean("enabled", false)
+                    MiniSwitch(nm, g.optString("desc", "Точечная маршрутизация в z2ktun0"), en) { v ->
+                        onAction("WARP $nm", MonitorScripts.warpGameToggleCmd(nm, v))
+                    }
+                }
+            }
+            1 -> {
+                MiniCard("Домены через WARP (${listDoms.length()})") {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(value = warpDomInput, onValueChange = { warpDomInput = it }, placeholder = { Text("claude.ai / spotify.com", fontSize = 10.sp) }, singleLine = true, textStyle = LocalTextStyle.current.copy(fontSize = 10.sp), modifier = Modifier.weight(1f))
+                        Button(onClick = {
+                            if (warpDomInput.isNotBlank()) {
+                                onAction("+WARP $warpDomInput", MonitorScripts.warpDomainRuleCmd("lists", warpDomInput, true))
+                                warpDomInput = ""
+                            }
+                        }, modifier = Modifier.height(34.dp)) { Text("+") }
+                    }
+                    for (i in 0 until minOf(listDoms.length(), 40)) {
+                        val d = listDoms.optString(i)
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text(d, color = Color(0xFFCBD5E1), fontSize = 10.5.sp, fontFamily = FontFamily.Monospace)
+                            IconButton(onClick = { onAction("-WARP $d", MonitorScripts.warpDomainRuleCmd("lists", d, false)) }, modifier = Modifier.size(22.dp)) {
+                                Icon(Icons.Rounded.DeleteOutline, null, tint = Color(0xFFFCA5A5), modifier = Modifier.size(14.dp))
+                            }
+                        }
+                    }
+                }
+                MiniCard("Исключения WARP — всегда напрямую (${exclDoms.length()})") {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(value = warpExInput, onValueChange = { warpExInput = it }, placeholder = { Text("sberbank.ru", fontSize = 10.sp) }, singleLine = true, textStyle = LocalTextStyle.current.copy(fontSize = 10.sp), modifier = Modifier.weight(1f))
+                        Button(onClick = {
+                            if (warpExInput.isNotBlank()) {
+                                onAction("+Искл WARP $warpExInput", MonitorScripts.warpDomainRuleCmd("exclude", warpExInput, true))
+                                warpExInput = ""
+                            }
+                        }, modifier = Modifier.height(34.dp)) { Text("+") }
+                    }
+                    for (i in 0 until minOf(exclDoms.length(), 40)) {
+                        val d = exclDoms.optString(i)
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text(d, color = Color(0xFFCBD5E1), fontSize = 10.5.sp, fontFamily = FontFamily.Monospace)
+                            IconButton(onClick = { onAction("-Искл WARP $d", MonitorScripts.warpDomainRuleCmd("exclude", d, false)) }, modifier = Modifier.size(22.dp)) {
+                                Icon(Icons.Rounded.DeleteOutline, null, tint = Color(0xFFFCA5A5), modifier = Modifier.size(14.dp))
+                            }
+                        }
+                    }
+                }
+            }
+            2 -> MiniCard("Весь трафик устройства через WARP (${devArr.length()})") {
+                if (devArr.length() == 0) Text("Список устройств WARP пуст (доступен при включённой панели z2k :8088)", color = Color(0xFF64748B), fontSize = 10.sp)
+                for (i in 0 until devArr.length()) {
+                    val d = devArr.optJSONObject(i) ?: continue
+                    val ip = d.optString("ip").ifBlank { d.optString("mac") }
+                    val nm = d.optString("name", ip)
+                    val en = d.optInt("enabled", 0) == 1 || d.optBoolean("enabled", false)
+                    MiniSwitch(nm, ip, en) { v -> onAction("WARP $nm", MonitorScripts.warpDeviceToggleCmd(ip, v == 1)) }
                 }
             }
         }
     }
-    if (games.length() > 0) {
-        MiniCard("Точечные правила WARP (${games.length()})") {
-            for (i in 0 until games.length()) {
-                val g = games.optJSONObject(i) ?: continue
-                val nm = g.optString("name")
-                val en = g.optBoolean("enabled")
-                MiniSwitch(nm, "", en) { v -> onAction("WARP $nm", MonitorScripts.warpGameToggleCmd(nm, v)) }
-            }
-        }
+
+    if (confirmRereg) {
+        AlertDialog(
+            onDismissRequest = { confirmRereg = false },
+            title = { Text("Перерегистрировать WARP?") },
+            text = { Text("Создаст новый ключ аккаунта Cloudflare WARP. Помогает при бане текущего IP или сбоях рукопожатия.") },
+            confirmButton = {
+                Button(onClick = { confirmRereg = false; onAction("Перерегистрация WARP", MonitorScripts.warpReregisterCmd()) }) { Text("Выполнить") }
+            },
+            dismissButton = { TextButton(onClick = { confirmRereg = false }) { Text("Отмена") } }
+        )
     }
 }
 
@@ -1522,21 +2222,72 @@ private fun BypassListsPage(
     pickDomain: String,
     onPickChange: (String) -> Unit,
     pickOut: String,
+    busy: Boolean,
     onTopicHelp: (String) -> Unit,
     onAction: (String, String) -> Unit,
-    onPick: (String, String) -> Unit
+    onPick: (String, String) -> Unit,
+    onApplyPool: (String, String, String) -> Unit
 ) {
     val exArr = data?.optJSONArray("extra") ?: JSONArray()
     val wlArr = data?.optJSONArray("whitelist") ?: JSONArray()
     val wlPath = data?.optString("wl_file", "/opt/zapret2/lists/whitelist.txt") ?: "/opt/zapret2/lists/whitelist.txt"
+    val nfqPkts = data?.optJSONArray("nfq_pkts") ?: JSONArray()
+    val poolInfo = data?.optJSONArray("pool_info") ?: JSONArray()
 
-    MiniCard("Подбор рабочей стратегии под домен", { onTopicHelp("z2k") }) {
+    var pickMode by remember { mutableStateOf("tcp13") }
+    var targetPool by remember { mutableStateOf("rkn_tcp") }
+
+    val parsedPick = remember(pickOut) { runCatching { parseJsonOut(pickOut, "pick") }.getOrNull() }
+    val extractedStrategy = remember(pickOut, parsedPick) {
+        parsedPick?.optString("best_strategy")?.ifBlank { parsedPick.optString("strategy") }
+            ?: Regex("""(--lua-desync=[^\n"]+)""").find(pickOut)?.groupValues?.getOrNull(1)
+            ?: ""
+    }
+
+    MiniCard("Подбор рабочей стратегии z2k", { onTopicHelp("z2k") }) {
         OutlinedTextField(value = pickDomain, onValueChange = onPickChange, label = { Text("Домен для теста", fontSize = 10.sp) }, singleLine = true, textStyle = LocalTextStyle.current.copy(fontSize = 11.sp), modifier = Modifier.fillMaxWidth())
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Button(onClick = { if (pickDomain.isNotBlank()) onPick(pickDomain, "tcp") }, modifier = Modifier.weight(1f).height(32.dp)) { Text("Подобрать TCP", fontSize = 10.sp) }
-            OutlinedButton(onClick = { if (pickDomain.isNotBlank()) onPick(pickDomain, "udp") }, modifier = Modifier.weight(1f).height(32.dp)) { Text("Подобрать UDP", fontSize = 10.sp) }
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            listOf("tcp13" to "TLS 1.3", "tcp12" to "TLS 1.2", "mixed" to "Mixed", "quic" to "QUIC/UDP", "voice" to "Voice UDP").forEach { (id, lbl) ->
+                FilterChip(selected = pickMode == id, onClick = { pickMode = id }, label = { Text(lbl, fontSize = 9.5.sp) })
+            }
         }
-        if (pickOut.isNotBlank()) MonoBox(pickOut)
+        Button(
+            onClick = { if (pickDomain.isNotBlank()) onPick(pickDomain, pickMode) },
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth().height(34.dp)
+        ) { Text("Запустить автоподбор ($pickMode)", fontSize = 11.sp) }
+
+        if (pickOut.isNotBlank()) {
+            if (extractedStrategy.isNotBlank()) {
+                Surface(color = Color(0xFF052E16), shape = RoundedCornerShape(7.dp), border = BorderStroke(1.dp, Color(0xFF16A34A)), modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text("Найдена рабочая стратегия:", color = Color(0xFF86EFAC), fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
+                        Text(extractedStrategy, color = Color.White, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            listOf("rkn_tcp", "yt_tcp", "gv_tcp", "yt_quic", "discord_udp").forEach { p ->
+                                FilterChip(selected = targetPool == p, onClick = { targetPool = p }, label = { Text(p, fontSize = 9.sp) })
+                            }
+                        }
+                        Button(onClick = { onApplyPool(targetPool, pickDomain, extractedStrategy) }, enabled = !busy, modifier = Modifier.fillMaxWidth().height(30.dp)) {
+                            Text("Применить в пул $targetPool", fontSize = 10.sp)
+                        }
+                    }
+                }
+            }
+            MonoBox(pickOut.takeLast(3500))
+        }
+    }
+
+    MiniCard("Активные пулы стратегий и Autocircular") {
+        if (poolInfo.length() > 0) {
+            MonoBox((0 until poolInfo.length()).joinToString("\n") { poolInfo.optString(it) })
+        }
+        if (nfqPkts.length() > 0) {
+            MonoBox((0 until nfqPkts.length()).joinToString("\n") { nfqPkts.optString(it) })
+        }
+        OutlinedButton(onClick = { onAction("Сброс Autocircular", MonitorScripts.RESET_AUTOCIRCULAR_CMD) }, enabled = !busy, modifier = Modifier.fillMaxWidth().height(30.dp)) {
+            Text("Сбросить кэш Autocircular и перезапустить nfqws2", fontSize = 10.sp)
+        }
     }
 
     MiniCard("Доп. домены для обхода (${exArr.length()})") {
@@ -1589,7 +2340,12 @@ private fun BypassListsPage(
 }
 
 @Composable
-private fun WifiPage(data: JSONObject?, onTopicHelp: (String) -> Unit, onAction: (String, String) -> Unit) {
+private fun WifiPage(
+    data: JSONObject?,
+    onTopicHelp: (String) -> Unit,
+    onToggleHelp: (String) -> Unit,
+    onAction: (String, String) -> Unit
+) {
     val wifi = data?.optJSONObject("wifi") ?: JSONObject()
     val aps = wifi.optJSONArray("aps") ?: JSONArray()
 
@@ -1645,17 +2401,17 @@ private fun WifiPage(data: JSONObject?, onTopicHelp: (String) -> Unit, onAction:
     }
 
     MiniCard("Функции Wi-Fi и Гостевая сеть") {
-        MiniSwitch("Band Steering (Bridge0)", "Переводит гаджеты между 2.4G и 5G", wifi.optBoolean("band_steer")) { v ->
+        MiniSwitch("Band Steering (Bridge0)", "Переводит гаджеты между 2.4G и 5G", wifi.optBoolean("band_steer"), { onToggleHelp("band_steer") }) { v ->
             onAction("Band Steering", MonitorScripts.ndmcSaveCmd("interface Bridge0 ${if (v == 1) "band-steering" else "no band-steering"}"))
         }
-        MiniSwitch("Быстрый роуминг 802.11r (FT)", "Мгновенный переход 2.4G <-> 5G", wifi.optBoolean("ft")) { v ->
+        MiniSwitch("Быстрый роуминг 802.11r (FT)", "Мгновенный переход 2.4G <-> 5G", wifi.optBoolean("ft"), { onToggleHelp("ft") }) { v ->
             val c = if (v == 1) "ft enable" else "no ft enable"
             onAction("802.11r FT", MonitorScripts.ndmcSaveCmd("interface WifiMaster0/AccessPoint0 $c", "interface WifiMaster1/AccessPoint0 $c"))
         }
-        MiniSwitch("Target Wake Time (Wi-Fi 6 AX)", "Экономит батарею устройств на 5 ГГц", wifi.optBoolean("twt")) { v ->
+        MiniSwitch("Target Wake Time (Wi-Fi 6 AX)", "Экономит батарею устройств на 5 ГГц", wifi.optBoolean("twt"), { onToggleHelp("twt") }) { v ->
             onAction("Wi-Fi 6 TWT", MonitorScripts.ndmcSaveCmd("interface WifiMaster1 ${if (v == 1) "target-waketime" else "no target-waketime"}"))
         }
-        MiniSwitch("Гостевая сеть (Guest)", "Изолированный Wi-Fi", wifi.optBoolean("guest_up")) { v ->
+        MiniSwitch("Гостевая сеть (Guest)", "Изолированный Wi-Fi (AccessPoint1)", wifi.optBoolean("guest_up"), { onToggleHelp("guest_up") }) { v ->
             val act = if (v == 1) "up" else "down"
             onAction("Гостевой Wi-Fi", MonitorScripts.ndmcSaveCmd("interface WifiMaster0/AccessPoint1 $act", "interface WifiMaster1/AccessPoint1 $act"))
         }
@@ -1672,25 +2428,42 @@ private fun DevicesPage(
     data: JSONObject?,
     search: String,
     onSearchChange: (String) -> Unit,
+    filterMode: String,
+    onFilterChange: (String) -> Unit,
     onTopicHelp: (String) -> Unit,
+    onSelectDevice: (JSONObject) -> Unit,
     onAction: (String, String) -> Unit
 ) {
     val arr = data?.optJSONArray("devices") ?: JSONArray()
-    val list = (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
+    val all = (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
+    val filtered = all
         .filter { d ->
-            search.isBlank() ||
+            val matchText = search.isBlank() ||
                 d.optString("name").contains(search, true) ||
                 d.optString("hostname").contains(search, true) ||
                 d.optString("ip").contains(search, true) ||
                 d.optString("mac").contains(search, true)
+            val matchFilter = when (filterMode) {
+                "online" -> d.optString("link") == "up"
+                "bypass" -> d.optString("route_pol").equals("Gor4akovNET", true)
+                "deny" -> d.optString("policy") == "deny"
+                "timer" -> d.optString("timer").isNotBlank() || d.optString("sched").isNotBlank()
+                else -> true
+            }
+            matchText && matchFilter
         }
         .sortedWith(compareByDescending<JSONObject> { it.optString("link") == "up" }.thenBy { it.optString("name").ifBlank { it.optString("hostname") } })
 
-    MiniCard("Клиенты сети (${list.size})", { onTopicHelp("devices") }) {
+    MiniCard("Клиенты сети (${filtered.size} / ${all.size})", { onTopicHelp("devices") }) {
         OutlinedTextField(value = search, onValueChange = onSearchChange, placeholder = { Text("Поиск по имени, IP или MAC...", fontSize = 10.sp) }, singleLine = true, textStyle = LocalTextStyle.current.copy(fontSize = 10.sp), modifier = Modifier.fillMaxWidth())
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            listOf("all" to "Все", "online" to "Онлайн", "bypass" to "В обходе", "deny" to "В блоке", "timer" to "С таймером").forEach { (id, lbl) ->
+                FilterChip(selected = filterMode == id, onClick = { onFilterChange(id) }, label = { Text(lbl, fontSize = 9.5.sp) })
+            }
+        }
     }
 
-    list.forEach { d ->
+    filtered.forEach { d ->
         val mac = d.optString("mac")
         val ip = d.optString("ip").ifBlank { "—" }
         val title = d.optString("name").ifBlank { d.optString("hostname") }.ifBlank { mac }
@@ -1699,7 +2472,9 @@ private fun DevicesPage(
         val routePol = d.optString("route_pol", "Default")
         val inG4 = routePol.equals("Gor4akovNET", true)
         val prio = d.optInt("prio", 6)
-        val cnf = d.optBoolean("conform")
+        val shapeKbps = d.optInt("shape_kbps", 0)
+        val timerStr = d.optString("timer")
+        val schedStr = d.optString("sched")
         val ap = d.optString("ap")
         val rssi = d.optString("rssi")
         val txr = d.optString("txrate")
@@ -1709,7 +2484,7 @@ private fun DevicesPage(
             color = Color(0xFF0F172A),
             shape = RoundedCornerShape(9.dp),
             border = BorderStroke(1.dp, if (blocked) Color(0xFF991B1B) else if (inG4) Color(0xFF065F46) else if (online) Color(0xFF1E3A8A) else Color(0xFF1E293B)),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth().clickable { onSelectDevice(d) }
         ) {
             Column(Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -1721,14 +2496,26 @@ private fun DevicesPage(
                 }
                 val radio = if (ap.isNotBlank()) "Wi-Fi ${d.optString("mode")} • RSSI ${rssi}dBm • ${txr}M" else "LAN ${spd}M"
                 Text("$mac • ${d.optString("iface", "-")} • $radio • ↓${formatBytes(d.optDouble("rx"))} ↑${formatBytes(d.optDouble("tx"))}", color = Color(0xFF64748B), fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+
+                val tags = mutableListOf<String>()
+                if (inG4) tags.add("Обход")
+                if (prio != 6) tags.add("QoS P$prio")
+                if (shapeKbps > 0) tags.add("${shapeKbps / 1000} Мбит/с")
+                if (timerStr.isNotBlank()) tags.add("Таймер $timerStr")
+                if (schedStr.isNotBlank()) tags.add("Расписание")
+                if (tags.isNotEmpty()) {
+                    Text(tags.joinToString(" • "), color = Color(0xFF86EFAC), fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold)
+                }
+
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Button(onClick = { onSelectDevice(d) }, modifier = Modifier.height(28.dp), contentPadding = PaddingValues(horizontal = 8.dp)) {
+                        Text("Управлять / Таймер", fontSize = 9.5.sp)
+                    }
                     FilterChip(
                         selected = inG4,
                         onClick = { onAction("Политика $title", MonitorScripts.setHostPolicyRouteCmd(mac, if (inG4) null else "Gor4akovNET")) },
                         label = { Text(if (inG4) "Обход: ВКЛ" else "В обход", fontSize = 9.5.sp) }
                     )
-                    FilterChip(selected = prio == 1, onClick = { onAction("Приоритет 1", MonitorScripts.setHostPriorityCmd(mac, 1, cnf)) }, label = { Text("P1", fontSize = 9.5.sp) })
-                    FilterChip(selected = prio == 6, onClick = { onAction("Приоритет 6", MonitorScripts.setHostPriorityCmd(mac, 6, cnf)) }, label = { Text("P6", fontSize = 9.5.sp) })
                     OutlinedButton(onClick = { onAction(if (blocked) "Разблокировать" else "Блок", MonitorScripts.ndmcSaveCmd(if (blocked) "ip hotspot host $mac permit" else "ip hotspot host $mac deny")) }, modifier = Modifier.height(28.dp), contentPadding = PaddingValues(horizontal = 8.dp)) {
                         Text(if (blocked) "Разблок." else "Блок", fontSize = 9.5.sp, color = if (blocked) Color(0xFF86EFAC) else Color(0xFFFCA5A5))
                     }
@@ -1740,47 +2527,195 @@ private fun DevicesPage(
 }
 
 @Composable
+private fun DeviceManageDialog(
+    dev: JSONObject,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onExec: (String, String, Boolean) -> Unit,
+    onPingDevice: (String) -> Unit
+) {
+    val mac = dev.optString("mac")
+    val ip = dev.optString("ip").ifBlank { "—" }
+    val curName = dev.optString("name").ifBlank { dev.optString("hostname") }.ifBlank { mac }
+    val blocked = dev.optString("policy") == "deny"
+    val inG4 = dev.optString("route_pol").equals("Gor4akovNET", true)
+    val prio = dev.optInt("prio", 6)
+    val cnf = dev.optBoolean("conform")
+    val curShape = dev.optInt("shape_kbps", 0)
+    val curTimer = dev.optString("timer")
+    val curSched = dev.optString("sched")
+
+    var timerMode by remember { mutableStateOf("permit") }
+    var shapeText by remember { mutableStateOf(if (curShape > 0) curShape.toString() else "") }
+    var schedStart by remember { mutableStateOf("9") }
+    var schedStop by remember { mutableStateOf("22") }
+    var staticIpInput by remember { mutableStateOf(if (ip == "—") "" else ip) }
+    var renameInput by remember { mutableStateOf(curName) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text(curName, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                Text("$mac • $ip", color = Color(0xFF93C5FD), fontSize = 10.5.sp, fontFamily = FontFamily.Monospace)
+            }
+        },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                Text("1. Таймер доступа на роутере (автономно)", color = Color(0xFF93C5FD), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                if (curTimer.isNotBlank()) Text("Активный таймер: $curTimer", color = Color(0xFF86EFAC), fontSize = 10.sp)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    FilterChip(selected = timerMode == "permit", onClick = { timerMode = "permit" }, label = { Text("Интернет (после — Блок)", fontSize = 9.sp) })
+                    FilterChip(selected = timerMode == "gor4akov", onClick = { timerMode = "gor4akov" }, label = { Text("Обход (после — Выкл)", fontSize = 9.sp) })
+                }
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    listOf(15, 30, 60, 120).forEach { m ->
+                        Button(onClick = { onExec("Таймер ${m}м ($curName)", MonitorScripts.setHostTimerCmd(mac, m, timerMode), true) }, enabled = !busy, modifier = Modifier.height(28.dp), contentPadding = PaddingValues(horizontal = 8.dp)) {
+                            Text("${m}м", fontSize = 10.sp)
+                        }
+                    }
+                    OutlinedButton(onClick = { onExec("Отмена таймера", MonitorScripts.setHostTimerCmd(mac, 0, timerMode), true) }, enabled = !busy, modifier = Modifier.height(28.dp), contentPadding = PaddingValues(horizontal = 8.dp)) {
+                        Text("Отмена", fontSize = 10.sp)
+                    }
+                }
+
+                HorizontalDivider(color = Color(0xFF1E293B))
+                Text("2. Ежедневное расписание NDMS${if (curSched.isNotBlank()) " ($curSched)" else ""}", color = Color(0xFF93C5FD), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(value = schedStart, onValueChange = { schedStart = it.filter { c -> c.isDigit() } }, label = { Text("С часа", fontSize = 9.sp) }, singleLine = true, textStyle = LocalTextStyle.current.copy(fontSize = 10.sp), modifier = Modifier.weight(1f))
+                    OutlinedTextField(value = schedStop, onValueChange = { schedStop = it.filter { c -> c.isDigit() } }, label = { Text("До часа", fontSize = 9.sp) }, singleLine = true, textStyle = LocalTextStyle.current.copy(fontSize = 10.sp), modifier = Modifier.weight(1f))
+                    Button(onClick = {
+                        val s = schedStart.toIntOrNull() ?: 9
+                        val e = schedStop.toIntOrNull() ?: 22
+                        onExec("Расписание $s-$e", MonitorScripts.setHostScheduleCmd(mac, s, e, true), true)
+                    }, modifier = Modifier.height(34.dp)) { Text("Вкл", fontSize = 10.sp) }
+                    OutlinedButton(onClick = { onExec("Убрать расписание", MonitorScripts.setHostScheduleCmd(mac, 0, 0, false), true) }, modifier = Modifier.height(34.dp)) { Text("Выкл", fontSize = 10.sp) }
+                }
+
+                HorizontalDivider(color = Color(0xFF1E293B))
+                Text("3. Ограничение скорости (Шейпер)", color = Color(0xFF93C5FD), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    listOf(0 to "Без лимита", 10000 to "10М", 25000 to "25М", 50000 to "50М", 100000 to "100М").forEach { (kbps, lbl) ->
+                        FilterChip(selected = curShape == kbps, onClick = { onExec("Шейпер $lbl", MonitorScripts.setHostShapeCmd(mac, kbps), true) }, label = { Text(lbl, fontSize = 9.5.sp) })
+                    }
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(value = shapeText, onValueChange = { shapeText = it.filter { c -> c.isDigit() } }, label = { Text("Лимит (кбит/с)", fontSize = 9.sp) }, singleLine = true, textStyle = LocalTextStyle.current.copy(fontSize = 10.sp), modifier = Modifier.weight(1f))
+                    Button(onClick = { onExec("Шейпер", MonitorScripts.setHostShapeCmd(mac, shapeText.toIntOrNull() ?: 0), true) }, modifier = Modifier.height(34.dp)) { Text("Прим.", fontSize = 10.sp) }
+                }
+
+                HorizontalDivider(color = Color(0xFF1E293B))
+                Text("4. Маршрут и приоритет QoS", color = Color(0xFF93C5FD), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    FilterChip(selected = !inG4, onClick = { onExec("Маршрут Default", MonitorScripts.setHostPolicyRouteCmd(mac, null), true) }, label = { Text("Обычный LAN", fontSize = 9.5.sp) })
+                    FilterChip(selected = inG4, onClick = { onExec("Маршрут Gor4akovNET", MonitorScripts.setHostPolicyRouteCmd(mac, "Gor4akovNET"), true) }, label = { Text("Обход Gor4akovNET", fontSize = 9.5.sp) })
+                }
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    (1..7).forEach { p ->
+                        FilterChip(selected = prio == p, onClick = { onExec("QoS P$p", MonitorScripts.setHostPriorityCmd(mac, p, cnf), true) }, label = { Text("P$p", fontSize = 9.sp) })
+                    }
+                    FilterChip(selected = cnf, onClick = { onExec("Conform", MonitorScripts.setHostPriorityCmd(mac, prio, !cnf), true) }, label = { Text("Conform", fontSize = 9.sp) })
+                }
+
+                HorizontalDivider(color = Color(0xFF1E293B))
+                Text("5. Статический DHCP и Имя", color = Color(0xFF93C5FD), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                OutlinedTextField(value = renameInput, onValueChange = { renameInput = it }, label = { Text("Имя устройства", fontSize = 9.sp) }, singleLine = true, textStyle = LocalTextStyle.current.copy(fontSize = 10.sp), modifier = Modifier.fillMaxWidth())
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(value = staticIpInput, onValueChange = { staticIpInput = it }, label = { Text("Фикс. IP", fontSize = 9.sp) }, singleLine = true, textStyle = LocalTextStyle.current.copy(fontSize = 10.sp), modifier = Modifier.weight(1f))
+                    Button(onClick = { onExec("Сохранить DHCP", MonitorScripts.setHostStaticIpCmd(mac, staticIpInput, renameInput), true) }, modifier = Modifier.height(34.dp)) { Text("Закреп.", fontSize = 10.sp) }
+                }
+
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    if (ip != "—") {
+                        OutlinedButton(onClick = { onPingDevice(ip) }, modifier = Modifier.weight(1f).height(30.dp)) { Text("Ping", fontSize = 10.sp) }
+                    }
+                    OutlinedButton(onClick = { onExec("WoL", MonitorScripts.wolCmd(mac), false) }, modifier = Modifier.weight(1f).height(30.dp)) { Text("WoL", fontSize = 10.sp) }
+                    OutlinedButton(
+                        onClick = { onExec(if (blocked) "Разблокировать" else "Блок", MonitorScripts.ndmcSaveCmd(if (blocked) "ip hotspot host $mac permit" else "ip hotspot host $mac deny"), true) },
+                        modifier = Modifier.weight(1f).height(30.dp)
+                    ) { Text(if (blocked) "Разблок" else "Блок", fontSize = 10.sp, color = if (blocked) Color(0xFF86EFAC) else Color(0xFFFCA5A5)) }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } }
+    )
+}
+
+@Composable
 private fun BackupsPage(
     backups: List<BackupEntry>,
+    estText: String,
+    includeMedia: Boolean,
+    onToggleMedia: (Boolean) -> Unit,
+    busy: Boolean,
     onTopicHelp: (String) -> Unit,
+    onEstimate: () -> Unit,
     onCreateFull: () -> Unit,
     onCreateCfg: () -> Unit,
+    onImport: () -> Unit,
     onShare: (BackupEntry) -> Unit,
     onRestore: (BackupEntry) -> Unit,
     onViewTxt: (BackupEntry) -> Unit,
     onDelete: (String) -> Unit
 ) {
-    MiniCard("Создать резервную копию", { onTopicHelp("backups") }) {
-        Text("Полный бэкап включает startup-config, /opt/zapret2, AdGuardHome.yaml и netfilter-хуки в одном файле .tar.gz.", color = Color(0xFF94A3B8), fontSize = 10.5.sp)
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            Button(onClick = onCreateFull, modifier = Modifier.weight(1f).height(34.dp), contentPadding = PaddingValues(4.dp)) { Text("Полный (.tar.gz)", fontSize = 10.5.sp) }
-            OutlinedButton(onClick = onCreateCfg, modifier = Modifier.weight(1f).height(34.dp), contentPadding = PaddingValues(4.dp)) { Text("NDMS конфиг (.txt)", fontSize = 10.5.sp) }
+    MiniCard("Полный 100% потоковый бэкап v2", { onTopicHelp("backups") }) {
+        Text("Включает running/startup-config, весь /opt/etc (Dropbear SSH ключи, AdGuard, конфиги), /opt/zapret2, /opt/root, /opt/home, Cron и при необходимости все файлы USB/Storage.", color = Color(0xFF94A3B8), fontSize = 10.sp)
+        MiniSwitch("Включить файлы USB / Storage (100%)", "Может занять много памяти телефона — оцените размер ниже", includeMedia) { v ->
+            onToggleMedia(v == 1)
+        }
+        if (estText.isNotBlank()) MonoBox(estText)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            Button(onClick = onCreateFull, enabled = !busy, modifier = Modifier.weight(1f).height(34.dp), contentPadding = PaddingValues(4.dp)) { Text("Полный v2 (.tar.gz)", fontSize = 10.sp) }
+            OutlinedButton(onClick = onCreateCfg, enabled = !busy, modifier = Modifier.weight(1f).height(34.dp), contentPadding = PaddingValues(4.dp)) { Text("NDMS (.txt)", fontSize = 10.sp) }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+            OutlinedButton(onClick = onEstimate, enabled = !busy, modifier = Modifier.weight(1f).height(30.dp), contentPadding = PaddingValues(4.dp)) { Text("Оценить размер", fontSize = 9.5.sp) }
+            OutlinedButton(onClick = onImport, enabled = !busy, modifier = Modifier.weight(1f).height(30.dp), contentPadding = PaddingValues(4.dp)) { Text("Импорт с телефона", fontSize = 9.5.sp) }
         }
     }
 
-    MiniCard("Сохранённые снимки (${backups.size})") {
+    MiniCard("Сохранённые снимки в телефоне (${backups.size})") {
         if (backups.isEmpty()) {
             Text("Пока нет сохранённых бэкапов", color = Color(0xFF64748B), fontSize = 11.sp)
         } else {
             backups.forEach { b ->
-                val isTar = b.filePath.endsWith(".tar.gz")
-                Surface(color = Color(0xFF111827), shape = RoundedCornerShape(7.dp), border = BorderStroke(1.dp, Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth()) {
+                val isTar = b.filePath.endsWith(".tar.gz", true)
+                Surface(
+                    color = Color(0xFF111827),
+                    shape = RoundedCornerShape(7.dp),
+                    border = BorderStroke(1.dp, if (b.isProtected) Color(0xFF065F46) else Color(0xFF1E293B)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
                     Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text(b.label, color = Color.White, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            MiniPill(if (isTar) "TAR.GZ" else "TXT", isTar)
+                            Text(
+                                "${if (b.isProtected) "🛡 " else ""}${b.label}",
+                                color = Color.White,
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            MiniPill(b.format.uppercase(), isTar)
                         }
-                        Text("${b.timestamp} • ${b.model} • ${(b.sizeBytes / 1024).coerceAtLeast(1)} КБ", color = Color(0xFF94A3B8), fontSize = 9.5.sp, fontFamily = FontFamily.Monospace)
+                        Text(
+                            "${b.timestamp} • ${b.model} • ${formatSizeMb(b.sizeBytes)}${if (b.sha256.isNotBlank()) " • sha:${b.sha256.take(8)}" else ""}",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 9.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                            if (isTar) {
-                                Button(onClick = { onRestore(b) }, modifier = Modifier.height(27.dp), contentPadding = PaddingValues(horizontal = 9.dp)) { Text("Откат", fontSize = 10.sp) }
-                            } else {
+                            Button(onClick = { onRestore(b) }, enabled = !busy, modifier = Modifier.height(27.dp), contentPadding = PaddingValues(horizontal = 9.dp)) { Text("Откат", fontSize = 10.sp) }
+                            if (!isTar) {
                                 OutlinedButton(onClick = { onViewTxt(b) }, modifier = Modifier.height(27.dp), contentPadding = PaddingValues(horizontal = 9.dp)) { Text("Просмотр", fontSize = 10.sp) }
                             }
                             OutlinedButton(onClick = { onShare(b) }, modifier = Modifier.height(27.dp), contentPadding = PaddingValues(horizontal = 9.dp)) { Text("Экспорт", fontSize = 10.sp) }
                             Spacer(Modifier.weight(1f))
-                            IconButton(onClick = { onDelete(b.id) }, modifier = Modifier.size(27.dp)) {
-                                Icon(Icons.Rounded.DeleteOutline, "Удалить", tint = Color(0xFFFCA5A5), modifier = Modifier.size(15.dp))
+                            if (!b.isProtected) {
+                                IconButton(onClick = { onDelete(b.id) }, modifier = Modifier.size(27.dp)) {
+                                    Icon(Icons.Rounded.DeleteOutline, "Удалить", tint = Color(0xFFFCA5A5), modifier = Modifier.size(15.dp))
+                                }
                             }
                         }
                     }
@@ -1797,6 +2732,7 @@ private fun FilesPage(
     onTopicHelp: (String) -> Unit,
     onOpenDir: (String) -> Unit,
     onOpenFile: (String) -> Unit,
+    onRestoreBak: (String) -> Unit,
     onNewDir: () -> Unit,
     onNewFile: () -> Unit,
     onDeleteEntry: (String) -> Unit
@@ -1844,7 +2780,12 @@ private fun FilesPage(
                     )
                     Text(nm, color = Color.White, fontSize = 11.sp, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    if (!isDir && nm.endsWith(".bak")) {
+                        Surface(color = Color(0xFF451A03), shape = RoundedCornerShape(4.dp), modifier = Modifier.clickable { onRestoreBak(full) }) {
+                            Text("Откатить", color = Color(0xFFFBBF24), fontSize = 8.5.sp, modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp))
+                        }
+                    }
                     Text(if (isDir) "DIR" else formatBytes(e.optDouble("size", 0.0)), color = Color(0xFF64748B), fontSize = 9.sp, fontFamily = FontFamily.Monospace)
                     if (dirPath.startsWith("/opt") || dirPath.startsWith("/tmp")) {
                         IconButton(onClick = { onDeleteEntry(full) }, modifier = Modifier.size(20.dp)) {
@@ -1858,19 +2799,83 @@ private fun FilesPage(
 }
 
 @Composable
-private fun TorchPage(host: String, onHostChange: (String) -> Unit, out: String, onTopicHelp: (String) -> Unit, onCopy: () -> Unit, onRun: (String) -> Unit) {
-    MiniCard("Сетевая диагностика (Torch)", { onTopicHelp("torch") }) {
-        OutlinedTextField(value = host, onValueChange = onHostChange, label = { Text("IP или домен", fontSize = 11.sp) }, singleLine = true, textStyle = LocalTextStyle.current.copy(fontSize = 11.sp), modifier = Modifier.fillMaxWidth())
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-            Button(onClick = { onRun("ping") }, modifier = Modifier.weight(1f).height(28.dp), contentPadding = PaddingValues(2.dp)) { Text("Ping", fontSize = 10.sp) }
-            Button(onClick = { onRun("trace") }, modifier = Modifier.weight(1f).height(28.dp), contentPadding = PaddingValues(2.dp)) { Text("Trace", fontSize = 10.sp) }
-            Button(onClick = { onRun("dns") }, modifier = Modifier.weight(1f).height(28.dp), contentPadding = PaddingValues(2.dp)) { Text("DNS", fontSize = 10.sp) }
-            Button(onClick = { onRun("http") }, modifier = Modifier.weight(1f).height(28.dp), contentPadding = PaddingValues(2.dp)) { Text("HTTP", fontSize = 10.sp) }
+private fun TorchPage(
+    host: String,
+    onHostChange: (String) -> Unit,
+    liveData: JSONObject?,
+    liveEnabled: Boolean,
+    onToggleLive: (Boolean) -> Unit,
+    out: String,
+    busy: Boolean,
+    onTopicHelp: (String) -> Unit,
+    onEnableAcct: () -> Unit,
+    onCopy: () -> Unit,
+    onRun: (String) -> Unit
+) {
+    val ifaces = liveData?.optJSONArray("ifaces") ?: JSONArray()
+    val flows = liveData?.optJSONArray("flows") ?: JSONArray()
+    val acct = liveData?.optInt("acct", 0) ?: 0
+    var flowFilter by remember { mutableStateOf("") }
+
+    MiniCard("Live Torch — Скорость и потоки в реальном времени", { onTopicHelp("torch") }) {
+        MiniSwitch("Автообновление каждые 2 сек", "Живой съём интерфейсов и активных соединений", liveEnabled) { v ->
+            onToggleLive(v == 1)
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-            Button(onClick = { onRun("traffic") }, modifier = Modifier.weight(1f).height(28.dp), contentPadding = PaddingValues(2.dp)) { Text("Трафик (1с)", fontSize = 10.sp) }
-            OutlinedButton(onClick = { onRun("conntrack") }, modifier = Modifier.weight(1f).height(28.dp), contentPadding = PaddingValues(2.dp)) { Text("Conntrack", fontSize = 10.sp) }
-            OutlinedButton(onClick = { onRun("ports") }, modifier = Modifier.weight(1f).height(28.dp), contentPadding = PaddingValues(2.dp)) { Text("Порты", fontSize = 10.sp) }
+        if (acct == 0 && liveData != null) {
+            Surface(color = Color(0xFF451A03), shape = RoundedCornerShape(7.dp), border = BorderStroke(1.dp, Color(0xFFF59E0B)), modifier = Modifier.fillMaxWidth()) {
+                Row(Modifier.padding(7.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("Счётчик байтов потоков (conntrack_acct) выключен", color = Color(0xFFFDE68A), fontSize = 9.5.sp, modifier = Modifier.weight(1f))
+                    Button(onClick = onEnableAcct, modifier = Modifier.height(26.dp), contentPadding = PaddingValues(horizontal = 7.dp)) { Text("Включить", fontSize = 9.sp) }
+                }
+            }
+        }
+        for (i in 0 until ifaces.length()) {
+            val f = ifaces.optJSONObject(i) ?: continue
+            val rxK = f.optDouble("rx_kbps", 0.0)
+            val txK = f.optDouble("tx_kbps", 0.0)
+            if (rxK < 0.5 && txK < 0.5 && f.optDouble("pps", 0.0) < 1) continue
+            MiniRow(
+                f.optString("dev"),
+                "↓ ${"%.2f".format(rxK / 1000.0)} Мб/с  ↑ ${"%.2f".format(txK / 1000.0)} Мб/с • ${f.optInt("pps", 0)} pps",
+                if (f.optInt("drops", 0) > 0) Color(0xFFFBBF24) else Color(0xFF86EFAC)
+            )
+        }
+    }
+
+    if (flows.length() > 0) {
+        MiniCard("Активные потоки трафика (${flows.length()})") {
+            OutlinedTextField(value = flowFilter, onValueChange = { flowFilter = it }, placeholder = { Text("Фильтр по клиенту / домену / порту...", fontSize = 10.sp) }, singleLine = true, textStyle = LocalTextStyle.current.copy(fontSize = 10.sp), modifier = Modifier.fillMaxWidth())
+            for (i in 0 until flows.length()) {
+                val fl = flows.optJSONObject(i) ?: continue
+                val src = fl.optString("src")
+                val target = fl.optString("host").ifBlank { fl.optString("dst") }
+                val port = fl.optString("port")
+                if (flowFilter.isNotBlank() && !src.contains(flowFilter, true) && !target.contains(flowFilter, true) && !port.contains(flowFilter, true)) continue
+                val bytes = fl.optDouble("bytes", 0.0)
+                Row(
+                    Modifier.fillMaxWidth().clickable { onHostChange(fl.optString("host").ifBlank { fl.optString("dst") }) }.padding(vertical = 2.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("$src -> $target:$port (${fl.optString("proto")})", color = Color(0xFFCBD5E1), fontSize = 9.5.sp, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    Text("${fl.optInt("conns", 1)}x ${if (bytes > 0) formatBytes(bytes) else fl.optString("st")}", color = Color(0xFF93C5FD), fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                }
+            }
+        }
+    }
+
+    MiniCard("Глубокая диагностика узла и DPI") {
+        OutlinedTextField(value = host, onValueChange = onHostChange, label = { Text("IP или домен", fontSize = 11.sp) }, singleLine = true, textStyle = LocalTextStyle.current.copy(fontSize = 11.sp), modifier = Modifier.fillMaxWidth())
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Button(onClick = { onRun("ping") }, enabled = !busy, modifier = Modifier.weight(1f).height(28.dp), contentPadding = PaddingValues(2.dp)) { Text("Ping", fontSize = 9.5.sp) }
+            Button(onClick = { onRun("trace") }, enabled = !busy, modifier = Modifier.weight(1f).height(28.dp), contentPadding = PaddingValues(2.dp)) { Text("Trace", fontSize = 9.5.sp) }
+            Button(onClick = { onRun("dns_cmp") }, enabled = !busy, modifier = Modifier.weight(1f).height(28.dp), contentPadding = PaddingValues(2.dp)) { Text("Сравн.DNS", fontSize = 9.5.sp) }
+            Button(onClick = { onRun("dpi") }, enabled = !busy, modifier = Modifier.weight(1f).height(28.dp), contentPadding = PaddingValues(2.dp)) { Text("DPI/TLS", fontSize = 9.5.sp) }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            OutlinedButton(onClick = { onRun("http") }, enabled = !busy, modifier = Modifier.weight(1f).height(28.dp), contentPadding = PaddingValues(2.dp)) { Text("HTTP", fontSize = 9.5.sp) }
+            OutlinedButton(onClick = { onRun("tcpdump") }, enabled = !busy, modifier = Modifier.weight(1f).height(28.dp), contentPadding = PaddingValues(2.dp)) { Text("Tcpdump", fontSize = 9.5.sp) }
+            OutlinedButton(onClick = { onRun("ports") }, enabled = !busy, modifier = Modifier.weight(1f).height(28.dp), contentPadding = PaddingValues(2.dp)) { Text("Порты", fontSize = 9.5.sp) }
+            OutlinedButton(onClick = { onRun("traffic") }, enabled = !busy, modifier = Modifier.weight(1f).height(28.dp), contentPadding = PaddingValues(2.dp)) { Text("Трафик", fontSize = 9.5.sp) }
         }
         if (out.isNotBlank()) MonoBox(out, onCopy = onCopy)
     }

@@ -55,7 +55,7 @@ fun ConnectWizardScreen(
     var busy by remember { mutableStateOf(false) }
     var statusMsg by remember { mutableStateOf("") }
     var errorMsg by remember { mutableStateOf("") }
-    var autoBackupDone by remember { mutableStateOf(false) }
+    var autoBackupDone by remember(host) { mutableStateOf(prefs.initialBackupDoneHost == host.trim()) }
 
     val offlineInfo = remember { OfflineAssets.inspectManifest(context) }
 
@@ -73,9 +73,12 @@ fun ConnectWizardScreen(
                 if (saveInitialBackup && !autoBackupDone) {
                     val cfgRes = RciClient.fetchRunningConfig(host, rciUser, rciPass)
                     cfgRes.onSuccess { cfgText ->
-                        val entry = prefs.saveBackup("Снимок до настройки", p.model, cfgText)
-                        onBackupSaved(entry)
-                        autoBackupDone = true
+                        if (cfgText.isNotBlank()) {
+                            val entry = prefs.saveBackup("Снимок до настройки", p.model, cfgText, isProtected = true)
+                            onBackupSaved(entry)
+                            prefs.initialBackupDoneHost = host.trim()
+                            autoBackupDone = true
+                        }
                     }
                 }
                 statusMsg = "Паспорт получен: ${p.model} (${p.ndmsTitle}, ${p.entwareArch})"
@@ -459,11 +462,21 @@ fun ConnectWizardScreen(
                         AssistChip(
                             onClick = {
                                 scope.launch {
+                                    busy = true
+                                    errorMsg = ""
+                                    statusMsg = "Автоподбор пароля SSH (:222)..."
                                     val port = sshPortStr.toIntOrNull() ?: 222
                                     val found = withContext(Dispatchers.IO) {
                                         runCatching { Gboxcore.tryPasswordsSSH(host, port, sshUser, rciPass) }.getOrNull()
                                     }
-                                    if (found != null) sshPass = found
+                                    if (found != null) {
+                                        sshPass = found
+                                        statusMsg = "Пароль SSH найден! Нажмите «Проверить SSH»."
+                                    } else {
+                                        statusMsg = ""
+                                        errorMsg = "Стандартный пароль не подошёл — введите ваш пароль Entware SSH вручную."
+                                    }
+                                    busy = false
                                 }
                             },
                             label = { Text("Автоподбор", fontSize = 11.sp) }

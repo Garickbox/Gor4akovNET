@@ -185,6 +185,7 @@ fun Gor4akovRootApp(prefs: Prefs) {
                     passport = passport,
                     onPassportUpdated = { p ->
                         passport = p
+                        scope.launch { Telemetry.recordOpen(prefs, p.model, p.ndmsTitle) }
                         if (p.ssh222Open) refreshAllTelemetry()
                     },
                     onBackupSaved = { b -> backups = listOf(b) + backups },
@@ -193,6 +194,7 @@ fun Gor4akovRootApp(prefs: Prefs) {
                 )
                 1 -> MonitorPanelScreen(
                     prefs = prefs,
+                    passport = passport,
                     onBackupSaved = { b -> backups = listOf(b) + backups },
                     onBack = { tab = 0 }
                 )

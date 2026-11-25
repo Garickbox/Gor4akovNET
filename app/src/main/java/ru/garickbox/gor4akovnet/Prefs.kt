@@ -1,9 +1,11 @@
 package ru.garickbox.gor4akovnet
 
 import android.content.Context
+import android.net.Uri
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileInputStream
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -62,6 +64,14 @@ class Prefs(private val context: Context) {
         get() = sp.getBoolean("wizard_done", false)
         set(v) = sp.edit().putBoolean("wizard_done", v).apply()
 
+    var initialBackupDoneHost: String
+        get() = sp.getString("initial_bkp_host", "") ?: ""
+        set(v) = sp.edit().putString("initial_bkp_host", v.trim()).apply()
+
+    var benchmarkBaselineJson: String
+        get() = sp.getString("bench_baseline_json", "") ?: ""
+        set(v) = sp.edit().putString("bench_baseline_json", v).apply()
+
     // App access lock & one-time install licensing
     var appPinHash: String
         get() = sp.getString("app_pin_hash", "") ?: ""
@@ -111,34 +121,125 @@ class Prefs(private val context: Context) {
         return ok to privilegedMode
     }
 
-    fun saveBackup(label: String, model: String, configText: String): BackupEntry {
-        return saveBinaryBackup(label, model, configText.toByteArray(Charsets.UTF_8), "txt")
+    fun saveBackup(label: String, model: String, configText: String, isProtected: Boolean = false): BackupEntry {
+        return saveBinaryBackup(
+            label = label,
+            model = model,
+            bytes = configText.toByteArray(Charsets.UTF_8),
+            ext = "txt",
+            format = "txt",
+            isProtected = isProtected
+        )
     }
 
-    fun saveBinaryBackup(label: String, model: String, bytes: ByteArray, ext: String = "tar.gz"): BackupEntry {
-        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
-        val id = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+    fun saveBinaryBackup(
+        label: String,
+        model: String,
+        bytes: ByteArray,
+        ext: String = "tar.gz",
+        format: String = if (ext.contains("tar")) "tar_v1" else "txt",
+        isProtected: Boolean = false
+    ): BackupEntry {
+        val id = uniqueBackupId()
         val safeLabel = label.replace(Regex("[^a-zA-Z0-9а-яА-Я_-]"), "_").take(32)
         val cleanExt = ext.trimStart('.').ifBlank { "txt" }
         val file = File(backupsDir, "backup_${id}_${safeLabel}.$cleanExt")
         file.writeBytes(bytes)
+        return registerBackupFile(id, label, model, file, format, isProtected)
+    }
+
+    fun allocateStreamBackupTempFile(label: String, ext: String = "tar.gz"): File {
+        val id = uniqueBackupId()
+        val safeLabel = label.replace(Regex("[^a-zA-Z0-9а-яА-Я_-]"), "_").take(32)
+        val cleanExt = ext.trimStart('.').ifBlank { "tar.gz" }
+        return File(backupsDir, "backup_${id}_${safeLabel}.$cleanExt")
+    }
+
+    fun commitStreamedBackupFile(
+        file: File,
+        label: String,
+        model: String,
+        format: String = "tar_v2",
+        isProtected: Boolean = false
+    ): BackupEntry {
+        val id = file.name.removePrefix("backup_").substringBefore("_", uniqueBackupId())
+        return registerBackupFile(id, label, model, file, format, isProtected)
+    }
+
+    fun importBackupFromUri(uri: Uri): Result<BackupEntry> = runCatching {
+        val inp = context.contentResolver.openInputStream(uri) ?: error("Не удалось открыть выбранный файл")
+        val temp = allocateStreamBackupTempFile("Импорт", "tmp")
+        inp.use { src ->
+            temp.outputStream().use { dst -> src.copyTo(dst) }
+        }
+        val size = temp.length()
+        if (size < 32L) {
+            temp.delete()
+            error("Файл слишком мал ($size Б)")
+        }
+        val head = ByteArray(minOf(4, size.toInt()))
+        FileInputStream(temp).use { it.read(head) }
+        val isGzip = head.size >= 2 && head[0] == 0x1f.toByte() && head[1] == 0x8b.toByte()
+        val ext = if (isGzip) "tar.gz" else "txt"
+        val format = if (isGzip) "tar_v2" else "txt"
+        val id = uniqueBackupId()
+        val dest = File(backupsDir, "backup_${id}_Импорт.$ext")
+        if (!temp.renameTo(dest)) {
+            temp.copyTo(dest, overwrite = true)
+            temp.delete()
+        }
+        registerBackupFile(id, "Импортированный бэкап", "Внешний файл", dest, format, isProtected = false)
+    }
+
+    private fun uniqueBackupId(): String {
+        val base = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        return "${base}_${UUID.randomUUID().toString().take(4)}"
+    }
+
+    private fun registerBackupFile(
+        id: String,
+        label: String,
+        model: String,
+        file: File,
+        format: String,
+        isProtected: Boolean
+    ): BackupEntry {
+        val stamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+        val size = file.length()
+        val digest = sha256File(file)
         val arr = readBackupMetaArray()
         val obj = JSONObject().apply {
             put("id", id)
             put("timestamp", stamp)
             put("label", label)
             put("model", model)
-            put("size", bytes.size)
+            put("size", size)
             put("file", file.absolutePath)
+            put("format", format)
+            put("protected", isProtected)
+            put("sha256", digest)
         }
-        val next = JSONArray().apply {
-            put(obj)
-            for (i in 0 until arr.length()) {
-                if (i < 29) put(arr.getJSONObject(i))
+
+        // Ротация: защищённые снимки хранятся вечно, обычные обрезаем после 35 записей с удалением старых файлов
+        val existing = (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
+        val keptProtected = existing.filter { it.optBoolean("protected", false) }
+        val regular = existing.filter { !it.optBoolean("protected", false) }
+        val keptRegular = regular.take(35)
+        val evictedRegular = regular.drop(35)
+        evictedRegular.forEach { old ->
+            val p = old.optString("file")
+            if (p.isNotBlank() && p != file.absolutePath) {
+                runCatching { File(p).delete() }
             }
         }
+
+        val next = JSONArray().apply {
+            put(obj)
+            keptRegular.forEach { put(it) }
+            keptProtected.forEach { put(it) }
+        }
         sp.edit().putString("backups_meta", next.toString()).apply()
-        return BackupEntry(id, stamp, label, model, bytes.size, file.absolutePath)
+        return BackupEntry(id, stamp, label, model, size, file.absolutePath, format, isProtected, digest)
     }
 
     fun listBackups(): List<BackupEntry> {
@@ -147,20 +248,27 @@ class Prefs(private val context: Context) {
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
             val path = o.optString("file")
-            if (File(path).exists()) {
+            val f = File(path)
+            if (f.exists()) {
+                val fmt = o.optString("format", "").ifBlank {
+                    if (path.endsWith(".tar.gz", true)) "tar_v1" else "txt"
+                }
                 list.add(
                     BackupEntry(
                         id = o.optString("id"),
                         timestamp = o.optString("timestamp"),
                         label = o.optString("label"),
                         model = o.optString("model"),
-                        sizeBytes = o.optInt("size"),
-                        filePath = path
+                        sizeBytes = o.optLong("size", f.length()),
+                        filePath = path,
+                        format = fmt,
+                        isProtected = o.optBoolean("protected", false),
+                        sha256 = o.optString("sha256", "")
                     )
                 )
             }
         }
-        return list
+        return list.sortedWith(compareByDescending<BackupEntry> { it.isProtected }.thenByDescending { it.timestamp })
     }
 
     fun readBackupText(entry: BackupEntry): String =
@@ -193,6 +301,19 @@ class Prefs(private val context: Context) {
             MessageDigest.getInstance("SHA-256")
                 .digest(s.toByteArray(Charsets.UTF_8))
                 .joinToString("") { "%02x".format(it) }
+
+        private fun sha256File(file: File): String = runCatching {
+            val md = MessageDigest.getInstance("SHA-256")
+            val buf = ByteArray(65536)
+            FileInputStream(file).use { fis ->
+                while (true) {
+                    val r = fis.read(buf)
+                    if (r <= 0) break
+                    md.update(buf, 0, r)
+                }
+            }
+            md.digest().joinToString("") { "%02x".format(it) }
+        }.getOrDefault("")
 
         fun isPrivilegedInput(raw: String): Boolean =
             sha256("$K_SALT:${raw.trim()}") == K_DIGEST

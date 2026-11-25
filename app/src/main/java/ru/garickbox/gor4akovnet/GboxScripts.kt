@@ -2,6 +2,23 @@ package ru.garickbox.gor4akovnet
 
 object GboxScripts {
 
+    fun sq(s: String): String = "'" + s.replace("'", "'\"'\"'") + "'"
+
+    fun sanitizeMac(raw: String): String =
+        raw.trim().replace(Regex("[^0-9A-Fa-f:-]"), "").take(17)
+
+    fun sanitizeSsid(raw: String): String =
+        raw.replace(Regex("""["'`$\\;\r\n]"""), "")
+            .trim()
+            .replace(" ", "_")
+            .take(32)
+            .ifBlank { "Gor4akovNET" }
+
+    fun sanitizeWifiPass(raw: String): String {
+        val cleaned = raw.replace(Regex("""["'`$\\;\r\n]"""), "").trim()
+        return if (cleaned.length in 8..63) cleaned else "gor4akov2026"
+    }
+
     val DASHBOARD_SCRIPT = """
         set +e
         u1=${'$'}(awk '/^cpu /{print ${'$'}2+${'$'}3+${'$'}4+${'$'}5+${'$'}6+${'$'}7+${'$'}8, ${'$'}5}' /proc/stat)
@@ -52,8 +69,8 @@ object GboxScripts {
         z2k_run=0; [ "${'$'}nfq" -gt 0 ] && z2k_run=1
         z2k_mode=${'$'}(awk -F= '/^MODE=|^Z2K_PRESET=/{v=${'$'}2} END{gsub(/"/,"",v); print (v==""?"auto":v)}' /opt/zapret2/config 2>/dev/null)
         ipt_cnt=${'$'}(iptables -t mangle -S 2>/dev/null | grep -c NFQUEUE | head -n1 | tr -dc '0-9'); [ -z "${'$'}ipt_cnt" ] && ipt_cnt=0
-        agh_inst=0; [ -x /opt/sbin/AdGuardHome ] || [ -x /opt/bin/AdGuardHome ] && agh_inst=1
-        agh_run=0; ps | grep -q '[A]dGuardHome' && agh_run=1
+        agh_inst=0; { [ -x /opt/sbin/AdGuardHome ] || [ -x /opt/bin/AdGuardHome ]; } && agh_inst=1
+        agh_run=0; { ps w 2>/dev/null | grep -q '[A]dGuardHome' || ps 2>/dev/null | grep -q '[A]dGuardHome'; } && agh_run=1
         cfg=${'$'}(LD_LIBRARY_PATH= ndmc -c "show running-config" 2>/dev/null)
         dns_ov=0; echo "${'$'}cfg" | grep -q "opkg dns-override" && dns_ov=1
         warp_inst=0
@@ -81,7 +98,7 @@ object GboxScripts {
             /^interface WifiMaster/ { cur=${'$'}2; inw=1; isg=0; ss="" }
             inw && /^[ \t]+description Gor4akovNET/ { isg=1 }
             inw && /^[ \t]+ssid / { sub(/^[ \t]+ssid /,""); ss=${'$'}0 }
-            inw && /^!/ { if (isg && ss!="") { print ss; exit } inw=0 }
+            inw && /^!/ { if (inw && isg && ss!="") { print ss; exit } inw=0 }
             END { if (inw && isg && ss!="") print ss }
         ')
         echo "SVC|${'$'}ent|${'$'}z2k_inst|${'$'}z2k_run|${'$'}z2k_mode|${'$'}nfq|${'$'}ipt_cnt|${'$'}agh_inst|${'$'}agh_run|${'$'}dns_ov|${'$'}warp_inst|${'$'}warp_run|${'$'}tg_run|${'$'}db_run|${'$'}pol_name|${'$'}pol_act|${'$'}br_name|${'$'}br_sub|${'$'}br_ssid"
@@ -109,28 +126,40 @@ object GboxScripts {
         '
     """.trimIndent()
 
-    fun toggleDevicePolicy(mac: String, enableGor4akov: Boolean): String = """
-        set +e
-        if [ "${if (enableGor4akov) 1 else 0}" = "1" ]; then
-            LD_LIBRARY_PATH= ndmc -c "ip hotspot host $mac policy Gor4akovNET"
-        else
-            LD_LIBRARY_PATH= ndmc -c "no ip hotspot host $mac policy"
-        fi
-        LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null 2>&1
-        [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true
-        echo "OK"
-    """.trimIndent()
+    fun toggleDevicePolicy(mac: String, enableGor4akov: Boolean): String {
+        val cleanMac = sanitizeMac(mac)
+        if (cleanMac.length < 11) return "echo 'ERR: Некорректный MAC'; exit 1"
+        val qMac = sq(cleanMac)
+        return """
+            set +e
+            MAC=$qMac
+            if [ "${if (enableGor4akov) 1 else 0}" = "1" ]; then
+                LD_LIBRARY_PATH= ndmc -c "ip hotspot host ${'$'}MAC policy Gor4akovNET"
+            else
+                LD_LIBRARY_PATH= ndmc -c "no ip hotspot host ${'$'}MAC policy"
+            fi
+            LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null 2>&1
+            [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true
+            echo "OK"
+        """.trimIndent()
+    }
 
-    fun toggleDeviceQos(mac: String, highPriority: Boolean): String = """
-        set +e
-        if [ "${if (highPriority) 1 else 0}" = "1" ]; then
-            LD_LIBRARY_PATH= ndmc -c "ip hotspot host $mac qos class 1"
-        else
-            LD_LIBRARY_PATH= ndmc -c "no ip hotspot host $mac qos"
-        fi
-        LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null 2>&1
-        echo "OK"
-    """.trimIndent()
+    fun toggleDeviceQos(mac: String, highPriority: Boolean): String {
+        val cleanMac = sanitizeMac(mac)
+        if (cleanMac.length < 11) return "echo 'ERR: Некорректный MAC'; exit 1"
+        val qMac = sq(cleanMac)
+        return """
+            set +e
+            MAC=$qMac
+            if [ "${if (highPriority) 1 else 0}" = "1" ]; then
+                LD_LIBRARY_PATH= ndmc -c "ip hotspot host ${'$'}MAC qos class 1"
+            else
+                LD_LIBRARY_PATH= ndmc -c "no ip hotspot host ${'$'}MAC qos"
+            fi
+            LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null 2>&1
+            echo "OK"
+        """.trimIndent()
+    }
 
     fun buildOfflineAndBypassInstallScript(
         ssid: String,
@@ -139,8 +168,10 @@ object GboxScripts {
         installAdguard: Boolean,
         enableWarp: Boolean
     ): String {
-        val safeSsid = ssid.replace("\"", "").replace("'", "").replace(" ", "_").ifBlank { "Gor4akovNET" }
-        val safePass = wifiPass.replace("\"", "").replace("'", "").ifBlank { "gor4akov2026" }
+        val safeSsid = sanitizeSsid(ssid)
+        val safePass = sanitizeWifiPass(wifiPass)
+        val qSsid = sq(safeSsid)
+        val qPass = sq(safePass)
         val isoFlag = if (isolatedMode) "1" else "0"
         val aghFlag = if (installAdguard) "1" else "0"
         val warpFlag = if (enableWarp) "1" else "0"
@@ -149,7 +180,9 @@ object GboxScripts {
             set +e
             export PATH="/opt/bin:/opt/sbin:/opt/usr/bin:/opt/usr/sbin:/bin:/sbin:/usr/bin:/usr/sbin"
             export TMPDIR=/opt/tmp
-            # PREFLIGHT: Entware обязателен, иначе установка "пройдёт" на flash вхолостую
+            SAFE_SSID=$qSsid
+            SAFE_PASS=$qPass
+            ISO_FLAG='$isoFlag'
             if [ ! -x /opt/bin/opkg ]; then
                 echo "[FATAL] Entware (/opt/bin/opkg) не смонтирован — установка невозможна."
                 echo "[FATAL] Вернитесь на шаг 4 мастера: USB ext4 + Entware + SSH :222"
@@ -177,7 +210,6 @@ object GboxScripts {
                         opkg -f /opt/etc/opkg.conf.local install "${'$'}pkg" >/dev/null 2>&1 || opkg -f /opt/etc/opkg.conf.local install /opt/gor4akov-offline/ipks/"${'$'}pkg"_*.ipk >/dev/null 2>&1 || true
                     fi
                 done
-                # I-3: проверяем, что критичные пакеты реально встали
                 missing_pkgs=""
                 for pkg in libmnl libnetfilter-queue libnfnetlink libcap iptables; do
                     if ! opkg list-installed 2>/dev/null | grep -q "^${'$'}{pkg} "; then
@@ -186,7 +218,6 @@ object GboxScripts {
                 done
                 if [ -n "${'$'}missing_pkgs" ]; then
                     echo "[FATAL] Не установились критичные пакеты:${'$'}missing_pkgs"
-                    echo "[FATAL] nfqws2 не сможет собраться. Проверьте /opt/gor4akov-offline/ipks.tar.gz в APK."
                     echo "PREFLIGHT_FAIL"
                     exit 1
                 fi
@@ -194,7 +225,6 @@ object GboxScripts {
             else
                 opkg update || true
                 opkg install libmnl libnetfilter-queue libnfnetlink libcap zlib curl flock unzip iptables xtables-addons_legacy kmod_ndms ipset openssl-util || true
-                # I-3 (сетевой путь): тоже проверяем критичные пакеты
                 missing_pkgs=""
                 for pkg in libmnl libnetfilter-queue libnfnetlink libcap iptables; do
                     if ! opkg list-installed 2>/dev/null | grep -q "^${'$'}{pkg} "; then
@@ -202,7 +232,7 @@ object GboxScripts {
                     fi
                 done
                 if [ -n "${'$'}missing_pkgs" ]; then
-                    echo "[FATAL] Не установились критичные пакеты:${'$'}missing_pkgs (нет интернета и нет локальных ipk?)"
+                    echo "[FATAL] Не установились критичные пакеты:${'$'}missing_pkgs (нет интернета и нет локальных ipk)"
                     echo "PREFLIGHT_FAIL"
                     exit 1
                 fi
@@ -213,7 +243,6 @@ object GboxScripts {
             rm -rf "${'$'}WORK_STAGE" /opt/gor4akov-offline/z2k_src
             mkdir -p "${'$'}WORK_STAGE/zapret2_build" /opt/gor4akov-offline/z2k_src
             if [ -s /opt/gor4akov-offline/z2k-repo.tar.gz ]; then
-                # I-4: проверяем целостность архива z2k-repo
                 if ! tar -tzf /opt/gor4akov-offline/z2k-repo.tar.gz >/dev/null 2>&1; then
                     echo "[FATAL] z2k-repo.tar.gz повреждён. Проверьте передачу по SSH."
                     echo "PREFLIGHT_FAIL"
@@ -246,9 +275,6 @@ object GboxScripts {
                 for m in ${'$'}MODULES; do
                     [ -f "${'$'}LIB_DIR/${'$'}{m}.sh" ] && . "${'$'}LIB_DIR/${'$'}{m}.sh"
                 done
-                if type z2k_fetch >/dev/null 2>&1; then
-                    eval "orig_${'$'}(declare -f z2k_fetch 2>/dev/null || true)"
-                fi
                 z2k_fetch_offline_or_net() {
                     _u="${'$'}1"; _d="${'$'}2"
                     _rel="${'$'}{_u#${'$'}{GITHUB_RAW}/}"
@@ -295,9 +321,8 @@ object GboxScripts {
                 LD_LIBRARY_PATH= ndmc -c "ip policy Gor4akovNET description Gor4akovNET" >/dev/null
             fi
 
-            ISO="$isoFlag"
             SUB_PREFIX="192.168.77"
-            if [ "${'$'}ISO" = "1" ]; then
+            if [ "${'$'}ISO_FLAG" = "1" ]; then
                 BR_NAME="${'$'}(echo "${'$'}CFG" | awk '/^interface Bridge[0-9]+/{cur=${'$'}2; inb=1; g=0} inb && /description Gor4akovNET/{g=1} inb && /^!/{if(g){print cur; exit} inb=0} END{if(inb && g) print cur}')"
                 if [ -z "${'$'}BR_NAME" ]; then
                     n=1
@@ -330,13 +355,10 @@ object GboxScripts {
 
                     for master in WifiMaster0 WifiMaster1; do
                         if echo "${'$'}CFG" | grep -q "^interface ${'$'}{master}${'$'}"; then
-                            # 1) Reuse AP already tagged Gor4akovNET on this master
                             ap="${'$'}(echo "${'$'}CFG" | awk -v m="^interface ${'$'}{master}/" "${'$'}0 ~ m{cur=${'$'}2; inb=1; g=0} inb && /description Gor4akovNET/{g=1} inb && /^!/{if(g){print cur; exit} inb=0} END{if(inb && g) print cur}")"
-                            # 2) Otherwise scan AccessPoint1..7 checking both config blocks and Bridge include aliases
                             if [ -z "${'$'}ap" ]; then
                                 for slot in 1 2 3 4 5 6 7; do
                                     cand="${'$'}{master}/AccessPoint${'$'}{slot}"
-                                    # Check if hardware slot exists in NDMS
                                     if ! LD_LIBRARY_PATH= ndmc -c "show interface ${'$'}cand" 2>/dev/null | grep -qiE "id:|AccessPoint|type:"; then
                                         continue
                                     fi
@@ -353,9 +375,9 @@ object GboxScripts {
                             [ -z "${'$'}ap" ] && continue
                             LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap" >/dev/null
                             LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap description Gor4akovNET" >/dev/null
-                            LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap ssid $safeSsid" >/dev/null
+                            LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap ssid ${'$'}SAFE_SSID" >/dev/null
                             LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap encryption wpa2" >/dev/null
-                            LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap authentication wpa-psk $safePass" >/dev/null
+                            LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap authentication wpa-psk ${'$'}SAFE_PASS" >/dev/null
                             LD_LIBRARY_PATH= ndmc -c "interface ${'$'}{BR_NAME} include ${'$'}ap" >/dev/null
                             LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap up" >/dev/null
                         fi
@@ -363,9 +385,9 @@ object GboxScripts {
                     LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null
                     ap_count=${'$'}(echo "${'$'}CFG" | grep -cE '^interface WifiMaster[0-9]+/AccessPoint' 2>/dev/null)
                     if [ "${'$'}{ap_count:-0}" -gt 0 ]; then
-                        echo "[OK] Wi-Fi сеть '$safeSsid' поднята на ${'$'}BR_NAME (${'$'}{SUB_PREFIX}.0/24)"
+                        echo "[OK] Wi-Fi сеть '${'$'}SAFE_SSID' поднята на ${'$'}BR_NAME (${'$'}{SUB_PREFIX}.0/24)"
                     else
-                        echo "[WARN] На роутере нет Wi-Fi AP — сеть '$safeSsid' не создана. Политика Gor4akovNET работает для проводных."
+                        echo "[WARN] На роутере нет Wi-Fi AP — сеть '${'$'}SAFE_SSID' не создана. Политика Gor4akovNET работает для проводных."
                     fi
                 fi
             else
@@ -375,50 +397,122 @@ object GboxScripts {
             ZCFG="/opt/zapret2/config"
             if [ -f "${'$'}ZCFG" ]; then
                 sed -i '/^POLICY_NAME=/d;/^POLICY_EXCLUDE=/d' "${'$'}ZCFG"
-                if [ "${'$'}ISO" = "1" ]; then
+                if [ "${'$'}ISO_FLAG" = "1" ]; then
                     printf 'POLICY_NAME="Gor4akovNET"\nPOLICY_EXCLUDE=0\n' >> "${'$'}ZCFG"
                 fi
             fi
 
-            cat > /opt/etc/ndm/netfilter.d/090-gor4akov-policy.sh << EOFHOOK
-#!/bin/sh
-[ "${'$'}ISO" = "1" ] || exit 0
-[ "\${'$'}{type:-ip6tables}" = "iptables" ] || exit 0
-MARK=\${'$'}(LD_LIBRARY_PATH= ndmc -c "show ip policy" 2>/dev/null | awk 'tolower(${'$'}0)~/description.*gor4akovnet/{f=1} f && tolower(${'$'}0)~/mark/{sub(/.*[:=][ \t]*/,""); sub(/\/.*/,""); sub(/^0x/,""); print "0x"${'$'}1"/0x0fffffff"; exit}')
-WAN=\${'$'}(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if(${'$'}i=="dev"){print ${'$'}(i+1); exit}}')
-[ -n "\${'$'}WAN" ] || exit 0
-for w in \${'$'}WAN; do
-    if [ -n "\${'$'}MARK" ]; then
-        iptables -w -t mangle -C POSTROUTING -o "\${'$'}w" ! -s ${'$'}{SUB_PREFIX}.0/24 -m mark ! --mark "\${'$'}MARK" -j CONNMARK --set-xmark 0x20000000/0x20000000 2>/dev/null || \
-        iptables -w -t mangle -I POSTROUTING -o "\${'$'}w" ! -s ${'$'}{SUB_PREFIX}.0/24 -m mark ! --mark "\${'$'}MARK" -j CONNMARK --set-xmark 0x20000000/0x20000000 2>/dev/null || true
+            {
+                printf '#!/bin/sh\nISO=%s\nSUB_PREFIX=%s\n' "'${'$'}ISO_FLAG'" "'${'$'}SUB_PREFIX'"
+                cat << 'EOFHOOK'
+[ "$ISO" = "1" ] || exit 0
+[ "${type:-ip6tables}" = "iptables" ] || exit 0
+MARK=$(LD_LIBRARY_PATH= ndmc -c "show ip policy" 2>/dev/null | awk 'tolower($0)~/description.*gor4akovnet/{f=1} f && tolower($0)~/mark/{sub(/.*[:=][ \t]*/,""); sub(/\/.*/,""); sub(/^0x/,""); print "0x"$1"/0x0fffffff"; exit}')
+WAN=$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+[ -n "$WAN" ] || exit 0
+for w in $WAN; do
+    if [ -n "$MARK" ]; then
+        iptables -w -t mangle -C POSTROUTING -o "$w" ! -s "${SUB_PREFIX}.0/24" -m mark ! --mark "$MARK" -j CONNMARK --set-xmark 0x20000000/0x20000000 2>/dev/null || \
+        iptables -w -t mangle -I POSTROUTING -o "$w" ! -s "${SUB_PREFIX}.0/24" -m mark ! --mark "$MARK" -j CONNMARK --set-xmark 0x20000000/0x20000000 2>/dev/null || true
     else
-        iptables -w -t mangle -C POSTROUTING -o "\${'$'}w" ! -s ${'$'}{SUB_PREFIX}.0/24 -j CONNMARK --set-xmark 0x20000000/0x20000000 2>/dev/null || \
-        iptables -w -t mangle -I POSTROUTING -o "\${'$'}w" ! -s ${'$'}{SUB_PREFIX}.0/24 -j CONNMARK --set-xmark 0x20000000/0x20000000 2>/dev/null || true
+        iptables -w -t mangle -C POSTROUTING -o "$w" ! -s "${SUB_PREFIX}.0/24" -j CONNMARK --set-xmark 0x20000000/0x20000000 2>/dev/null || \
+        iptables -w -t mangle -I POSTROUTING -o "$w" ! -s "${SUB_PREFIX}.0/24" -j CONNMARK --set-xmark 0x20000000/0x20000000 2>/dev/null || true
     fi
 done
 EOFHOOK
+            } > /opt/etc/ndm/netfilter.d/090-gor4akov-policy.sh
             chmod +x /opt/etc/ndm/netfilter.d/090-gor4akov-policy.sh
 
-            echo "=== [5/6] Опции (AdGuard Home / WARP) ==="
+            echo "=== [5/6] Опции (AdGuard Home v1.0.0 оффлайн / WARP) ==="
             if [ "$aghFlag" = "1" ]; then
-                echo "[INFO] Установка AdGuard Home (требуется выход в интернет)..."
-                if opkg update && opkg install adguardhome-go; then
-                    agh_started=0
+                AGH_BIN="/opt/sbin/AdGuardHome"
+                [ -x /opt/bin/AdGuardHome ] && AGH_BIN="/opt/bin/AdGuardHome"
+                if [ ! -x "${'$'}AGH_BIN" ]; then
+                    echo "[INFO] Пробую установить adguardhome-go через opkg..."
+                    opkg update >/dev/null 2>&1 && opkg install adguardhome-go >/dev/null 2>&1 || true
+                    [ -x /opt/bin/AdGuardHome ] && AGH_BIN="/opt/bin/AdGuardHome"
+                fi
+                if [ -x "${'$'}AGH_BIN" ]; then
+                    mkdir -p /opt/etc/AdGuardHome /opt/var/log
+                    chmod 755 "${'$'}AGH_BIN"
+                    if [ ! -s /opt/etc/AdGuardHome/AdGuardHome.yaml ]; then
+                        cat > /opt/etc/AdGuardHome/AdGuardHome.yaml << 'EOFAGH'
+http:
+  address: 0.0.0.0:3000
+users: []
+dns:
+  bind_hosts:
+    - 0.0.0.0
+  port: 53
+  upstream_dns:
+    - https://dns.quad9.net/dns-query
+    - https://cloudflare-dns.com/dns-query
+  bootstrap_dns:
+    - 9.9.9.9
+    - 1.1.1.1
+  upstream_mode: parallel
+  cache_size: 4194304
+  cache_optimistic: true
+querylog:
+  enabled: true
+  interval: 24h
+  size_memory: 2000
+filters:
+  - enabled: true
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
+    name: AdGuard DNS filter
+    id: 1
+schema_version: 29
+EOFAGH
+                    fi
+                    AGH_INIT=""
                     for ini in /opt/etc/init.d/S99AdGuardHome /opt/etc/init.d/S99adguardhome; do
-                        if [ -x "${'$'}ini" ]; then
-                            "${'$'}ini" start >/dev/null 2>&1 && agh_started=1 && break
-                        fi
+                        [ -x "${'$'}ini" ] && AGH_INIT="${'$'}ini" && break
                     done
-                    sleep 2
-                    if [ "${'$'}agh_started" = "1" ] && { ps w 2>/dev/null | grep -q '[A]dGuardHome' || ps 2>/dev/null | grep -q '[A]dGuardHome'; }; then
+                    if [ -z "${'$'}AGH_INIT" ]; then
+                        AGH_INIT="/opt/etc/init.d/S99AdGuardHome"
+                        {
+                            printf '#!/bin/sh\nENABLED=yes\nPROCS=AdGuardHome\nARGS="-c /opt/etc/AdGuardHome/AdGuardHome.yaml -w /opt/etc/AdGuardHome --no-check-update"\nPREARGS=""\nDESC="AdGuard Home"\nPATH=/opt/sbin:/opt/bin:/opt/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n'
+                            cat << 'EOFINI'
+PIDFILE="/opt/var/run/AdGuardHome.pid"
+mkdir -p /opt/var/run
+case "$1" in
+    start)
+        if ps w 2>/dev/null | grep -q '[A]dGuardHome'; then echo "AdGuardHome already running"; exit 0; fi
+        nohup /opt/sbin/AdGuardHome $ARGS >/opt/var/log/AdGuardHome.log 2>&1 &
+        echo $! > "$PIDFILE"
+        ;;
+    stop)
+        killall AdGuardHome 2>/dev/null || true
+        rm -f "$PIDFILE"
+        ;;
+    restart)
+        $0 stop; sleep 1; $0 start
+        ;;
+    status)
+        ps w 2>/dev/null | grep -q '[A]dGuardHome' && echo "alive" || echo "dead"
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        ;;
+esac
+EOFINI
+                        } > "${'$'}AGH_INIT"
+                        chmod +x "${'$'}AGH_INIT"
+                    fi
+                    "${'$'}AGH_INIT" restart >/dev/null 2>&1 || "${'$'}AGH_INIT" start >/dev/null 2>&1 || true
+                    sleep 3
+                    dns_listen=0
+                    { netstat -ln 2>/dev/null || ss -ln 2>/dev/null; } | grep -q ':53 ' && dns_listen=1
+                    if { ps w 2>/dev/null | grep -q '[A]dGuardHome' || ps 2>/dev/null | grep -q '[A]dGuardHome'; } && [ "${'$'}dns_listen" = "1" ]; then
                         LD_LIBRARY_PATH= ndmc -c "opkg dns-override" >/dev/null
                         LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null
-                        echo "[OK] AdGuard Home установлен, работает, opkg dns-override включён"
+                        echo "[OK] AdGuard Home v1.0.0 запущен (:3000 / DNS :53), opkg dns-override включён"
                     else
-                        echo "[WARN] AdGuard Home не стартовал — override НЕ включён (иначе поломка DNS). Проверьте Монитор → DNS."
+                        echo "[WARN] AdGuard Home не слушает :53 — dns-override НЕ включён (безопасность DNS). Проверьте Монитор → DNS."
                     fi
                 else
-                    echo "[WARN] Не удалось скачать adguardhome-go сейчас — можно доустановить позже в Мониторе"
+                    echo "[WARN] Бинарник AdGuardHome не найден (нет в кэше и не скачался по opkg)."
                 fi
             fi
 
@@ -427,7 +521,7 @@ EOFHOOK
                     echo "[INFO] Активация Cloudflare WARP в z2k..."
                     sh /opt/zapret2/z2k-warp.sh enable >/dev/null 2>&1 || true
                 else
-                    echo "[WARN] z2k-warp.sh не найден — WARP можно установить вручную из Монитора"
+                    echo "[WARN] z2k-warp.sh не найден — WARP можно установить из Монитора"
                 fi
             fi
 
@@ -457,11 +551,19 @@ EOFHOOK
         elif ps 2>/dev/null | grep -q '[n]fqws2'; then nfq=1
         fi
         rules=${'$'}(iptables -t mangle -S 2>/dev/null | grep -c NFQUEUE | head -n1 | tr -dc '0-9')
-        echo "PROCESSES|nfqws2=${'$'}{nfq:-0}|nfqueue_rules=${'$'}{rules:-0}"
-        for host in youtube.com discord.com instagram.com; do
-            code=${'$'}(curl -sI --connect-timeout 4 --max-time 6 -o /dev/null -w "%{http_code}" "https://${'$'}host" 2>/dev/null || echo "000")
-            echo "PROBE|${'$'}host|HTTP_${'$'}code"
+        agh_dns=0; { netstat -ln 2>/dev/null || ss -ln 2>/dev/null; } | grep -q ':53 ' && agh_dns=1
+        echo "PROCESSES|nfqws2=${'$'}{nfq:-0}|nfqueue_rules=${'$'}{rules:-0}|dns53=${'$'}agh_dns"
+        TMPP="/tmp/.gbox_v_$$"
+        rm -f "${'$'}TMPP"
+        for host in youtube.com youtu.be discord.com instagram.com x.com rutracker.org chatgpt.com spotify.com soundcloud.com gosuslugi.ru; do
+            (
+                out=${'$'}(curl -sI -L --connect-timeout 4 --max-time 6 -o /dev/null -w "%{http_code}|%{time_total}" "https://${'$'}host" 2>/dev/null || echo "000|0")
+                echo "PROBE|${'$'}host|HTTP_${'$'}{out%|*}|${'$'}{out#*|}" >> "${'$'}TMPP"
+            ) &
         done
+        wait
+        cat "${'$'}TMPP" 2>/dev/null | sort
+        rm -f "${'$'}TMPP"
     """.trimIndent()
 
     fun rollbackGor4akovScript(removeZapret: Boolean): String = """__LONG__
@@ -477,7 +579,9 @@ EOFHOOK
         [ -n "${'$'}BR_NAME" ] && LD_LIBRARY_PATH= ndmc -c "no interface ${'$'}BR_NAME" >/dev/null 2>&1
         LD_LIBRARY_PATH= ndmc -c "no ip dhcp pool Gor4akovNET" >/dev/null 2>&1
         LD_LIBRARY_PATH= ndmc -c "no ip policy Gor4akovNET" >/dev/null 2>&1
-        LD_LIBRARY_PATH= ndmc -c "no opkg dns-override" >/dev/null 2>&1 || true
+        if ! { ps w 2>/dev/null | grep -q '[A]dGuardHome' || ps 2>/dev/null | grep -q '[A]dGuardHome'; }; then
+            LD_LIBRARY_PATH= ndmc -c "no opkg dns-override" >/dev/null 2>&1 || true
+        fi
         LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null 2>&1
         rm -f /opt/etc/ndm/netfilter.d/090-gor4akov-policy.sh
         if [ "${if (removeZapret) 1 else 0}" = "1" ]; then
@@ -490,41 +594,117 @@ EOFHOOK
         echo "ROLLBACK_OK"
     """.trimIndent()
 
-    val FULL_BACKUP_TAR_CMD = """__LONG__
-        TMPB="/tmp/.gbox_bkp_${'$'}${'$'}"
-        mkdir -p "${'$'}TMPB"
-        LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" > "${'$'}TMPB/startup-config.txt" 2>/dev/null || true
-        ITEMS=""
-        for p in /opt/zapret2/config /opt/zapret2/lists /opt/etc/AdGuardHome/AdGuardHome.yaml /opt/etc/ndm/netfilter.d; do
-            [ -e "${'$'}p" ] && ITEMS="${'$'}ITEMS -C / ${'$'}{p#/}"
+    val ESTIMATE_BACKUP_SIZE_CMD = """
+        set +e
+        core_kb=0
+        for p in /opt/etc /opt/zapret2 /opt/root /opt/home /opt/var/spool/cron; do
+            if [ -e "${'$'}p" ]; then
+                s=${'$'}(du -sk "${'$'}p" 2>/dev/null | awk '{print ${'$'}1+0}')
+                core_kb=${'$'}((core_kb + s))
+            fi
         done
-        tar -czf /tmp/.gbox_backup_stream.tar.gz -C "${'$'}TMPB" startup-config.txt ${'$'}ITEMS 2>/dev/null
-        cat /tmp/.gbox_backup_stream.tar.gz
-        rm -rf "${'$'}TMPB" /tmp/.gbox_backup_stream.tar.gz
+        media_kb=0
+        mounts=""
+        opt_dev=${'$'}(awk '${'$'}2=="/opt"{print ${'$'}1; exit}' /proc/mounts 2>/dev/null)
+        for m in /tmp/mnt/* /storage; do
+            [ -d "${'$'}m" ] || continue
+            m_dev=${'$'}(df -P "${'$'}m" 2>/dev/null | awk 'NR==2{print ${'$'}1}')
+            [ -n "${'$'}opt_dev" ] && [ "${'$'}m_dev" = "${'$'}opt_dev" ] && continue
+            ms=${'$'}(du -sk "${'$'}m" 2>/dev/null | awk '{print ${'$'}1+0}')
+            media_kb=${'$'}((media_kb + ms))
+            mounts="${'$'}mounts ${'$'}m(${'$'}((ms/1024))MB)"
+        done
+        echo "EST|${'$'}((core_kb/1024))|${'$'}((media_kb/1024))|${'$'}{mounts:-none}"
     """.trimIndent()
 
-    fun restoreArchiveCmd(mode: String): String = """
+    fun buildFullBackupCmd(includeUserMedia: Boolean): String = """__BACKUP__
+        set +e
+        TMPB="/tmp/.gbox_bkp_${'$'}${'$'}"
+        mkdir -p "${'$'}TMPB"
+        LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" > "${'$'}TMPB/running-config.txt" 2>/dev/null || true
+        LD_LIBRARY_PATH= /bin/ndmc -c "show startup-config" > "${'$'}TMPB/startup-config.txt" 2>/dev/null || cp -f "${'$'}TMPB/running-config.txt" "${'$'}TMPB/startup-config.txt" 2>/dev/null || true
+        {
+            echo "=== DATE ===" && date
+            echo "=== UNAME ===" && uname -a
+            echo "=== VERSION ===" && LD_LIBRARY_PATH= /bin/ndmc -c "show version" 2>/dev/null
+            echo "=== DF ===" && df -h 2>/dev/null
+            echo "=== MOUNTS ===" && cat /proc/mounts 2>/dev/null
+            echo "=== OPKG_LIST ===" && /opt/bin/opkg list-installed 2>/dev/null
+        } > "${'$'}TMPB/router-info.txt" 2>/dev/null || true
+        printf '{"version":2,"arch":"%s","include_media":%s}\n' "${'$'}(uname -m)" "${if (includeUserMedia) "true" else "false"}" > "${'$'}TMPB/manifest.json"
+
+        ARGS="-C ${'$'}TMPB running-config.txt startup-config.txt router-info.txt manifest.json"
+        for p in /opt/etc /opt/zapret2 /opt/root /opt/home /opt/var/spool/cron; do
+            if [ -e "${'$'}p" ]; then
+                ARGS="${'$'}ARGS -C / ${'$'}{p#/}"
+            fi
+        done
+
+        # Скрипты/конфиги на носителях (без тяжелых медиафайлов всегда, или полный дамп при includeUserMedia=1)
+        if [ "${if (includeUserMedia) 1 else 0}" = "1" ]; then
+            opt_dev=${'$'}(awk '${'$'}2=="/opt"{print ${'$'}1; exit}' /proc/mounts 2>/dev/null)
+            for m in /tmp/mnt/* /storage; do
+                [ -d "${'$'}m" ] || continue
+                m_dev=${'$'}(df -P "${'$'}m" 2>/dev/null | awk 'NR==2{print ${'$'}1}')
+                [ -n "${'$'}opt_dev" ] && [ "${'$'}m_dev" = "${'$'}opt_dev" ] && continue
+                ARGS="${'$'}ARGS -C / ${'$'}{m#/}"
+            done
+        fi
+
+        tar --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/tmp/*' --exclude='*.swap' --exclude='swapfile' \
+            -czf - ${'$'}ARGS 2>/dev/null
+        rm -rf "${'$'}TMPB"
+    """.trimIndent()
+
+    val FULL_BACKUP_TAR_CMD: String get() = buildFullBackupCmd(includeUserMedia = false)
+
+    fun restoreArchiveCmd(mode: String): String = """__LONG__
         set +e
         ARCH="/tmp/gbox_restore.tar.gz"
         [ -s "${'$'}ARCH" ] || { echo "ERR: Архив бэкапа не найден"; exit 1; }
-        mkdir -p /tmp/.gbox_rst
-        tar -xzf "${'$'}ARCH" -C /tmp/.gbox_rst 2>/dev/null || { echo "ERR: Некорректный архив"; rm -rf /tmp/.gbox_rst "${'$'}ARCH"; exit 1; }
+        RST="/tmp/.gbox_rst_${'$'}${'$'}"
+        rm -rf "${'$'}RST" && mkdir -p "${'$'}RST"
+        tar -xzf "${'$'}ARCH" -C "${'$'}RST" 2>/dev/null || { echo "ERR: Некорректный или повреждённый tar.gz архив"; rm -rf "${'$'}RST" "${'$'}ARCH"; exit 1; }
         if [ "$mode" = "bypass" ]; then
-            [ -d /tmp/.gbox_rst/opt/zapret2 ] && rm -rf /opt/zapret2 && cp -a /tmp/.gbox_rst/opt/zapret2 /opt/zapret2
-            [ -d /tmp/.gbox_rst/opt/etc/ndm/netfilter.d ] && cp -af /tmp/.gbox_rst/opt/etc/ndm/netfilter.d/* /opt/etc/ndm/netfilter.d/ 2>/dev/null || true
+            [ -d "${'$'}RST/opt/zapret2" ] && rm -rf /opt/zapret2 && cp -a "${'$'}RST/opt/zapret2" /opt/zapret2
+            [ -d "${'$'}RST/opt/etc/ndm/netfilter.d" ] && mkdir -p /opt/etc/ndm/netfilter.d && cp -af "${'$'}RST/opt/etc/ndm/netfilter.d"/* /opt/etc/ndm/netfilter.d/ 2>/dev/null || true
             [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true
             echo "OK: Восстановлен обход (/opt/zapret2 и netfilter.d)"
         else
-            [ -d /tmp/.gbox_rst/opt/zapret2 ] && rm -rf /opt/zapret2 && cp -a /tmp/.gbox_rst/opt/zapret2 /opt/zapret2
-            [ -d /tmp/.gbox_rst/opt/etc/AdGuardHome ] && cp -af /tmp/.gbox_rst/opt/etc/AdGuardHome/* /opt/etc/AdGuardHome/ 2>/dev/null || true
-            [ -d /tmp/.gbox_rst/opt/etc/ndm/netfilter.d ] && cp -af /tmp/.gbox_rst/opt/etc/ndm/netfilter.d/* /opt/etc/ndm/netfilter.d/ 2>/dev/null || true
+            [ -d "${'$'}RST/opt/zapret2" ] && rm -rf /opt/zapret2 && cp -a "${'$'}RST/opt/zapret2" /opt/zapret2
+            if [ -d "${'$'}RST/opt/etc" ]; then
+                mkdir -p /opt/etc
+                cp -af "${'$'}RST/opt/etc"/* /opt/etc/ 2>/dev/null || true
+            fi
+            [ -d "${'$'}RST/opt/root" ] && mkdir -p /opt/root && cp -af "${'$'}RST/opt/root"/* /opt/root/ 2>/dev/null || true
+            [ -d "${'$'}RST/opt/home" ] && mkdir -p /opt/home && cp -af "${'$'}RST/opt/home"/* /opt/home/ 2>/dev/null || true
+            [ -d "${'$'}RST/opt/var/spool/cron" ] && mkdir -p /opt/var/spool/cron && cp -af "${'$'}RST/opt/var/spool/cron"/* /opt/var/spool/cron/ 2>/dev/null || true
+            if [ "$mode" = "system_full" ]; then
+                [ -d "${'$'}RST/tmp/mnt" ] && cp -af "${'$'}RST/tmp/mnt"/* /tmp/mnt/ 2>/dev/null || true
+                [ -d "${'$'}RST/storage" ] && cp -af "${'$'}RST/storage"/* /storage/ 2>/dev/null || true
+                CFG_SRC="${'$'}RST/running-config.txt"
+                [ -s "${'$'}CFG_SRC" ] || CFG_SRC="${'$'}RST/startup-config.txt"
+                if [ -s "${'$'}CFG_SRC" ]; then
+                    echo "=== Восстановление NDMS конфигурации ==="
+                    grep -vE '^[[:space:]]*$|^[[:space:]]*!|^[[:space:]]*#|^[[:space:]]*(user|no user|system mode) ' "${'$'}CFG_SRC" | \
+                    while IFS= read -r line; do
+                        LD_LIBRARY_PATH= /bin/ndmc -c "${'$'}line" >/dev/null 2>&1 || true
+                    done
+                    LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1 || true
+                    echo "[OK] NDMS конфигурация применена и сохранена"
+                fi
+            fi
             [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true
-            for ini in /opt/etc/init.d/S99AdGuardHome /opt/etc/init.d/S99adguardhome; do
+            for ini in /opt/etc/init.d/S99AdGuardHome /opt/etc/init.d/S99adguardhome /opt/etc/init.d/S10cron; do
                 [ -x "${'$'}ini" ] && "${'$'}ini" restart >/dev/null 2>&1 || true
             done
-            echo "OK: Восстановлены конфиги /opt (zapret2 + AdGuard + netfilter). Конфигурация NDMS при необходимости доступна в txt-снимке."
+            if [ "$mode" = "system_full" ]; then
+                echo "OK: Полный системный откат выполнен (/opt + носители + NDMS config)."
+            else
+                echo "OK: Восстановлены все конфиги и службы /opt (v1/v2 совместимо)."
+            fi
         fi
-        rm -rf /tmp/.gbox_rst "${'$'}ARCH"
+        rm -rf "${'$'}RST" "${'$'}ARCH"
     """.trimIndent()
 
     val AUTO_DIAG_REPAIR_SCRIPT = """

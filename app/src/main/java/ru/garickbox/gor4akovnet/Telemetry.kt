@@ -87,6 +87,23 @@ object Telemetry {
         }
     }
 
+    suspend fun forceSyncNow(prefs: Prefs, routerModel: String = "", ndms: String = ""): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val obj = readLocalObj(prefs)
+            obj.put("device", deviceLabel())
+            obj.put("app_ver", BuildConfig.VERSION_NAME)
+            obj.put("last_seen", nowStr())
+            if (routerModel.isNotBlank()) obj.put("router_model", routerModel)
+            if (ndms.isNotBlank()) obj.put("ndms", ndms)
+            prefs.telemetryJson = obj.toString()
+            if (!isRemoteConfigured) {
+                error("Синхронизация не настроена в сборке APK")
+            }
+            pushRemoteStrict(prefs.installId, obj)
+            "Телеметрия отправлена (${prefs.installId})"
+        }
+    }
+
     suspend fun recordInstallSuccess(prefs: Prefs, routerModel: String, ndms: String) {
         withContext(Dispatchers.IO) {
             runCatching {
@@ -128,6 +145,10 @@ object Telemetry {
     }
 
     private fun pushRemote(installId: String, payload: JSONObject) {
+        runCatching { pushRemoteStrict(installId, payload) }
+    }
+
+    private fun pushRemoteStrict(installId: String, payload: JSONObject) {
         if (BuildConfig.STATS_GIST_ID.isNotBlank() && BuildConfig.STATS_TOKEN.isNotBlank()) {
             val gistUrl = "https://api.github.com/gists/${BuildConfig.STATS_GIST_ID}"
             val body = JSONObject().apply {
@@ -148,8 +169,9 @@ object Telemetry {
                 setRequestProperty("User-Agent", "Gor4akovNET/${BuildConfig.VERSION_NAME}")
                 outputStream.use { it.write(body.toByteArray(StandardCharsets.UTF_8)) }
             }
-            conn.responseCode
+            val code = conn.responseCode
             conn.disconnect()
+            if (code !in 200..299) error("GitHub Gist HTTP $code")
             return
         }
         if (BuildConfig.STATS_URL.isNotBlank()) {
@@ -161,8 +183,9 @@ object Telemetry {
                 setRequestProperty("Content-Type", "application/json; charset=utf-8")
                 outputStream.use { it.write(payload.toString().toByteArray(StandardCharsets.UTF_8)) }
             }
-            conn.responseCode
+            val code = conn.responseCode
             conn.disconnect()
+            if (code !in 200..299) error("Stats URL HTTP $code")
         }
     }
 
@@ -199,7 +222,7 @@ object Telemetry {
         val local = parseDeviceObj(prefs.installId, readLocalObj(prefs))
         val devices = mutableMapOf(local.id to local)
         var remoteOk = false
-        var note = "Локальная статистика устройства. Для глобальной задайте GBOX_STATS_GIST_ID и GBOX_STATS_TOKEN в GitHub Secrets."
+        var note = "Локальная статистика устройства. Запустите scripts/setup_github_stats.sh для автонастройки GitHub."
 
         if (BuildConfig.STATS_GIST_ID.isNotBlank() && BuildConfig.STATS_TOKEN.isNotBlank()) {
             runCatching {

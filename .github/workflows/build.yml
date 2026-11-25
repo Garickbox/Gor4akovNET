@@ -39,7 +39,7 @@ jobs:
           go install github.com/sagernet/gomobile/cmd/gobind@latest
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
-      - name: Build gboxcore.aar
+      - name: Build gboxcore.aar (arm + arm64)
         working-directory: core
         run: |
           export ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/27.2.12479018"
@@ -47,42 +47,57 @@ jobs:
           go mod tidy
           go get github.com/sagernet/gomobile/bind@latest
           mkdir -p ../app/libs
-          gomobile bind -v -androidapi 26 -target=android/arm64 -trimpath -ldflags="-s -w" -o ../app/libs/gboxcore.aar .
+          gomobile bind -v -androidapi 26 -target=android/arm,android/arm64 -trimpath -ldflags="-s -w" -o ../app/libs/gboxcore.aar .
 
-      - name: Bundle Offline Router Payloads (Entware + z2k + Core IPKs)
+      - name: Bundle Offline Router Payloads (.xz + AdGuardHome)
         run: |
           python3 - <<'PY'
-          import urllib.request, gzip, json, hashlib, pathlib, tarfile, io, re, time
+          import urllib.request, gzip, lzma, json, hashlib, pathlib, tarfile, io, re, time
+
           base = pathlib.Path("app/src/main/assets/offline")
           (base / "entware").mkdir(parents=True, exist_ok=True)
           (base / "ipks").mkdir(parents=True, exist_ok=True)
           (base / "z2k").mkdir(parents=True, exist_ok=True)
+          (base / "adguard").mkdir(parents=True, exist_ok=True)
 
           def fetch(url, retries=3):
               last = None
               for i in range(retries):
                   try:
-                      req = urllib.request.Request(url, headers={"User-Agent": "Gor4akovNET-CI/1.0"})
-                      with urllib.request.urlopen(req, timeout=60) as r:
+                      req = urllib.request.Request(url, headers={"User-Agent": "Gor4akovNET-CI/2.0"})
+                      with urllib.request.urlopen(req, timeout=90) as r:
                           return r.read()
                   except Exception as e:
                       last = e
                       time.sleep(2 * (i + 1))
               raise RuntimeError(f"Failed {url}: {last}")
 
-          manifest = {"entware": {}, "ipks": {}, "z2k": {}}
+          def gz_to_xz(gz_bytes):
+              raw_tar = gzip.decompress(gz_bytes)
+              return lzma.compress(raw_tar, format=lzma.FORMAT_XZ, preset=9)
+
+          manifest = {"entware": {}, "ipks": {}, "z2k": {}, "adguard": {}}
+
+          # 1. Entware installers (repacked to .tar.xz to shrink APK, converted to .tar.gz on phone)
           entware_urls = {
-              "aarch64-k3.10": ("aarch64-installer.tar.gz", "https://bin.entware.net/aarch64-k3.10/installer/aarch64-installer.tar.gz"),
-              "mipselsf-k3.4": ("mipsel-installer.tar.gz", "https://bin.entware.net/mipselsf-k3.4/installer/mipsel-installer.tar.gz"),
-              "mipssf-k3.4": ("mips-installer.tar.gz", "https://bin.entware.net/mipssf-k3.4/installer/mips-installer.tar.gz"),
+              "aarch64-k3.10": ("aarch64-installer.tar.xz", "https://bin.entware.net/aarch64-k3.10/installer/aarch64-installer.tar.gz"),
+              "mipselsf-k3.4": ("mipsel-installer.tar.xz", "https://bin.entware.net/mipselsf-k3.4/installer/mipsel-installer.tar.gz"),
+              "mipssf-k3.4": ("mips-installer.tar.xz", "https://bin.entware.net/mipssf-k3.4/installer/mips-installer.tar.gz"),
           }
           for arch, (fname, url) in entware_urls.items():
-              data = fetch(url)
+              gz_data = fetch(url)
+              xz_data = gz_to_xz(gz_data)
               out = base / "entware" / fname
-              out.write_bytes(data)
-              manifest["entware"][arch] = {"file": fname, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-              print(f"Entware {arch}: {len(data)} B")
+              out.write_bytes(xz_data)
+              manifest["entware"][arch] = {
+                  "file": fname,
+                  "size": len(xz_data),
+                  "raw_gz_size": len(gz_data),
+                  "sha256": hashlib.sha256(xz_data).hexdigest()
+              }
+              print(f"Entware {arch}: {len(gz_data)} B -> xz {len(xz_data)} B")
 
+          # 2. Required Entware IPKs + dependencies -> .tar.xz
           WANTED = [
               "libmnl", "libnetfilter-queue", "libnfnetlink", "libcap", "zlib",
               "curl", "flock", "unzip", "iptables", "xtables-addons_legacy",
@@ -118,9 +133,10 @@ jobs:
                       dep = re.sub(r"\s*\(.*?\)", "", dep.strip())
                       if dep and dep not in seen:
                           q.append(dep)
-              tar_path = base / "ipks" / f"ipks-{arch}.tar.gz"
+              tar_xz_path = base / "ipks" / f"ipks-{arch}.tar.xz"
+              tar_buf = io.BytesIO()
               pkg_index_blocks = []
-              with tarfile.open(tar_path, "w:gz") as tf:
+              with tarfile.open(fileobj=tar_buf, mode="w:") as tf:
                   for meta in selected:
                       fn = meta["Filename"]
                       fn_base = pathlib.Path(fn).name
@@ -136,16 +152,20 @@ jobs:
                       info = tarfile.TarInfo(name=idx_name)
                       info.size = len(idx_payload)
                       tf.addfile(info, io.BytesIO(idx_payload))
+              xz_payload = lzma.compress(tar_buf.getvalue(), format=lzma.FORMAT_XZ, preset=9)
+              tar_xz_path.write_bytes(xz_payload)
               manifest["ipks"][arch] = {
-                  "file": tar_path.name,
+                  "file": tar_xz_path.name,
                   "count": len(selected),
-                  "size": tar_path.stat().st_size,
+                  "size": len(xz_payload),
               }
-              print(f"IPKs {arch}: {len(selected)} pkgs -> {tar_path.stat().st_size} B")
+              print(f"IPKs {arch}: {len(selected)} pkgs -> xz {len(xz_payload)} B")
 
-          z2k_src = fetch("https://github.com/necronicle/z2k/archive/refs/heads/z2k-enhanced.tar.gz")
-          (base / "z2k" / "z2k-repo.tar.gz").write_bytes(z2k_src)
-          manifest["z2k"]["repo_size"] = len(z2k_src)
+          # 3. z2k-enhanced repo & zapret2 embedded binary (.tar.xz)
+          z2k_gz = fetch("https://github.com/necronicle/z2k/archive/refs/heads/z2k-enhanced.tar.gz")
+          z2k_xz = gz_to_xz(z2k_gz)
+          (base / "z2k" / "z2k-repo.tar.xz").write_bytes(z2k_xz)
+          manifest["z2k"]["repo_size"] = len(z2k_xz)
 
           rel_url = "https://github.com/necronicle/zapret2-z2k/releases/download/v1.0.7-z2k-r0/zapret2-v1.0.7-z2k-r0-openwrt-embedded.tar.gz"
           rel_tag = "v1.0.7-z2k-r0"
@@ -158,10 +178,52 @@ jobs:
                       break
           except Exception as e:
               print(f"Using fallback zapret2 URL: {e}")
-          z2_bin = fetch(rel_url)
-          (base / "z2k" / "zapret2-openwrt-embedded.tar.gz").write_bytes(z2_bin)
+          z2_gz = fetch(rel_url)
+          z2_xz = gz_to_xz(z2_gz)
+          (base / "z2k" / "zapret2-openwrt-embedded.tar.xz").write_bytes(z2_xz)
           manifest["z2k"]["tag"] = rel_tag
-          manifest["z2k"]["zapret2_size"] = len(z2_bin)
+          manifest["z2k"]["zapret2_size"] = len(z2_xz)
+
+          # 4. AdGuard Home latest (v1.0.0+) binary-only .bin.xz per Keenetic arch
+          agh_tag = "v1.0.0"
+          agh_assets = {}
+          try:
+              agh_rel = json.loads(fetch("https://api.github.com/repos/AdguardTeam/AdGuardHome/releases/latest").decode())
+              agh_tag = agh_rel.get("tag_name", agh_tag)
+              for a in agh_rel.get("assets", []):
+                  agh_assets[a.get("name", "")] = a.get("browser_download_url", "")
+          except Exception as e:
+              print(f"Using fallback AdGuardHome {agh_tag}: {e}")
+
+          agh_targets = {
+              "aarch64-k3.10": "AdGuardHome_linux_arm64.tar.gz",
+              "mipselsf-k3.4": "AdGuardHome_linux_mipsle_softfloat.tar.gz",
+              "mipssf-k3.4": "AdGuardHome_linux_mips_softfloat.tar.gz",
+          }
+          manifest["adguard"]["tag"] = agh_tag
+          manifest["adguard"]["arches"] = {}
+          for arch, asset_name in agh_targets.items():
+              url = agh_assets.get(asset_name) or f"https://github.com/AdguardTeam/AdGuardHome/releases/download/{agh_tag}/{asset_name}"
+              tgz = fetch(url)
+              bin_bytes = None
+              with tarfile.open(fileobj=io.BytesIO(tgz), mode="r:gz") as tf:
+                  for m in tf.getmembers():
+                      if m.isfile() and m.name.endswith("/AdGuardHome"):
+                          bin_bytes = tf.extractfile(m).read()
+                          break
+              if not bin_bytes:
+                  raise RuntimeError(f"AdGuardHome binary missing in {asset_name}")
+              bin_xz = lzma.compress(bin_bytes, format=lzma.FORMAT_XZ, preset=9)
+              out_name = f"AdGuardHome-{arch}.bin.xz"
+              (base / "adguard" / out_name).write_bytes(bin_xz)
+              manifest["adguard"]["arches"][arch] = {
+                  "file": out_name,
+                  "raw_size": len(bin_bytes),
+                  "size": len(bin_xz),
+                  "sha256": hashlib.sha256(bin_xz).hexdigest(),
+              }
+              print(f"AdGuardHome {agh_tag} {arch}: bin {len(bin_bytes)} B -> xz {len(bin_xz)} B")
+
           (base / "manifest.json").write_text(json.dumps(manifest, indent=2))
           print("Offline manifest ready:", json.dumps(manifest))
           PY
@@ -179,7 +241,7 @@ jobs:
             echo "GBOX_KEYSTORE_PATH=$RUNNER_TEMP/gbox.p12" >> "$GITHUB_ENV"
           fi
 
-      - name: Build Debug APK
+      - name: Build Release APK (R8 shrunk)
         env:
           GBOX_STORE_PASS: ${{ secrets.GBOX_STORE_PASS }}
           GBOX_KEY_ALIAS: ${{ secrets.GBOX_KEY_ALIAS }}
@@ -190,15 +252,15 @@ jobs:
           GBOX_DONATE_URL: ${{ secrets.GBOX_DONATE_URL }}
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleRelease --no-daemon
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Gor4akovNET-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: Gor4akovNET-release-apk
+          path: app/build/outputs/apk/release/*.apk
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: app/build/outputs/apk/debug/*.apk
+          files: app/build/outputs/apk/release/*.apk

@@ -87,11 +87,17 @@ class RciSession(
         }
     }
 
-    fun request(path: String, method: String = "GET", jsonBody: String? = null, retryAuth: Boolean = true): String {
+    fun request(
+        path: String,
+        method: String = "GET",
+        jsonBody: String? = null,
+        retryAuth: Boolean = true,
+        readTimeoutMs: Int = 45000
+    ): String {
         val conn = (URL("http://$host$path").openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 6000
-            readTimeout = 45000
+            readTimeout = readTimeoutMs
             if (cookieHeader.isNotBlank()) setRequestProperty("Cookie", cookieHeader)
             if (jsonBody != null) {
                 doOutput = true
@@ -103,7 +109,7 @@ class RciSession(
         if (code == 401 && retryAuth) {
             conn.disconnect()
             ensureAuth()
-            return request(path, method, jsonBody, retryAuth = false)
+            return request(path, method, jsonBody, retryAuth = false, readTimeoutMs = readTimeoutMs)
         }
         val stream = if (code in 200..299) conn.inputStream else conn.errorStream
         val text = stream?.let { BufferedReader(InputStreamReader(it, StandardCharsets.UTF_8)).readText() } ?: ""
@@ -115,22 +121,58 @@ class RciSession(
     }
 
     fun getRunningConfigText(): String {
-        val raw = request("/rci/show/running-config")
-        val obj = JSONObject(raw)
-        val arr = obj.optJSONArray("message") ?: return raw
-        return buildString {
-            for (i in 0 until arr.length()) {
-                append(arr.optString(i)).append('\n')
-            }
+        val raw = request("/rci/show/running-config", readTimeoutMs = 60000).trim()
+        if (raw.isBlank() || raw == "{}" || raw == "[]") {
+            throw RciException("Роутер вернул пустой running-config")
         }
+        val obj = runCatching { JSONObject(raw) }.getOrNull()
+        if (obj != null) {
+            val arr = obj.optJSONArray("message")
+                ?: throw RciException("running-config не содержит секцию message")
+            val text = buildString {
+                for (i in 0 until arr.length()) {
+                    append(arr.optString(i)).append('\n')
+                }
+            }
+            if (text.isBlank()) throw RciException("running-config пуст")
+            return text
+        }
+        if (raw.lines().none { it.trim().startsWith("interface ") || it.trim().startsWith("system ") || it.trim().startsWith("ip ") }) {
+            throw RciException("Некорректный формат running-config: ${raw.take(80)}")
+        }
+        return raw
     }
 
-    fun parseCli(commands: List<String>): String {
+    fun parseCli(commands: List<String>, readTimeoutMs: Int = 45000): String {
         val payload = JSONArray()
         for (cmd in commands) {
             payload.put(JSONObject().put("parse", cmd))
         }
-        return request("/rci/parse", method = "POST", jsonBody = payload.toString())
+        return request("/rci/parse", method = "POST", jsonBody = payload.toString(), readTimeoutMs = readTimeoutMs)
+    }
+
+    fun restoreRunningConfigChunked(cfgText: String, skipDangerous: Boolean = true): Pair<Int, Int> {
+        val lines = cfgText.lines()
+            .map { it.trim() }
+            .filter { line ->
+                line.isNotBlank() &&
+                    !line.startsWith("!") &&
+                    !line.startsWith("#") &&
+                    !(skipDangerous && (
+                        line.startsWith("user ") ||
+                            line.startsWith("no user ") ||
+                            line.startsWith("system mode") ||
+                            line.startsWith("service ")
+                        ))
+            }
+        var applied = 0
+        var failed = 0
+        lines.chunked(30).forEach { chunk ->
+            val res = runCatching { parseCli(chunk, readTimeoutMs = 60000) }
+            if (res.isSuccess) applied += chunk.size else failed += chunk.size
+        }
+        runCatching { parseCli(listOf("system configuration save"), readTimeoutMs = 30000) }
+        return applied to failed
     }
 
     fun mkcolWebDav(port: Int, remoteDir: String) {
@@ -148,14 +190,14 @@ class RciSession(
         }
     }
 
-    fun putWebDavFile(port: Int, remotePath: String, bytes: ByteArray): Result<String> = runCatching {
+    fun putWebDavFile(port: Int, remotePath: String, bytes: ByteArray, readTimeoutMs: Int = 60000): Result<String> = runCatching {
         val cleanPath = if (remotePath.startsWith("/")) remotePath else "/$remotePath"
         val url = URL("http://$host:$port$cleanPath")
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "PUT"
             doOutput = true
             connectTimeout = 8000
-            readTimeout = 300000
+            readTimeout = readTimeoutMs.coerceIn(8000, 120000)
             setFixedLengthStreamingMode(bytes.size)
             val basic = Base64.getEncoder().encodeToString("$user:$pass".toByteArray(StandardCharsets.UTF_8))
             setRequestProperty("Authorization", "Basic $basic")
@@ -196,18 +238,22 @@ object RciClient {
             val verJson = JSONObject(session.request("/rci/show/version"))
             val sysJson = runCatching { JSONObject(session.request("/rci/show/system")) }.getOrNull()
             val compJson = runCatching { JSONObject(session.request("/rci/show/components")) }.getOrNull()
-            val mediaRaw = runCatching { session.request("/rci/show/media") }.getOrDefault("{}")
+            val mediaRes = runCatching { session.request("/rci/show/media") }
+            val mediaRaw = mediaRes.getOrDefault("{}")
             val runCfg = runCatching { session.getRunningConfigText() }.getOrDefault("")
 
             val model = verJson.optString("model", verJson.optString("device", "Keenetic / Netcraze"))
             val hwId = verJson.optString("hw_id", "")
             val archRaw = verJson.optString("arch", "")
-            val title = verJson.optString("title", verJson.optString("release", ""))
             val ndmObj = verJson.optJSONObject("ndm")
-            val ndmTitle = ndmObj?.optString("title", "") ?: ""
+            val ndmTitle = ndmObj?.optString("title", "") ?: verJson.optString("title", "")
 
-            val verMatch = listOf(verJson.optString("release", ""), verJson.optString("title", ""), ndmObj?.optString("exact", "") ?: "")
-                .asSequence().mapNotNull { Regex("""(\d+)\.(\d+)""").find(it) }.firstOrNull()
+            val verMatch = listOf(
+                verJson.optString("release", ""),
+                verJson.optString("title", ""),
+                ndmTitle,
+                ndmObj?.optString("exact", "") ?: ""
+            ).asSequence().mapNotNull { Regex("""(\d+)\.(\d+)""").find(it) }.firstOrNull()
             val ndmsMajor = verMatch?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
             val ndmsMinor = verMatch?.groupValues?.getOrNull(2)?.toIntOrNull() ?: 0
 
@@ -229,9 +275,7 @@ object RciClient {
 
             val mediaList = parseMedia(mediaRaw)
             val hasUsb = mediaList.any { it.isUsb }
-            // Внутреннее хранилище для /opt — только по факту media (ext4/opkg), НЕ по версии прошивки
-            val hasInternalOpkg = mediaList.any { it.isInternalStorage && it.totalMb > 200 }
-            val (compatLevel, compatReason) = CompatibilityMatrix.evaluate(ndmsMajor, ndmsMinor, hasUsb, hasInternalOpkg)
+            val hasInternalOpkg = mediaList.any { it.isInternalStorage && (it.freeMb >= 32 || it.totalMb >= 64) }
 
             val opkgDiskLine = runCfg.lines().firstOrNull { it.trim().startsWith("opkg disk ") }?.trim()?.removePrefix("opkg disk ") ?: ""
             val opkgInitrc = runCfg.lines().firstOrNull { it.trim().startsWith("opkg initrc ") }?.trim()?.removePrefix("opkg initrc ") ?: ""
@@ -253,6 +297,16 @@ object RciClient {
                 if (comps.none { it.contains("netfilter") }) comps.add("opkg-kmod-netfilter")
                 if (comps.none { it == "ssh" }) comps.add("ssh")
             }
+
+            val (compatLevel, compatReason) = CompatibilityMatrix.evaluate(
+                major = ndmsMajor,
+                minor = ndmsMinor,
+                hasUsb = hasUsb,
+                hasInternalOpkg = hasInternalOpkg,
+                mediaProbed = mediaRes.isSuccess,
+                sshAlreadyUp = ssh222
+            )
+
             val ssh22 = Gboxcore.probeTCP(host, 22, 1000)
             val agh3000 = Gboxcore.probeTCP(host, 3000, 700) || Gboxcore.probeTCP(host, 3080, 700)
 
@@ -364,6 +418,14 @@ object RciClient {
             val s = RciSession(host, user, pass)
             s.ensureAuth()
             s.getRunningConfigText()
+        }
+    }
+
+    suspend fun restoreRunningConfig(host: String, user: String, pass: String, cfgText: String): Result<Pair<Int, Int>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val s = RciSession(host, user, pass)
+            s.ensureAuth()
+            s.restoreRunningConfigChunked(cfgText)
         }
     }
 }

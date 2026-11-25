@@ -1,13 +1,19 @@
 package gboxcore
 
 import (
+	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
+	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/ulikunitz/xz"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -40,16 +46,26 @@ func dialRouterSSH(host string, port int32, user, pass string, timeout time.Dura
 	return ssh.NewClient(c, chans, reqs), nil
 }
 
+func parseCommandTimeout(cmd string, def time.Duration) (string, time.Duration) {
+	if strings.Contains(cmd, "__LONG__") {
+		return strings.ReplaceAll(cmd, "__LONG__", ""), 300 * time.Second
+	}
+	if strings.Contains(cmd, "__BACKUP__") {
+		return strings.ReplaceAll(cmd, "__BACKUP__", ""), 600 * time.Second
+	}
+	return cmd, def
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
 // RunRouterSSH executes a command on the router via SSH without requiring a proxy.
 func RunRouterSSH(host string, port int32, user, pass, cmd string) (string, error) {
 	if port <= 0 {
 		port = 222
 	}
-	timeout := 28 * time.Second
-	if strings.Contains(cmd, "__LONG__") {
-		cmd = strings.ReplaceAll(cmd, "__LONG__", "")
-		timeout = 300 * time.Second
-	}
+	cleanCmd, timeout := parseCommandTimeout(cmd, 28*time.Second)
 	client, err := dialRouterSSH(host, port, user, pass, 10*time.Second)
 	if err != nil {
 		return "", err
@@ -69,7 +85,7 @@ func RunRouterSSH(host string, port int32, user, pass, cmd string) (string, erro
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- sess.Run(cmd)
+		done <- sess.Run(cleanCmd)
 	}()
 
 	select {
@@ -101,6 +117,90 @@ func RunRouterSSH(host string, port int32, user, pass, cmd string) (string, erro
 
 // PushBytesSSH streams binary payloads directly to a remote file over BusyBox SSH stdin.
 func PushBytesSSH(host string, port int32, user, pass, remotePath string, data []byte) error {
+	timeout := 240 * time.Second
+	if len(data) > 15*1024*1024 {
+		timeout = 600 * time.Second
+	}
+	return pushReaderSSH(host, port, user, pass, remotePath, bytes.NewReader(data), timeout, false, false)
+}
+
+// PushXzAsGzSSH decompresses an .xz archive in a stream, gzips it (BestSpeed), and writes remotePath.
+func PushXzAsGzSSH(host string, port int32, user, pass, remotePath string, xzData []byte) error {
+	xr, err := xz.NewReader(bytes.NewReader(xzData))
+	if err != nil {
+		return fmt.Errorf("xz init %s: %w", remotePath, err)
+	}
+	pr, pw := io.Pipe()
+	go func() {
+		gw, gerr := gzip.NewWriterLevel(pw, gzip.BestSpeed)
+		if gerr != nil {
+			_ = pw.CloseWithError(gerr)
+			return
+		}
+		if _, cerr := io.Copy(gw, xr); cerr != nil {
+			_ = gw.Close()
+			_ = pw.CloseWithError(cerr)
+			return
+		}
+		if cerr := gw.Close(); cerr != nil {
+			_ = pw.CloseWithError(cerr)
+			return
+		}
+		_ = pw.Close()
+	}()
+	return pushReaderSSH(host, port, user, pass, remotePath, pr, 360*time.Second, false, false)
+}
+
+// PushXzBinarySSH decompresses an .xz binary on the phone, compresses fast with gzip over Wi-Fi,
+// and writes the final executable binary atomically onto the router via gunzip.
+func PushXzBinarySSH(host string, port int32, user, pass, remotePath string, xzData []byte) error {
+	xr, err := xz.NewReader(bytes.NewReader(xzData))
+	if err != nil {
+		return fmt.Errorf("xz init %s: %w", remotePath, err)
+	}
+	pr, pw := io.Pipe()
+	go func() {
+		gw, gerr := gzip.NewWriterLevel(pw, gzip.BestSpeed)
+		if gerr != nil {
+			_ = pw.CloseWithError(gerr)
+			return
+		}
+		if _, cerr := io.Copy(gw, xr); cerr != nil {
+			_ = gw.Close()
+			_ = pw.CloseWithError(cerr)
+			return
+		}
+		if cerr := gw.Close(); cerr != nil {
+			_ = pw.CloseWithError(cerr)
+			return
+		}
+		_ = pw.Close()
+	}()
+	return pushReaderSSH(host, port, user, pass, remotePath, pr, 420*time.Second, true, true)
+}
+
+// DecompressXzToGz converts an in-memory .tar.xz payload (e.g. Entware installer) into .tar.gz for Keenetic WebDAV.
+func DecompressXzToGz(xzData []byte) ([]byte, error) {
+	xr, err := xz.NewReader(bytes.NewReader(xzData))
+	if err != nil {
+		return nil, fmt.Errorf("xz reader: %w", err)
+	}
+	var out bytes.Buffer
+	gw, err := gzip.NewWriterLevel(&out, gzip.DefaultCompression)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := io.Copy(gw, xr); err != nil {
+		_ = gw.Close()
+		return nil, fmt.Errorf("xz->gz copy: %w", err)
+	}
+	if err := gw.Close(); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+func pushReaderSSH(host string, port int32, user, pass, remotePath string, src io.Reader, timeout time.Duration, gunzipRemote bool, makeExec bool) error {
 	if port <= 0 {
 		port = 222
 	}
@@ -114,7 +214,7 @@ func PushBytesSSH(host string, port int32, user, pass, remotePath string, data [
 		return fmt.Errorf("ssh session: %w", err)
 	}
 	defer sess.Close()
-	sess.Stdin = bytes.NewReader(data)
+	sess.Stdin = src
 	var stderr bytes.Buffer
 	sess.Stderr = &stderr
 
@@ -122,20 +222,24 @@ func PushBytesSSH(host string, port int32, user, pass, remotePath string, data [
 	if idx := strings.LastIndex(remotePath, "/"); idx > 0 {
 		dir = remotePath[:idx]
 	}
-	safePath := "'" + strings.ReplaceAll(remotePath, "'", "'\"'\"'") + "'"
-	cmd := "cat > " + safePath
-	if dir != "" {
-		safeDir := "'" + strings.ReplaceAll(dir, "'", "'\"'\"'") + "'"
-		cmd = "mkdir -p " + safeDir + " && cat > " + safePath
+	safePath := shellQuote(remotePath)
+	safeTmp := shellQuote(remotePath + ".tmp")
+
+	var transfer string
+	if gunzipRemote {
+		transfer = "gzip -dc > " + safeTmp + " && mv -f " + safeTmp + " " + safePath
+	} else {
+		transfer = "cat > " + safeTmp + " && mv -f " + safeTmp + " " + safePath
+	}
+	if makeExec {
+		transfer += " && chmod 755 " + safePath
 	}
 
-	// BUG-T1: таймаут обязателен — иначе на плохом Wi-Fi передача зависает навсегда.
-	// 5 МБ при 50 КБ/с = 100с, даём запас 240с.
-	timeout := 240 * time.Second
-	// На большие файлы (>20 МБ, если когда-то появятся) — 10 минут
-	if len(data) > 20*1024*1024 {
-		timeout = 600 * time.Second
+	cmd := transfer
+	if dir != "" {
+		cmd = "mkdir -p " + shellQuote(dir) + " && " + transfer
 	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	done := make(chan error, 1)
@@ -145,7 +249,7 @@ func PushBytesSSH(host string, port int32, user, pass, remotePath string, data [
 	select {
 	case <-ctx.Done():
 		_ = sess.Signal(ssh.SIGTERM)
-		return fmt.Errorf("push %s: timeout after %s (%d bytes)", remotePath, timeout, len(data))
+		return fmt.Errorf("push %s: timeout after %s", remotePath, timeout)
 	case runErr := <-done:
 		if runErr != nil {
 			return fmt.Errorf("push %s: %w (%s)", remotePath, runErr, strings.TrimSpace(stderr.String()))
@@ -159,6 +263,7 @@ func PullBytesSSH(host string, port int32, user, pass, cmd string) ([]byte, erro
 	if port <= 0 {
 		port = 222
 	}
+	cleanCmd, timeout := parseCommandTimeout(cmd, 180*time.Second)
 	client, err := dialRouterSSH(host, port, user, pass, 12*time.Second)
 	if err != nil {
 		return nil, err
@@ -173,21 +278,96 @@ func PullBytesSSH(host string, port int32, user, pass, cmd string) ([]byte, erro
 	var stdout, stderr bytes.Buffer
 	sess.Stdout = &stdout
 	sess.Stderr = &stderr
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- sess.Run(cmd)
+		done <- sess.Run(cleanCmd)
 	}()
 	select {
 	case <-ctx.Done():
 		_ = sess.Signal(ssh.SIGTERM)
-		return nil, fmt.Errorf("ssh pull timeout")
+		return nil, fmt.Errorf("ssh pull timeout after %s", timeout)
 	case err := <-done:
 		if err != nil {
 			return nil, fmt.Errorf("pull exit: %w (%s)", err, strings.TrimSpace(stderr.String()))
 		}
 		return stdout.Bytes(), nil
+	}
+}
+
+// PullFileSSH streams stdout of a remote backup command directly to localPath on disk (zero phone RAM OOM).
+func PullFileSSH(host string, port int32, user, pass, cmd, localPath string) (int64, error) {
+	if port <= 0 {
+		port = 222
+	}
+	cleanCmd, timeout := parseCommandTimeout(cmd, 420*time.Second)
+	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		return 0, fmt.Errorf("mkdir local: %w", err)
+	}
+	tmpPath := localPath + ".part"
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		return 0, fmt.Errorf("create local %s: %w", tmpPath, err)
+	}
+	cleanupTmp := true
+	defer func() {
+		if f != nil {
+			_ = f.Close()
+		}
+		if cleanupTmp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	client, err := dialRouterSSH(host, port, user, pass, 12*time.Second)
+	if err != nil {
+		return 0, err
+	}
+	defer client.Close()
+	sess, err := client.NewSession()
+	if err != nil {
+		return 0, fmt.Errorf("ssh session: %w", err)
+	}
+	defer sess.Close()
+
+	bw := bufio.NewWriterSize(f, 64*1024)
+	sess.Stdout = bw
+	var stderr bytes.Buffer
+	sess.Stderr = &stderr
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- sess.Run(cleanCmd)
+	}()
+
+	select {
+	case <-ctx.Done():
+		_ = sess.Signal(ssh.SIGTERM)
+		return 0, fmt.Errorf("ssh pull stream timeout after %s", timeout)
+	case runErr := <-done:
+		if ferr := bw.Flush(); ferr != nil {
+			return 0, fmt.Errorf("flush local: %w", ferr)
+		}
+		if runErr != nil {
+			return 0, fmt.Errorf("pull exit: %w (%s)", runErr, strings.TrimSpace(stderr.String()))
+		}
+		if cerr := f.Close(); cerr != nil {
+			f = nil
+			return 0, fmt.Errorf("close local: %w", cerr)
+		}
+		f = nil
+		st, serr := os.Stat(tmpPath)
+		if serr != nil {
+			return 0, serr
+		}
+		if rerr := os.Rename(tmpPath, localPath); rerr != nil {
+			return 0, fmt.Errorf("rename local: %w", rerr)
+		}
+		cleanupTmp = false
+		return st.Size(), nil
 	}
 }
 

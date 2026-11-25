@@ -113,8 +113,11 @@ data class BackupEntry(
     val timestamp: String,
     val label: String,
     val model: String,
-    val sizeBytes: Int,
-    val filePath: String
+    val sizeBytes: Long,
+    val filePath: String,
+    val format: String = if (filePath.endsWith(".tar.gz", true)) "tar_v1" else "txt",
+    val isProtected: Boolean = false,
+    val sha256: String = ""
 )
 
 data class SetupPresetInfo(
@@ -178,18 +181,29 @@ object CompatibilityMatrix {
         }
     }
 
-    fun evaluate(major: Int, minor: Int, hasUsb: Boolean, hasInternalOpkg: Boolean): Pair<CompatLevel, String> {
-        if (!hasUsb && !hasInternalOpkg) {
+    fun evaluate(
+        major: Int,
+        minor: Int,
+        hasUsb: Boolean,
+        hasInternalOpkg: Boolean,
+        mediaProbed: Boolean = true,
+        sshAlreadyUp: Boolean = false
+    ): Pair<CompatLevel, String> {
+        if (!mediaProbed && !sshAlreadyUp) {
+            return CompatLevel.UNKNOWN to
+                "Не удалось прочитать список накопителей по RCI. Проверьте USB-диск или внутреннюю память на шаге 2."
+        }
+        if (!hasUsb && !hasInternalOpkg && !sshAlreadyUp) {
             return CompatLevel.UNSUPPORTED to
-                "Нет USB-флешки (ext4) и нет пригодной внутренней памяти для OPKG. Установка невозможна. Вставьте USB (Giga/Ultra/Peak поддерживают)."
+                "Нет USB-флешки (ext4) и нет пригодной внутренней памяти (>= 32 МБ) для OPKG. Вставьте USB ext4 и нажмите «Проверить USB»."
         }
         if (!hasUsb && hasInternalOpkg) {
             return CompatLevel.USB_ONLY to
-                "USB не обнаружен. Установка только во внутреннюю память ($major.$minor) — рискованно: займёт NAND, нужен swap. Рекомендуем USB ext4."
+                "USB не обнаружен. Установка во внутреннюю память ($major.$minor) возможна, но для AdGuard Home / WARP и бэкапов рекомендуем USB ext4."
         }
         if (major in 1..3 && !(major == 3 && minor >= 7)) {
             return CompatLevel.USB_ONLY to
-                "Устаревшая KeeneticOS $major.$minor: работает ТОЛЬКО с USB-флешкой в ext4."
+                "KeeneticOS $major.$minor: работает ТОЛЬКО с USB-флешкой в ext4."
         }
         if (major >= 4) {
             return CompatLevel.FULL to
@@ -197,9 +211,13 @@ object CompatibilityMatrix {
         }
         if (major == 3 && minor >= 7) {
             return CompatLevel.FULL to
-                "KeeneticOS $major.$minor: полная поддержка (USB ext4 обязателен, есть API сегментов и OPKG)."
+                "KeeneticOS $major.$minor: полная поддержка (USB ext4 или внутренняя память, сегменты и OPKG)."
+        }
+        if (sshAlreadyUp) {
+            return CompatLevel.FULL to
+                "Entware SSH :222 уже активен — роутер готов к установке и мониторингу (версия ОС: $major.$minor)."
         }
         return CompatLevel.UNKNOWN to
-            "Версия прошивки не определена. Проверьте OPKG и Netfilter."
+            "Версия прошивки не определена точно. Проверьте наличие OPKG и Netfilter."
     }
 }
