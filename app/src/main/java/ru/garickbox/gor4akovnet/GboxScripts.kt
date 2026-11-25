@@ -280,6 +280,10 @@ object GboxScripts {
             if [ -f "${'$'}WORK_STAGE/z2k.sh" ]; then
                 sed '/^main "\${'$'}@"/d' "${'$'}WORK_STAGE/z2k.sh" > "${'$'}WORK_STAGE/.z2k_lib_only.sh"
                 . "${'$'}WORK_STAGE/.z2k_lib_only.sh"
+                set +e
+                WORK_DIR="${'$'}WORK_STAGE"
+                LIB_DIR="${'$'}WORK_STAGE/lib"
+                export WORK_DIR LIB_DIR
                 for m in ${'$'}MODULES; do
                     [ -f "${'$'}LIB_DIR/${'$'}{m}.sh" ] && . "${'$'}LIB_DIR/${'$'}{m}.sh"
                 done
