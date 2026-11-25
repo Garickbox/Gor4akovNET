@@ -376,6 +376,13 @@ object GboxScripts {
                     LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET" >/dev/null
                     LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET range ${'$'}{SUB_PREFIX}.10 ${'$'}{SUB_PREFIX}.200" >/dev/null
                     LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET bind ${'$'}BR_NAME" >/dev/null
+                    # DNS-сервер для клиентов: если AdGuard есть — Bridge2, иначе Яндекс DNS
+                    if [ "${'$'}aghFlag" = "1" ]; then
+                        LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET dns-server ${'$'}{SUB_PREFIX}.1" >/dev/null
+                    else
+                        LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET dns-server 77.88.8.8" >/dev/null
+                        LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET dns-server 77.88.8.1" >/dev/null
+                    fi
                     LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET enable" >/dev/null
 
                     for master in WifiMaster0 WifiMaster1; do
@@ -404,8 +411,22 @@ object GboxScripts {
                             LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap encryption enable" >/dev/null 2>&1 || true
                             LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap encryption wpa2" >/dev/null
                             LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap authentication wpa-psk ${'$'}SAFE_PASS" >/dev/null
-                            LD_LIBRARY_PATH= ndmc -c "interface ${'$'}{BR_NAME} include ${'$'}ap" >/dev/null
-                            LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap up" >/dev/null
+                            # ПОРЯДОК ВАЖЕН: сначала up, потом include в Bridge. Если include сделать
+                            # до up — NDMS его молча игнорирует (race), и клиенты не получают IP.
+                            LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap up" >/dev/null 2>&1 || true
+                            # Ждём state=up (до 5 сек), иначе retry
+                            _ap_up=0
+                            for _try in 1 2 3 4 5; do
+                                sleep 1
+                                _st=${'$'}(LD_LIBRARY_PATH= ndmc -c "show interface ${'$'}ap" 2>/dev/null | awk '/^[ \t]*state:/{print ${'$'}2; exit}')
+                                if [ "${'$'}_st" = "up" ]; then _ap_up=1; break; fi
+                                LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap up" >/dev/null 2>&1 || true
+                            done
+                            if [ "${'$'}_ap_up" = "1" ]; then
+                                LD_LIBRARY_PATH= ndmc -c "interface ${'$'}{BR_NAME} include ${'$'}ap" >/dev/null
+                            else
+                                echo "[WARN] ${'$'}ap не поднялся за 5 сек — include пропущен"
+                            fi
                         fi
                     done
                     LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null
@@ -448,6 +469,18 @@ object GboxScripts {
                 if [ -x "${'$'}AGH_BIN" ]; then
                     mkdir -p /opt/etc/AdGuardHome /opt/var/log
                     chmod 755 "${'$'}AGH_BIN"
+                    # Если yaml УЖЕ есть, но bind_hosts не 0.0.0.0 — добавим 0.0.0.0, иначе
+                    # AdGuard не будет слушать в изолированной сети (77.1) и DNS клиентов умрёт.
+                    if [ -s /opt/etc/AdGuardHome/AdGuardHome.yaml ] && ! grep -q "^[[:space:]]*-[[:space:]]*0\.0\.0\.0" /opt/etc/AdGuardHome/AdGuardHome.yaml; then
+                        echo "[FIX] Добавляю 0.0.0.0 в bind_hosts AdGuard"
+                        awk '
+                          /^dns:/ {print; in_dns=1; next}
+                          in_dns && /^[[:space:]]+bind_hosts:/ {print; print "    - 0.0.0.0"; inserted=1; in_bind=1; next}
+                          in_dns && in_bind && /^[[:space:]]+-[[:space:]]/ {next}
+                          {print; if (in_bind && !/^[[:space:]]+-[[:space:]]/) {in_bind=0}}
+                        ' /opt/etc/AdGuardHome/AdGuardHome.yaml > /opt/etc/AdGuardHome/AdGuardHome.yaml.new
+                        mv /opt/etc/AdGuardHome/AdGuardHome.yaml.new /opt/etc/AdGuardHome/AdGuardHome.yaml
+                    fi
                     if [ ! -s /opt/etc/AdGuardHome/AdGuardHome.yaml ]; then
                         cat > /opt/etc/AdGuardHome/AdGuardHome.yaml << 'EOFAGH'
 http:
@@ -953,7 +986,12 @@ EOFINI
         else
             echo "[WARN] zapret2 не установлен"
         fi
-        [ -x /opt/etc/ndm/netfilter.d/090-gor4akov-policy.sh ] && sh /opt/etc/ndm/netfilter.d/090-gor4akov-policy.sh
+        # Хук 090-gor4akov-policy.sh ставил CONNMARK-exclude на весь трафик, кроме 77.x —
+        # это ломало обход в Home/Guest. Если остался от старой установки — удаляем.
+        if [ -f /opt/etc/ndm/netfilter.d/090-gor4akov-policy.sh ]; then
+            rm -f /opt/etc/ndm/netfilter.d/090-gor4akov-policy.sh
+            echo '[FIX] Удалён устаревший хук 090-gor4akov-policy.sh (ломал обход в Home)'
+        fi
         echo "[OK] Netfilter правила синхронизированы"
     """.trimIndent()
 }
