@@ -615,7 +615,7 @@ EOFINI
     val ESTIMATE_BACKUP_SIZE_CMD = """
         set +e
         core_kb=0
-        for p in /opt/etc /opt/zapret2 /opt/root /opt/home /opt/var/spool/cron; do
+        for p in /opt/etc /opt/zapret2 /opt/root /opt/home /opt/var/spool/cron /opt/var/lib /opt/bin /opt/sbin /opt/lib /opt/usr /opt/libexec /opt/share; do
             if [ -e "${'$'}p" ]; then
                 s=${'$'}(du -sk "${'$'}p" 2>/dev/null | awk '{print ${'$'}1+0}')
                 core_kb=${'$'}((core_kb + s))
@@ -698,7 +698,7 @@ EOFINI
         printf '{"version":2,"arch":"%s","include_media":%s}\n' "${'$'}(uname -m)" "${if (includeUserMedia) "true" else "false"}" > "${'$'}TMPB/manifest.json"
 
         set -- -C "${'$'}TMPB" running-config.txt startup-config.txt router-info.txt manifest.json
-        for p in /opt/etc /opt/zapret2 /opt/root /opt/home /opt/var/spool/cron; do
+        for p in /opt/etc /opt/zapret2 /opt/root /opt/home /opt/var/spool/cron /opt/var/lib /opt/bin /opt/sbin /opt/lib /opt/usr /opt/libexec /opt/share; do
             if [ -e "${'$'}p" ]; then
                 set -- "${'$'}@" -C / "${'$'}{p#/}"
             fi
