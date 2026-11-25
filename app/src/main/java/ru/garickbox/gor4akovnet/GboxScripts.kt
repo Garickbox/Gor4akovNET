@@ -644,8 +644,8 @@ EOFINI
                 for _probe in youtube.com discord.com; do
                     _code=${'$'}(curl -sI -L --connect-timeout 4 --max-time 8 -o /dev/null -w "%{http_code}" "https://${'$'}_probe" 2>/dev/null || echo "000")
                     case "${'$'}_code" in
-                        2*|3*|4*) bypass_live=1; echo "[OK] Обход работает: $_probe -> HTTP $_code"; break ;;
-                        *) echo "[WARN] $_probe -> HTTP $_code (обход может не работать)" ;;
+                        2*|3*|4*) bypass_live=1; echo "[OK] Обход работает: ${'$'}_probe -> HTTP ${'$'}_code"; break ;;
+                        *) echo "[WARN] ${'$'}_probe -> HTTP ${'$'}_code (обход может не работать)" ;;
                     esac
                 done
             fi
@@ -1103,10 +1103,10 @@ EOFINI
         BYPASS_CODES=""
         for _h in youtube.com discord.com; do
             _c=${'$'}(curl -sI -L --connect-timeout 4 --max-time 8 -o /dev/null -w "%{http_code}" "https://${'$'}_h" 2>/dev/null || echo "000")
-            BYPASS_CODES="${'$'}{BYPASS_CODES}${'$'}{BYPASS_CODES:+, }$_h=$_c"
+            BYPASS_CODES="${'$'}{BYPASS_CODES}${'$'}{BYPASS_CODES:+, }${'$'}_h=${'$'}_c"
             case "${'$'}_c" in
                 2*|3*|4*) ;;
-                *) echo "[WARN] $_h -> HTTP $_c — обход может не работать, смотри nfqws2 / списки" ;;
+                *) echo "[WARN] ${'$'}_h -> HTTP ${'$'}_c — обход может не работать, смотри nfqws2 / списки" ;;
             esac
         done
         echo "[INFO] Тест обхода: ${'$'}BYPASS_CODES"
