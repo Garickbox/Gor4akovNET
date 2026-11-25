@@ -557,9 +557,14 @@ EOFINI
                 sleep 2
                 if ps w 2>/dev/null | grep -q '[n]fqws2' || ps 2>/dev/null | grep -q '[n]fqws2'; then nfq_cnt=1; fi
             fi
-            [ "${'$'}{nfq_cnt:-0}" -gt 0 ] && touch /opt/etc/.gor4akov_installed 2>/dev/null || true
-            echo "NFQWS_PROCS=${'$'}{nfq_cnt:-0}"
-            echo "INSTALL_DONE"
+            if [ "${'$'}{nfq_cnt:-0}" -gt 0 ]; then
+                touch /opt/etc/.gor4akov_installed 2>/dev/null || true
+                echo "NFQWS_PROCS=${'$'}nfq_cnt"
+                echo "INSTALL_DONE"
+            else
+                echo "NFQWS_PROCS=0"
+                echo "[ERR] nfqws2 не запустился — обход НЕ активен, установка НЕ завершена."
+            fi
         """.trimIndent()
     }
 
