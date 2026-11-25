@@ -637,14 +637,26 @@ EOFINI
                 sleep 2
                 if ps w 2>/dev/null | grep -q '[n]fqws2' || ps 2>/dev/null | grep -q '[n]fqws2'; then nfq_cnt=1; fi
             fi
-            # ФИНАЛЬНЫЙ save: гарантирует, что всё применённое (permit global ISP,
-            # AP state=up, DHCP pool, dns-server) уйдёт в startup-config. Без этого
-            # на сценариях без ISO/AdGuard save вообще не вызывался, и после ребута
-            # политика снова оказывалась без permit global ISP.
+            # Реальная проверка обхода: процесс nfqws2 может крутиться, но не обходить.
+            # Проверяем curl'ом сквозь NFQUEUE — если YouTube/Discord оживают, обход точно живой.
+            bypass_live=0
+            if [ "${'$'}{nfq_cnt:-0}" -gt 0 ]; then
+                for _probe in youtube.com discord.com; do
+                    _code=${'$'}(curl -sI -L --connect-timeout 4 --max-time 8 -o /dev/null -w "%{http_code}" "https://${'$'}_probe" 2>/dev/null || echo "000")
+                    case "${'$'}_code" in
+                        2*|3*|4*) bypass_live=1; echo "[OK] Обход работает: $_probe -> HTTP $_code"; break ;;
+                        *) echo "[WARN] $_probe -> HTTP $_code (обход может не работать)" ;;
+                    esac
+                done
+            fi
+            # ФИНАЛЬНЫЙ save: гарантирует, что всё применённое (AP state=up, DHCP pool,
+            # dns-server) уйдёт в startup-config. Без этого на сценариях без ISO/AdGuard
+            # save вообще не вызывался.
             LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null 2>&1 || true
             if [ "${'$'}{nfq_cnt:-0}" -gt 0 ]; then
                 touch /opt/etc/.gor4akov_installed 2>/dev/null || true
                 echo "NFQWS_PROCS=${'$'}nfq_cnt"
+                echo "BYPASS_LIVE=${'$'}bypass_live"
                 echo "INSTALL_DONE"
             else
                 echo "NFQWS_PROCS=0"
@@ -1068,5 +1080,37 @@ EOFINI
             echo '[FIX] Удалён устаревший хук 090-gor4akov-policy.sh (ломал обход в Home)'
         fi
         echo "[OK] Netfilter правила синхронизированы"
+
+        # === Реальная проверка: интернет и обход ===
+        echo "=== Проверка связи ==="
+        WAN_IP=${'$'}(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++)if(${'$'}i=="via"){print ${'$'}(i+1);exit}}')
+        if [ -n "${'$'}WAN_IP" ] && ping -c 1 -W 2 "${'$'}WAN_IP" >/dev/null 2>&1; then
+            echo "[OK] Шлюз провайдера ${'$'}WAN_IP пингуется"
+        else
+            echo "[WARN] Шлюз провайдера недоступен — проверьте WAN-кабель"
+        fi
+        DNS_RC=${'$'}(nslookup youtube.com 2>/dev/null | grep -c '^Address')
+        if [ "${'$'}{DNS_RC:-0}" -ge 2 ]; then
+            echo "[OK] DNS резолвит youtube.com"
+        else
+            echo "[WARN] DNS не резолвит youtube.com — проверьте opkg dns-override / AdGuard"
+        fi
+        BYPASS_CODES=""
+        for _h in youtube.com discord.com; do
+            _c=${'$'}(curl -sI -L --connect-timeout 4 --max-time 8 -o /dev/null -w "%{http_code}" "https://${'$'}_h" 2>/dev/null || echo "000")
+            BYPASS_CODES="${'$'}{BYPASS_CODES}${'$'}{BYPASS_CODES:+, }$_h=$_c"
+            case "${'$'}_c" in
+                2*|3*|4*) ;;
+                *) echo "[WARN] $_h -> HTTP $_c — обход может не работать, смотри nfqws2 / списки" ;;
+            esac
+        done
+        echo "[INFO] Тест обхода: ${'$'}BYPASS_CODES"
+
+        # Сброс кэша DNS после фикса политики/хука — чтобы клиенты не сидели на отравленном DNS
+        if [ -x /opt/etc/init.d/S99AdGuardHome ]; then
+            /opt/etc/init.d/S99AdGuardHome restart >/dev/null 2>&1 || true
+            echo "[OK] AdGuard перезапущен"
+        fi
+        echo "=== Диагностика завершена ==="
     """.trimIndent()
 }

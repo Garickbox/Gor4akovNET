@@ -48,7 +48,7 @@ func dialRouterSSH(host string, port int32, user, pass string, timeout time.Dura
 
 func parseCommandTimeout(cmd string, def time.Duration) (string, time.Duration) {
 	if strings.Contains(cmd, "__LONG__") {
-		return strings.ReplaceAll(cmd, "__LONG__", ""), 300 * time.Second
+		return strings.ReplaceAll(cmd, "__LONG__", ""), 420 * time.Second
 	}
 	if strings.Contains(cmd, "__BACKUP__") {
 		return strings.ReplaceAll(cmd, "__BACKUP__", ""), 600 * time.Second
