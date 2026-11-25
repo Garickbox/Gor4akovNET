@@ -38,7 +38,7 @@ class Prefs(private val context: Context) {
 
     var sshPass: String
         get() = sp.getString("ssh_pass", "keenetic") ?: "keenetic"
-        set(v) = sp.edit().putString("ssh_pass", v).apply()
+        set(v) = sp.edit().putString("ssh_pass", v.trim()).commit()
 
     var wifiSsid: String
         get() = sp.getString("wifi_ssid", "Gor4akovNET") ?: "Gor4akovNET"
