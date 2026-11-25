@@ -687,6 +687,12 @@ EOFINI
 
     fun buildFullBackupCmd(includeUserMedia: Boolean): String = """__BACKUP__
         set +e
+        # /opt отсутствует (флешка отвалилась) — полный бэкап собрал бы только 4 txt по 1 КБ,
+        # а UI принял бы это за валидный «полный бэкап v2». Явный fail -> на Android сработает RCI-fallback.
+        if [ ! -x /opt/bin/opkg ] || [ ! -d /opt/etc ]; then
+            echo "FATAL: /opt отсутствует или Entware не смонтирован — полный бэкап невозможен." >&2
+            exit 1
+        fi
         TMPB="/tmp/.gbox_bkp_${'$'}${'$'}"
         mkdir -p "${'$'}TMPB"
         LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" > "${'$'}TMPB/running-config.txt" 2>/dev/null || true
