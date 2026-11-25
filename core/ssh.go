@@ -155,6 +155,20 @@ func PushBytesSSH(host string, port int32, user, pass, remotePath string, data [
 	return pushReaderSSH(host, port, user, pass, remotePath, bytes.NewReader(data), timeout, false, false)
 }
 
+// PushFileSSH streams a local file over SSH stdin to remotePath (zero phone RAM OOM).
+func PushFileSSH(host string, port int32, user, pass, localPath, remotePath string) error {
+	f, err := os.Open(localPath)
+	if err != nil {
+		return fmt.Errorf("open local %s: %w", localPath, err)
+	}
+	defer f.Close()
+	timeout := 240 * time.Second
+	if st, serr := f.Stat(); serr == nil && st.Size() > 15*1024*1024 {
+		timeout = 900 * time.Second
+	}
+	return pushReaderSSH(host, port, user, pass, remotePath, f, timeout, false, false)
+}
+
 // PushXzAsGzSSH decompresses an .xz archive in a stream, gzips it (BestSpeed), and writes remotePath.
 func PushXzAsGzSSH(host string, port int32, user, pass, remotePath string, xzData []byte) error {
 	xr, err := xz.NewReader(bytes.NewReader(xzData))

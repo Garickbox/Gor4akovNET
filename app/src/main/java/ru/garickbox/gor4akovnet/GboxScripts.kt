@@ -784,78 +784,123 @@ EOFINI
         set +e
         TAR=/opt/bin/tar
         [ -x "${'$'}TAR" ] || TAR=tar
-        # Архив и распаковка на флешке (/opt), не в /tmp - там tmpfs 242 МБ RAM -> OOM
         ARCH="/opt/.gbox_restore.tar.gz"
-        [ -s "${'$'}ARCH" ] || { echo "ERR: Архив бэкапа не найден"; exit 1; }
+        [ -s "${'$'}ARCH" ] || { echo "ERR: Архив не найден на /opt/.gbox_restore.tar.gz"; exit 1; }
+        find /opt -maxdepth 1 -name '.gbox_rst_*' -type d -exec rm -rf {} + 2>/dev/null || true
         RST="/opt/.gbox_rst_${'$'}${'$'}"
         rm -rf "${'$'}RST" && mkdir -p "${'$'}RST"
-        ${'$'}{TAR} -xzf "${'$'}ARCH" -C "${'$'}RST" || { echo "ERR: Некорректный или повреждённый tar.gz архив"; rm -rf "${'$'}RST" "${'$'}ARCH"; exit 1; }
-        if [ "$mode" = "bypass" ]; then
-            [ -d "${'$'}RST/opt/zapret2" ] && rm -rf /opt/zapret2 && cp -a "${'$'}RST/opt/zapret2" /opt/zapret2
-            [ -d "${'$'}RST/opt/etc/ndm/netfilter.d" ] && mkdir -p /opt/etc/ndm/netfilter.d && cp -af "${'$'}RST/opt/etc/ndm/netfilter.d"/* /opt/etc/ndm/netfilter.d/ 2>/dev/null || true
-            [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true
-            echo "OK: Восстановлен обход (/opt/zapret2 и netfilter.d)"
+        echo "=== Распаковка архива ==="
+        "${'$'}TAR" -xzf "${'$'}ARCH" -C "${'$'}RST" || { echo "ERR: битый архив (сохранён для повтора)"; rm -rf "${'$'}RST"; exit 1; }
+        echo "OK: архив распакован"
+
+        PRE="/opt/.gbox_prerestore.${'$'}${'$'}.tar.gz"
+        echo "=== Снимок текущего /opt ==="
+        "${'$'}TAR" --exclude="opt/.gbox_prerestore.*" --exclude="opt/.gbox_restore.tar.gz" --exclude="opt/.gbox_rst_*" --exclude="opt/gor4akov-offline" --exclude="opt/z2k-work" --exclude="opt/tmp" --exclude="opt/var/log" --exclude="*.log" -czf "${'$'}PRE" -C / opt 2>/dev/null
+        PRE_RC=${'$'}?
+        if [ "${'$'}PRE_RC" -ne 0 ] || [ ! -s "${'$'}PRE" ]; then
+            echo "[WARN] Pre-snapshot не создан (нет места?). Работаем БЕЗ отката."
+            PRE=""
         else
-            [ -d "${'$'}RST/opt/zapret2" ] && rm -rf /opt/zapret2 && cp -a "${'$'}RST/opt/zapret2" /opt/zapret2
-            if [ -d "${'$'}RST/opt/etc" ]; then
-                mkdir -p /opt/etc
-                cp -af "${'$'}RST/opt/etc"/* /opt/etc/ 2>/dev/null || true
+            PRE_KB=${'$'}(du -sk "${'$'}PRE" 2>/dev/null | awk '{print ${'$'}1}')
+            echo "[OK] Снимок: ${'$'}PRE (${'$'}PRE_KB КБ)"
+        fi
+
+        echo "=== Остановка служб ==="
+        for ini in /opt/etc/init.d/S99zapret2 /opt/etc/init.d/S99AdGuardHome /opt/etc/init.d/S99adguardhome /opt/etc/init.d/S10cron; do
+            [ -x "${'$'}ini" ] && "${'$'}ini" stop >/dev/null 2>&1 || true
+        done
+        killall nfqws2 2>/dev/null || true
+        killall AdGuardHome 2>/dev/null || true
+        sleep 1
+
+        RESTORE_OK=1
+        if [ "$mode" = "bypass" ]; then
+            echo "=== bypass: /opt/zapret2 + netfilter.d ==="
+            if [ -d "${'$'}RST/opt/zapret2" ]; then
+                rm -rf /opt/zapret2 && cp -a "${'$'}RST/opt/zapret2" /opt/zapret2 || RESTORE_OK=0
             fi
-            [ -d "${'$'}RST/opt/root" ] && mkdir -p /opt/root && cp -af "${'$'}RST/opt/root"/* /opt/root/ 2>/dev/null || true
-            [ -d "${'$'}RST/opt/home" ] && mkdir -p /opt/home && cp -af "${'$'}RST/opt/home"/* /opt/home/ 2>/dev/null || true
-            [ -d "${'$'}RST/opt/var/spool/cron" ] && mkdir -p /opt/var/spool/cron && cp -af "${'$'}RST/opt/var/spool/cron"/* /opt/var/spool/cron/ 2>/dev/null || true
-            if [ "$mode" = "system_full" ]; then
-                [ -d "${'$'}RST/tmp/mnt" ] && mkdir -p /tmp/mnt && cp -af "${'$'}RST/tmp/mnt"/* /tmp/mnt/ 2>/dev/null || true
-                [ -d "${'$'}RST/media" ] && mkdir -p /media && cp -af "${'$'}RST/media"/* /media/ 2>/dev/null || true
-                [ -d "${'$'}RST/mnt" ] && mkdir -p /mnt && cp -af "${'$'}RST/mnt"/* /mnt/ 2>/dev/null || true
-                [ -d "${'$'}RST/storage" ] && mkdir -p /storage && cp -af "${'$'}RST/storage"/* /storage/ 2>/dev/null || true
-                CFG_SRC="${'$'}RST/running-config.txt"
-                [ -s "${'$'}CFG_SRC" ] || CFG_SRC="${'$'}RST/startup-config.txt"
-                if [ -s "${'$'}CFG_SRC" ]; then
-                    echo "=== Восстановление NDMS конфигурации ==="
-                    err_cnt=0
-                    ok_cnt=0
-                    awk '
-                      { sub(/\r$/, "") }
-                      /^[[:space:]]*$/ || /^[[:space:]]*#/ { next }
-                      /^[[:space:]]*!/ { if (${'$'}0 ~ /^!$/) blk=""; next }
-                      /^[ \t]+/ {
-                        sub(/^[ \t]+/, "")
-                        cmd = (blk != "" ? blk " " ${'$'}0 : ${'$'}0)
-                        if (cmd !~ /^(user|no user|system mode) /) print cmd
-                        next
-                      }
-                      {
-                        blk = ${'$'}0
-                        if (blk !~ /^(user|no user|system mode) /) print blk
-                      }
-                    ' "${'$'}CFG_SRC" > "${'$'}RST/.ndms_flat.txt"
-                    while IFS= read -r line; do
-                        [ -n "${'$'}line" ] || continue
-                        out_c=${'$'}(LD_LIBRARY_PATH= /bin/ndmc -c "${'$'}line" 2>&1)
-                        if printf '%s' "${'$'}out_c" | grep -qiE 'error|invalid|no such command'; then
-                            err_cnt=${'$'}((err_cnt + 1))
-                        else
-                            ok_cnt=${'$'}((ok_cnt + 1))
-                        fi
-                    done < "${'$'}RST/.ndms_flat.txt"
-                    LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1 || true
-                    echo "[OK] NDMS конфигурация: применено ${'$'}ok_cnt, пропущено/ошибок ${'$'}err_cnt"
+            if [ -d "${'$'}RST/opt/etc/ndm/netfilter.d" ]; then
+                rm -rf /opt/etc/ndm/netfilter.d && mkdir -p /opt/etc/ndm/netfilter.d
+                cp -a "${'$'}RST/opt/etc/ndm/netfilter.d/." /opt/etc/ndm/netfilter.d/ 2>/dev/null || RESTORE_OK=0
+            fi
+        else
+            echo "=== ПОЛНАЯ замена /opt ==="
+            for d in etc zapret2 root home var bin sbin lib libexec share usr local; do
+                if [ -d "${'$'}RST/opt/${'$'}d" ]; then
+                    rm -rf "/opt/${'$'}d" && cp -a "${'$'}RST/opt/${'$'}d" "/opt/${'$'}d" || RESTORE_OK=0
+                    echo "  OK: /opt/${'$'}d"
                 fi
-            fi
-            [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true
-            for ini in /opt/etc/init.d/S99AdGuardHome /opt/etc/init.d/S99adguardhome /opt/etc/init.d/S10cron; do
-                [ -x "${'$'}ini" ] && "${'$'}ini" restart >/dev/null 2>&1 || true
             done
-            if [ "$mode" = "system_full" ]; then
-                echo "OK: Полный системный откат выполнен (/opt + носители + NDMS config)."
+            mkdir -p /opt/tmp /opt/var/log 2>/dev/null || true
+        fi
+
+        if [ "${'$'}RESTORE_OK" -ne 1 ]; then
+            echo "[FATAL] Ошибка распаковки -> откат pre-snapshot"
+            if [ -n "${'$'}PRE" ] && [ -s "${'$'}PRE" ]; then
+                "${'$'}TAR" -xzf "${'$'}PRE" -C / 2>&1 | tail -3
+                echo "[OK] Pre-snapshot восстановлен"
             else
-                echo "OK: Восстановлены все конфиги и службы /opt (v1/v2 совместимо)."
+                echo "[ERR] Pre-snapshot отсутствует"
+            fi
+            rm -rf "${'$'}RST"
+            exit 1
+        fi
+
+        if [ "$mode" = "system_full" ]; then
+            echo "=== system_full: носители + NDMS ==="
+            for d in tmp/mnt media mnt storage; do
+                if [ -d "${'$'}RST/${'$'}d" ]; then
+                    mkdir -p "/${'$'}d" 2>/dev/null || true
+                    cp -af "${'$'}RST/${'$'}d/." "/${'$'}d/" 2>/dev/null || true
+                fi
+            done
+            CFG_SRC="${'$'}RST/running-config.txt"
+            [ -s "${'$'}CFG_SRC" ] || CFG_SRC="${'$'}RST/startup-config.txt"
+            if [ -s "${'$'}CFG_SRC" ]; then
+                echo "=== NDMS конфиг (как в бэкапе, MAC+IP) ==="
+                err_cnt=0
+                ok_cnt=0
+                tr -d '\r' < "${'$'}CFG_SRC" | awk '
+                  /^[[:space:]]*${'$'}/ {next}
+                  /^[[:space:]]*#/ {next}
+                  /^[[:space:]]*!/ {if (${'$'}0 ~ /^!${'$'}/) blk=""; next}
+                  /^[[:space:]]/ {sub(/^[[:space:]]+/,""); cmd=(blk!="" ? blk" "${'$'}0 : ${'$'}0); if (cmd !~ /^(user|no user|system mode) /) print cmd; next}
+                  {blk=${'$'}0; if (blk !~ /^(user|no user|system mode) /) print blk}
+                ' > "${'$'}RST/.ndms_flat.txt"
+                while IFS= read -r line; do
+                    [ -n "${'$'}line" ] || continue
+                    out_c=${'$'}(LD_LIBRARY_PATH= /bin/ndmc -c "${'$'}line" 2>&1)
+                    if printf '%s' "${'$'}out_c" | grep -qiE 'error|invalid|no such command'; then
+                        err_cnt=${'$'}((err_cnt + 1))
+                    else
+                        ok_cnt=${'$'}((ok_cnt + 1))
+                    fi
+                done < "${'$'}RST/.ndms_flat.txt"
+                LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1 || true
+                echo "[OK] NDMS: применено ${'$'}ok_cnt, ошибок ${'$'}err_cnt"
             fi
         fi
-        rm -rf "${'$'}RST" "${'$'}ARCH"
-    """.trimIndent()
 
+        echo "=== Запуск служб ==="
+        for ini in /opt/etc/init.d/S99zapret2 /opt/etc/init.d/S99AdGuardHome /opt/etc/init.d/S99adguardhome /opt/etc/init.d/S10cron; do
+            [ -x "${'$'}ini" ] && "${'$'}ini" start >/dev/null 2>&1 || true
+        done
+        [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true
+        sleep 2
+        NFQ=${'$'}(ps w 2>/dev/null | grep -c "[n]fqws2")
+        if [ "${'$'}NFQ" -gt 0 ]; then
+            echo "=== Готово: nfqws2 OK (${'$'}NFQ) ==="
+        else
+            echo "=== ВНИМАНИЕ: nfqws2 НЕ стартовал ==="
+        fi
+
+        rm -f "${'$'}ARCH"
+        rm -rf "${'$'}RST"
+        if [ -n "${'$'}PRE" ] && [ -s "${'$'}PRE" ]; then
+            echo "[OK] Pre-snapshot сохранён: ${'$'}PRE"
+        fi
+        echo "INSTALL_RESTORE_DONE"
+    """.trimIndent()
     val AUTO_DIAG_REPAIR_SCRIPT = """
         set +e
         echo "=== Автодиагностика Gor4akovNET ==="

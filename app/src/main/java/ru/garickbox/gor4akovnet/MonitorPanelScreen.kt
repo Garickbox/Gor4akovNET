@@ -587,9 +587,8 @@ fun MonitorPanelScreen(
             try {
                 val host = prefs.routerHost.ifBlank { "192.168.1.1" }
                 if (entry.filePath.endsWith(".tar.gz", true)) {
-                    val bytes = withContext(Dispatchers.IO) { File(entry.filePath).readBytes() }
                     withContext(Dispatchers.IO) {
-                        Gboxcore.pushBytesSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, "/opt/.gbox_restore.tar.gz", bytes)
+                        Gboxcore.pushFileSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, entry.filePath, "/opt/.gbox_restore.tar.gz")
                     }
                     val out = runSshCmd(prefs, GboxScripts.restoreArchiveCmd(mode), readOnly = false)
                     statusMsg = out.lines().lastOrNull { it.isNotBlank() } ?: "Откат завершён"
