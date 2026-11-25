@@ -931,19 +931,15 @@ EOFINI
             exit 1
         fi
         echo "[OK] Entware активен"
-        pol_name=${'$'}(awk -F= '/^POLICY_NAME=/{gsub(/["'"'"'\r\n]/,"",${'$'}2); print ${'$'}2; exit}' /opt/zapret2/config 2>/dev/null)
-        if [ -n "${'$'}pol_name" ]; then
-            rc_pol=${'$'}(LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" 2>/dev/null)
-            if ! printf '%s\n' "${'$'}rc_pol" | grep -q "^ip policy ${'$'}pol_name${'$'}"; then
-                echo "[FIX] Создаю отсутствующую политику NDMS: ${'$'}pol_name..."
-                LD_LIBRARY_PATH= /bin/ndmc -c "ip policy ${'$'}pol_name" >/dev/null 2>&1
-                LD_LIBRARY_PATH= /bin/ndmc -c "ip policy ${'$'}pol_name description Gor4akovNET" >/dev/null 2>&1
-                LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1
-            else
-                echo "[OK] Политика ${'$'}pol_name активна"
-            fi
+        # Логика: если POLICY_NAME остался от старой установки — УДАЛЯЕМ его.
+        # Он включает CONNMARK-exclude в S99zapret2 — обход умирает вне указанной политики.
+        if grep -q '^POLICY_NAME=' /opt/zapret2/config 2>/dev/null; then
+            echo '[FIX] Найден POLICY_NAME — удаляю (ломает обход вне политики)'
+            sed -i '/^POLICY_NAME=/d;/^POLICY_EXCLUDE=/d' /opt/zapret2/config 2>/dev/null || true
+            [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true
+            echo '[OK] POLICY_* удалены, S99zapret2 перезапущен (обход во всех сетях)'
         else
-            echo "[OK] Режим общего обхода (без отдельной политики)"
+            echo '[OK] Режим общего обхода (без отдельной политики)'
         fi
         if [ -x /opt/etc/init.d/S99zapret2 ]; then
             ps_all=${'$'}(ps w 2>/dev/null || ps 2>/dev/null)
