@@ -101,7 +101,8 @@ fun SetupsScreen(
                 }.getOrDefault(0L)
             }
             var backupOk = false
-            if (streamedSize > 4096L) {
+            // Полный бэкап /opt не бывает < 1 МБ. Порог 4 КБ пропускал пустой tar.
+            if (streamedSize > 1_000_000L) {
                 val b = prefs.commitStreamedBackupFile(tmpFile, "Полный перед установкой", routerModel, format = "tar_v2", isProtected = true)
                 onBackupSaved(b)
                 appendLog("[OK] Защищённый полный бэкап v2 (.tar.gz) сохранён (${b.sizeBytes / 1024} КБ)")

@@ -529,7 +529,9 @@ fun MonitorPanelScreen(
                 val writtenBytes = withContext(Dispatchers.IO) {
                     Gboxcore.pullFileSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, cmd, tempFile.absolutePath)
                 }
-                if (writtenBytes > 4096L) {
+                // Валидный полный бэкап /opt не может быть меньше 1 МБ (Entware ~50+ МБ
+                // сжатого). Порог 4 КБ пропускал пустой tar от упавшего busybox.
+                if (writtenBytes > 1_000_000L) {
                     val b = prefs.commitStreamedBackupFile(
                         file = tempFile,
                         label = if (includeMediaBackup) "Полный 100% + USB" else "Полный снимок v2",
@@ -1444,14 +1446,15 @@ private fun OverviewPage(
         val dnsOv = wan?.optBoolean("dns_ov", false) == true
         val polMode = wan?.optString("policy_mode", "policy") ?: "policy"
         val polName = wan?.optString("policy_name", "Gor4akovNET").orEmpty().ifBlank { "Gor4akovNET" }
-        val polOk = wan?.optBoolean("policy_ok", false) == true || polMode == "global"
+        val polOk = wan?.optBoolean("policy_ok", false) == true || polMode == "global" || polMode == "stale"
+        val polGlobalish = polMode == "global" || polMode == "stale"
 
         val warns = mutableListOf<String>()
         if (!entOk) warns.add("Entware не смонтирован")
         if (!nfqUp) warns.add("nfqws2 остановлен")
         if (nfqRules == 0) warns.add("нет правил NFQUEUE")
         if (dnsOv && !aghUp) warns.add("dns-override при спящем AdGuard!")
-        if (polMode != "global" && !polOk) warns.add("политика $polName выкл")
+        if (!polGlobalish && !polOk) warns.add("политика $polName выкл")
         if (aghInst && !aghUp && !dnsOv) warns.add("AdGuard остановлен")
 
         val isGreen = warns.isEmpty()
@@ -1479,7 +1482,12 @@ private fun OverviewPage(
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold
                     )
-                    Text("NFQUEUE правил: $nfqRules • Entware: ${if (entOk) "OK" else "Нет"} • Политика: ${if (polMode == "global") "Общая (LAN)" else if (polOk) "ON ($polName)" else "OFF"}", color = Color(0xFFCBD5E1), fontSize = 9.5.sp)
+                    val polLabel = when (polMode) {
+                        "global" -> "Общая (LAN)"
+                        "stale" -> "Глобальная (POLICY_NAME остался, не мешает)"
+                        else -> if (polOk) "ON ($polName)" else "OFF"
+                    }
+                    Text("NFQUEUE правил: $nfqRules • Entware: ${if (entOk) "OK" else "Нет"} • Политика: $polLabel", color = Color(0xFFCBD5E1), fontSize = 9.5.sp)
                 }
                 if (!isGreen) {
                     Button(onClick = onAutoDiag, enabled = !busy, modifier = Modifier.height(28.dp), contentPadding = PaddingValues(horizontal = 8.dp)) {

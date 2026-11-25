@@ -92,7 +92,16 @@ object MonitorScripts {
         pol_mode="policy"
         pol_ok=false
         if [ -n "§pol_name" ]; then
-          printf '%s\n' "§rc" | grep -qx "ip policy §{pol_name}" && pol_ok=true
+          if printf '%s\n' "§rc" | grep -qx "ip policy §{pol_name}"; then
+            pol_ok=true
+          else
+            # POLICY_NAME в конфиге есть, но политики в running-config НЕТ — это
+            # остаток от старой версии APK. Обход z2k работает глобально через NFQUEUE
+            # на WAN и политикой не пользуется, поэтому НЕ считаем это ошибкой:
+            # помечаем "stale", чтобы UI не рисовал ложную тревогу "политика выкл".
+            pol_mode="stale"
+            pol_ok=true
+          fi
         else
           pol_mode="global"
           pol_ok=true

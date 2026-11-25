@@ -792,8 +792,8 @@ EOFINI
             echo "FATAL: /opt отсутствует или Entware не смонтирован — полный бэкап невозможен." >&2
             exit 1
         fi
-        TMPB="/tmp/.gbox_bkp_${'$'}${'$'}"
-        mkdir -p "${'$'}TMPB"
+        TMPB="/opt/tmp/.gbox_bkp_${'$'}${'$'}"
+        mkdir -p "${'$'}TMPB" /opt/tmp
         LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" > "${'$'}TMPB/running-config.txt" 2>/dev/null || true
         LD_LIBRARY_PATH= /bin/ndmc -c "show startup-config" > "${'$'}TMPB/startup-config.txt" 2>/dev/null || cp -f "${'$'}TMPB/running-config.txt" "${'$'}TMPB/startup-config.txt" 2>/dev/null || true
         {
@@ -853,6 +853,9 @@ EOFINI
             done < "${'$'}MNT_LIST"
         fi
 
+        # Диагностика: какой тар работает (GNU из /opt/bin или busybox-fallback).
+        _tar_ver=${'$'}("${'$'}TAR" --version 2>&1 | head -n1)
+        echo "[INFO] TAR=${'$'}TAR (${'$'}{_tar_ver:-unknown})" >&2
         # Пишем архив на флешку (/opt), а НЕ в /tmp (tmpfs = RAM, OOM) и НЕ в SSH-стрим.
         # После проверки целостности отдаём содержимое в stdout через cat.
         STAGE="/opt/.gbox_backup_stage.${'$'}${'$'}.tar.gz"
@@ -867,8 +870,10 @@ EOFINI
         tar_rc=${'$'}?
         rm -rf "${'$'}TMPB"
         if [ "${'$'}tar_rc" -ne 0 ] || [ ! -s "${'$'}STAGE" ]; then
+            _sz=${'$'}(wc -c < "${'$'}STAGE" 2>/dev/null || echo 0)
             rm -f "${'$'}STAGE"
-            echo "FATAL: tar не смог создать архив (rc=${'$'}tar_rc)" >&2
+            echo "FATAL: tar не смог создать архив (rc=${'$'}tar_rc, size=${'$'}{_sz:-0} B, TAR=${'$'}TAR ${'$'}{_tar_ver:-})" >&2
+            echo "FATAL: проверьте /opt/bin/tar (GNU) и свободное место: df -h /opt" >&2
             exit 1
         fi
         if ! ${'$'}{TAR} -tzf "${'$'}STAGE" >/dev/null 2>&1; then
