@@ -425,26 +425,12 @@ object GboxScripts {
                 fi
             fi
 
-            {
-                printf '#!/bin/sh\nISO=%s\nSUB_PREFIX=%s\n' "'${'$'}ISO_FLAG'" "'${'$'}SUB_PREFIX'"
-                cat << 'EOFHOOK'
-[ "${'$'}ISO" = "1" ] || exit 0
-[ "${'$'}{type:-ip6tables}" = "iptables" ] || exit 0
-MARK=${'$'}(LD_LIBRARY_PATH= ndmc -c "show ip policy" 2>/dev/null | awk 'tolower($0)~/description.*gor4akovnet/{f=1} f && tolower($0)~/mark/{sub(/.*[:=][ \t]*/,""); sub(/\/.*/,""); sub(/^0x/,""); print "0x"$1"/0x0fffffff"; exit}')
-WAN=${'$'}(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if(${'$'}i=="dev"){print ${'$'}(i+1); exit}}')
-[ -n "${'$'}WAN" ] || exit 0
-for w in ${'$'}WAN; do
-    if [ -n "${'$'}MARK" ]; then
-        iptables -w -t mangle -C POSTROUTING -o "${'$'}w" ! -s "${'$'}{SUB_PREFIX}.0/24" -m mark ! --mark "${'$'}MARK" -j CONNMARK --set-xmark 0x20000000/0x20000000 2>/dev/null || \
-        iptables -w -t mangle -I POSTROUTING -o "${'$'}w" ! -s "${'$'}{SUB_PREFIX}.0/24" -m mark ! --mark "${'$'}MARK" -j CONNMARK --set-xmark 0x20000000/0x20000000 2>/dev/null || true
-    else
-        iptables -w -t mangle -C POSTROUTING -o "${'$'}w" ! -s "${'$'}{SUB_PREFIX}.0/24" -j CONNMARK --set-xmark 0x20000000/0x20000000 2>/dev/null || \
-        iptables -w -t mangle -I POSTROUTING -o "${'$'}w" ! -s "${'$'}{SUB_PREFIX}.0/24" -j CONNMARK --set-xmark 0x20000000/0x20000000 2>/dev/null || true
-    fi
-done
-EOFHOOK
-            } > /opt/etc/ndm/netfilter.d/090-gor4akov-policy.sh
-            chmod +x /opt/etc/ndm/netfilter.d/090-gor4akov-policy.sh
+            # ВНИМАНИЕ: раньше здесь создавался хук 090-gor4akov-policy.sh, который
+            # ставил CONNMARK 0x20000000 (EXCLUDE из обхода) на ВЕСЬ трафик, кроме
+            # подсети Gor4akovNET. Это ЛОМАЛО обход в Home/Guest — обход работал только
+            # в изолированной сети. Обход z2k работает глобально через NFQUEUE на WAN
+            # (eth3), поэтому такой хук не нужен. Точечный обход по устройствам -
+            # через ip hotspot host <MAC> policy Gor4akovNET.
 
             echo "=== [5/6] Опции (AdGuard Home v1.0.0 оффлайн / WARP) ==="
             if [ "$aghFlag" = "1" ]; then
