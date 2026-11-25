@@ -107,19 +107,31 @@ object OfflineAssets {
                     "/webdav/install" to "/webdav/install/${passport.entwareInstaller}",
                     "" to "/${passport.entwareInstaller}"
                 )
+
+                // BUG-T5/T6: сначала пробуем ТОЛЬКО первый живой порт с первым кандидатом.
+                // Если не вышло — перебираем остальное, но НЕ больше 90 секунд суммарно.
                 var uploadedPath: String? = null
+                var livePort: Int? = null
                 for (port in portsToTry) {
-                    if (!Gboxcore.probeTCP(passport.host, port, 700)) continue
-                    for ((dir, path) in candidates) {
-                        if (dir.isNotBlank()) session.mkcolWebDav(port, dir)
-                        val putRes = session.putWebDavFile(port, path, bytes)
-                        if (putRes.isSuccess) {
-                            uploadedPath = "$port:$path"
-                            onLog("Залито по WebDAV -> http://${passport.host}:$port$path (${putRes.getOrNull()})")
-                            break
-                        }
+                    if (Gboxcore.probeTCP(passport.host, port, 1500)) { livePort = port; break }
+                }
+                if (livePort == null) {
+                    error("WebDAV недоступен ни на одном порту (${portsToTry.joinToString("/")}). Включите «Сервер WebDAV» в компонентах роутера.")
+                }
+                onLog("WebDAV живой на порту $livePort, пробую залить ${bytes.size / 1024} КБ...")
+                val deadline = System.currentTimeMillis() + 90_000L
+                for ((dir, path) in candidates) {
+                    if (System.currentTimeMillis() > deadline) {
+                        onLog("[WARN] WebDAV PUT исчерпал 90с — прерываю перебор")
+                        break
                     }
-                    if (uploadedPath != null) break
+                    if (dir.isNotBlank()) session.mkcolWebDav(livePort, dir)
+                    val putRes = session.putWebDavFile(livePort, path, bytes)
+                    if (putRes.isSuccess) {
+                        uploadedPath = "$livePort:$path"
+                        onLog("Залито по WebDAV -> http://${passport.host}:$livePort$path (${putRes.getOrNull()})")
+                        break
+                    }
                 }
 
                 if (uploadedPath != null) {

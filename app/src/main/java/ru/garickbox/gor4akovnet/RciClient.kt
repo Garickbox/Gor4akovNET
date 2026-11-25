@@ -91,7 +91,7 @@ class RciSession(
         val conn = (URL("http://$host$path").openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = 6000
-            readTimeout = 15000
+            readTimeout = 45000
             if (cookieHeader.isNotBlank()) setRequestProperty("Cookie", cookieHeader)
             if (jsonBody != null) {
                 doOutput = true
@@ -155,7 +155,7 @@ class RciSession(
             requestMethod = "PUT"
             doOutput = true
             connectTimeout = 8000
-            readTimeout = 60000
+            readTimeout = 300000
             setFixedLengthStreamingMode(bytes.size)
             val basic = Base64.getEncoder().encodeToString("$user:$pass".toByteArray(StandardCharsets.UTF_8))
             setRequestProperty("Authorization", "Basic $basic")

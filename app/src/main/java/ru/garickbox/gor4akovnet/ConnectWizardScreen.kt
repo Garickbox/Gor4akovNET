@@ -381,13 +381,19 @@ fun ConnectWizardScreen(
                                         ) { msg -> statusMsg = msg }
                                         res.onSuccess { msg ->
                                             statusMsg = msg
-                                            repeat(12) {
-                                                delay(4000)
-                                                val ok = withContext(Dispatchers.IO) { Gboxcore.probeTCP(host, 222, 1200) }
+                                            // BUG-T4/T8: Entware на 512 МБ распаковывается 60-90с, даём до 120с.
+                                            var sshUp = false
+                                            repeat(40) {
+                                                delay(3000)
+                                                val ok = withContext(Dispatchers.IO) { Gboxcore.probeTCP(host, 222, 3000) }
                                                 if (ok) {
+                                                    sshUp = true
                                                     refreshPassport()
                                                     return@repeat
                                                 }
+                                            }
+                                            if (!sshUp) {
+                                                statusMsg = "Entware загружен, но SSH :222 ещё не поднялся за 120с. Подождите ещё 30с и нажмите «Проверить SSH» вручную."
                                             }
                                         }.onFailure {
                                             val em = it.message ?: "Ошибка авто-заливки Entware"; errorMsg = em; Telemetry.recordError(prefs, "entware_webdav", em, p.model, p.ndmsTitle, countAsFail = false)

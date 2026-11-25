@@ -128,10 +128,30 @@ func PushBytesSSH(host string, port int32, user, pass, remotePath string, data [
 		safeDir := "'" + strings.ReplaceAll(dir, "'", "'\"'\"'") + "'"
 		cmd = "mkdir -p " + safeDir + " && cat > " + safePath
 	}
-	if err := sess.Run(cmd); err != nil {
-		return fmt.Errorf("push %s: %w (%s)", remotePath, err, strings.TrimSpace(stderr.String()))
+
+	// BUG-T1: таймаут обязателен — иначе на плохом Wi-Fi передача зависает навсегда.
+	// 5 МБ при 50 КБ/с = 100с, даём запас 240с.
+	timeout := 240 * time.Second
+	// На большие файлы (>20 МБ, если когда-то появятся) — 10 минут
+	if len(data) > 20*1024*1024 {
+		timeout = 600 * time.Second
 	}
-	return nil
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- sess.Run(cmd)
+	}()
+	select {
+	case <-ctx.Done():
+		_ = sess.Signal(ssh.SIGTERM)
+		return fmt.Errorf("push %s: timeout after %s (%d bytes)", remotePath, timeout, len(data))
+	case runErr := <-done:
+		if runErr != nil {
+			return fmt.Errorf("push %s: %w (%s)", remotePath, runErr, strings.TrimSpace(stderr.String()))
+		}
+		return nil
+	}
 }
 
 // PullBytesSSH runs a remote command (e.g. tar -czf -) and returns raw stdout bytes.
