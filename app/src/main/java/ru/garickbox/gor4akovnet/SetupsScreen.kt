@@ -373,10 +373,13 @@ fun SetupsScreen(
             }
         }
 
+        // Карточку WiFi показываем ТОЛЬКО если роутер реально отдал Bridge
+        // (сеть физически существует). Раньше условие триггерилось на дефолтный
+        // prefs.wifiSsid = "Gor4akovNET", и карточка светила на "голом" роутере.
+        val liveBridge = services?.wifiBridgeName?.trim().orEmpty()
         val liveSsid = services?.wifiSsid?.trim().orEmpty()
         val livePass = services?.wifiPass?.trim().orEmpty()
-        val showWifiCard = services?.wifiBridgeName?.isNotBlank() == true || liveSsid.isNotBlank()
-        if (showWifiCard) {
+        if (liveBridge.isNotBlank()) {
             WiFiQrCard(
                 ssid = liveSsid.ifBlank { wifiSsid },
                 pass = livePass.ifBlank { wifiPass },

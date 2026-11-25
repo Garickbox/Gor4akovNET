@@ -541,7 +541,11 @@ fun MonitorPanelScreen(
                     )
                     onBackupSaved(b)
                     refreshBackups()
-                    statusMsg = "Бэкап сохранён: ${formatSizeMb(b.sizeBytes)}"
+                    statusMsg = if (includeMediaBackup) {
+                        "Бэкап сохранён: ${formatSizeMb(b.sizeBytes)} (USB — если на флешке только /opt, размер не растёт)"
+                    } else {
+                        "Бэкап сохранён: ${formatSizeMb(b.sizeBytes)}"
+                    }
                 } else {
                     tempFile.delete()
                     actionErrMsg = "Архив бэкапа оказался пустым ($writtenBytes Б)"
@@ -1638,19 +1642,17 @@ private fun OverviewPage(
     // Wi-Fi данные берём из overview JSON (data.wifi) — скрипт парсит их прямо из
     // running-config роутера. Fallback: passport → prefs из Android. Так SSID
     // и пароль видны даже после переустановки APK, когда prefs.wifiPass пуст.
+    // Показываем WiFi только если СЕТЬ ЕСТЬ (wifi.bridge непуст). Иначе prefs.wifiSsid
+    // по умолчанию = "Gor4akovNET" → карточка светит даже на "голом" роутере.
     val wifiJson = data?.optJSONObject("wifi")
+    val liveWifiBridge = wifiJson?.optString("bridge")?.trim().orEmpty()
     val liveWifiSsid = wifiJson?.optString("ssid")?.trim().orEmpty()
     val liveWifiPass = wifiJson?.optString("pass")?.trim().orEmpty()
     val liveWifiSubnet = wifiJson?.optString("subnet")?.trim().orEmpty()
-    val activeSsid = liveWifiSsid.ifBlank {
-        passport?.gor4akovSsid?.trim().orEmpty()
-    }.ifBlank {
-        prefs.wifiSsid.trim().takeIf { wan?.optBoolean("policy_ok") == true }.orEmpty()
-    }
-    if (activeSsid.isNotBlank()) {
+    if (liveWifiBridge.isNotBlank() && liveWifiSsid.isNotBlank()) {
         val activePass = liveWifiPass.ifBlank { prefs.wifiPass.trim() }
-        val activeSubnet = liveWifiSubnet.ifBlank { "Gor4akovNET" }
-        WiFiQrCard(ssid = activeSsid, pass = activePass, subnetInfo = activeSubnet)
+        val activeSubnet = liveWifiSubnet.ifBlank { "192.168.77.0/24" }
+        WiFiQrCard(ssid = liveWifiSsid, pass = activePass, subnetInfo = activeSubnet)
     }
 
     DonateCard(compact = true)

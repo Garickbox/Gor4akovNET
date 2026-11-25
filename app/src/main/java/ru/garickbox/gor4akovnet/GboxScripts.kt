@@ -101,18 +101,23 @@ object GboxScripts {
         ')
         br_name=${'$'}(echo "${'$'}eval_br" | cut -d'|' -f1)
         br_sub=${'$'}(echo "${'$'}eval_br" | cut -d'|' -f2)
+        # ВАЖНО head -n1: awk после `exit` ВСЁ РАВНО вызывает END и печатает
+        # строку повторно. На двух мастерах (WifiMaster0 + WifiMaster1) это даёт
+        # склейку "Gor4akovNETGor4akovNET". head -n1 берёт только первый SSID.
         br_ssid=${'$'}(echo "${'$'}cfg" | awk '
-            /^interface WifiMaster/ { cur=${'$'}2; inw=1; isg=0; ss="" }
+            /^interface WifiMaster/ { if (inw && isg && ss!="" && !done) { print ss; done=1 } inw=1; isg=0; ss="" }
             inw && /^[ \t]+description Gor4akovNET/ { isg=1 }
             inw && /^[ \t]+ssid / { sub(/^[ \t]+ssid /,""); ss=${'$'}0 }
-            inw && /^!/ { if (inw && isg && ss!="") { print ss; exit } inw=0 }
-            END { if (inw && isg && ss!="") print ss }
-        ')
-        # ВАЖНО: в running-config пароль НЕ хранится — там base64-хеш ns3
-        # (`authentication wpa-psk ns3 <hash>`), расшифровать нельзя. Единственный
-        # источник правды для UI — /opt/etc/gor4akov-wifi.pass (chmod 600),
-        # который записывает инсталлер при создании AP. Читаем именно оттуда.
-        br_pass=${'$'}(cat /opt/etc/gor4akov-wifi.pass 2>/dev/null | head -n1 | tr -d '\r\n|')
+            inw && /^!/ { if (inw && isg && ss!="" && !done) { print ss; done=1 } inw=0 }
+            END { if (!done && inw && isg && ss!="") print ss }
+        ' | head -n1 | tr -d '\r\n|')
+        # Пароль НЕ из running-config (там ns3-хеш), а из /opt/etc/gor4akov-wifi.pass
+        # (chmod 600), который пишет инсталлер при создании AP. Только если этот
+        # AP реально существует — иначе отдаём пусто (см. br_pass ниже по проверке APA).
+        br_pass=""
+        if [ -n "${'$'}br_ssid" ] && [ -f /opt/etc/gor4akov-wifi.pass ]; then
+            br_pass=${'$'}(head -n1 /opt/etc/gor4akov-wifi.pass 2>/dev/null | tr -d '\r\n|')
+        fi
         echo "SVC|${'$'}ent|${'$'}z2k_inst|${'$'}z2k_run|${'$'}z2k_mode|${'$'}nfq|${'$'}ipt_cnt|${'$'}agh_inst|${'$'}agh_run|${'$'}dns_ov|${'$'}warp_inst|${'$'}warp_run|${'$'}tg_run|${'$'}db_run|${'$'}pol_name|${'$'}pol_act|${'$'}br_name|${'$'}br_sub|${'$'}br_ssid|${'$'}inst_mark|${'$'}br_pass"
     """.trimIndent()
 
@@ -804,8 +809,8 @@ EOFINI
             echo "=== MOUNTS ===" && cat /proc/mounts 2>/dev/null
             echo "=== OPKG_LIST ===" && /opt/bin/opkg list-installed 2>/dev/null
         } > "${'$'}TMPB/router-info.txt" 2>/dev/null || true
-        printf '{"version":2,"arch":"%s","include_media":%s}\n' "${'$'}(uname -m)" "${if (includeUserMedia) "true" else "false"}" > "${'$'}TMPB/manifest.json"
-
+        # manifest.json здесь НЕ пишем — сначала надо собрать .mnts (ниже по коду),
+        # иначе media_mnts всегда 0. Пишем манифест после блока media.
         set -- -C "${'$'}TMPB" running-config.txt startup-config.txt router-info.txt manifest.json
         # ВЕСЬ /opt — никаких белых списков. Исплючения только масками ниже.
         [ -d /opt ] && set -- "${'$'}@" -C / opt
@@ -852,6 +857,19 @@ EOFINI
                 [ "${'$'}skip_m" = "0" ] && set -- "${'$'}@" -C / "${'$'}{m#/}"
             done < "${'$'}MNT_LIST"
         fi
+
+        # media_mnts = сколько внешних точек реально добавили. Если на флешке
+        # только /opt (весь Entware) — пользовательских данных вне нет, архив будет
+        # ОДИНАКОВЫМ с/без галочки USB. Это не баг, но UI должен это показать.
+        # Считаем ЗДЕСЬ — после блока media, где .mnts уже создан.
+        _media_cnt=0
+        _media_list=""
+        if [ "${if (includeUserMedia) 1 else 0}" = "1" ] && [ -f "${'$'}TMPB/.mnts" ]; then
+            _media_cnt=${'$'}(awk 'NF{n++} END{print n+0}' "${'$'}TMPB/.mnts" 2>/dev/null)
+            _media_list=${'$'}(tr '\n' ',' < "${'$'}TMPB/.mnts" 2>/dev/null | sed 's/,$//')
+        fi
+        printf '{"version":2,"arch":"%s","include_media":%s,"media_mnts":%d,"media_list":"%s"}\n' "${'$'}(uname -m)" "${if (includeUserMedia) "true" else "false"}" "${'$'}{_media_cnt:-0}" "${'$'}{_media_list:-}" > "${'$'}TMPB/manifest.json"
+        echo "[INFO] media_mnts=${'$'}{_media_cnt:-0}" >&2
 
         # Диагностика: какой тар работает (GNU из /opt/bin или busybox-fallback).
         _tar_ver=${'$'}("${'$'}TAR" --version 2>&1 | head -n1)

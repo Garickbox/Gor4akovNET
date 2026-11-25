@@ -164,7 +164,12 @@ class Prefs(private val context: Context) {
         format: String = "tar_v2",
         isProtected: Boolean = false
     ): BackupEntry {
-        val id = file.name.removePrefix("backup_").substringBefore("_", uniqueBackupId())
+        // Формат файла: backup_{yyyyMMdd}_{HHmmss}_{XXXX}_{label}.{ext}
+        // Старый substringBefore("_") брал ТОЛЬКО дату → у всех бэкапов одного дня
+        // id совпадал, и deleteBackup(id) сносил их все разом. Берём первые 3 части.
+        val base = file.name.removePrefix("backup_")
+        val parts = base.split("_")
+        val id = if (parts.size >= 3) "${parts[0]}_${parts[1]}_${parts[2]}" else uniqueBackupId()
         return registerBackupFile(id, label, model, file, format, isProtected)
     }
 

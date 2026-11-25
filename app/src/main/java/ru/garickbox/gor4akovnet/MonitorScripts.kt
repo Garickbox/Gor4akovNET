@@ -109,17 +109,20 @@ object MonitorScripts {
         dns_ov=false; printf '%s\n' "§rc" | grep -q "^opkg dns-override" && dns_ov=true
         zram_on=false; printf '%s\n' "§rc" | grep -q "^[[:space:]]*zram" && zram_on=true
         ent_ok=false; [ -x /opt/bin/opkg ] && ent_ok=true
+        # head -n1: awk после exit вызывает END и печатает повторно → "SSIDSSID" на 2 мастерах.
         wifi_ssid=§(printf '%s\n' "§rc" | awk '
-            /^interface WifiMaster/ { inw=1; isg=0; ss="" }
+            /^interface WifiMaster/ { if (inw && isg && ss!="" && !done) { print ss; done=1 } inw=1; isg=0; ss="" }
             inw && /^[ \t]+description Gor4akovNET/ { isg=1 }
             inw && /^[ \t]+ssid / { sub(/^[ \t]+ssid /,""); ss=§0 }
-            inw && /^!/ { if (inw && isg && ss!="") { print ss; exit } inw=0 }
-            END { if (inw && isg && ss!="") print ss }
-        ' | tr -d '\r\n"\\')
-        # Пароль НЕ парсим из running-config: там base64-хеш ns3, не пароль.
-        # Единственный источник правды — файл /opt/etc/gor4akov-wifi.pass (chmod 600),
-        # который пишет инсталлер при создании AP.
-        wifi_pass=§(cat /opt/etc/gor4akov-wifi.pass 2>/dev/null | head -n1 | tr -d '\r\n"\\')
+            inw && /^!/ { if (inw && isg && ss!="" && !done) { print ss; done=1 } inw=0 }
+            END { if (!done && inw && isg && ss!="") print ss }
+        ' | head -n1 | tr -d '\r\n"\\')
+        # Пароль НЕ из running-config (там ns3-хеш), а из /opt/gor4akov-wifi.pass.
+        # Отдаём ТОЛЬКО если wifi_ssid непуст — иначе это остатки от старой установки.
+        wifi_pass=""
+        if [ -n "§wifi_ssid" ] && [ -f /opt/etc/gor4akov-wifi.pass ]; then
+            wifi_pass=§(head -n1 /opt/etc/gor4akov-wifi.pass 2>/dev/null | tr -d '\r\n"\\')
+        fi
         wifi_bridge=""; wifi_subnet=""
         eval_br=§(printf '%s\n' "§rc" | awk '
             /^interface Bridge[0-9]+/ { cur=§2; inb=1; isg=0; ip="" }
@@ -452,8 +455,10 @@ object MonitorScripts {
           BEGIN {
             read_radio(PFX "_w0"); c24=r_ch; b24=r_bw; r24=r_rate; t24=r_temp; bz24=r_busy
             read_radio(PFX "_w1"); c5=r_ch; b5=r_bw; r5=r_rate; t5=r_temp; bz5=r_busy
+            nrc=0; naps=0; nrcy=0
             bs=0; gr=0; ft=0; twt1=0; cur=""; guest_up="false"; g24_up="false"; g5_up="false"; s24="Home"; s5="Home"
             while((getline l < (PFX "_rc")) > 0) {
+              nrc++
               if(l ~ /^interface Bridge0§/) cur="b0"
               else if(l ~ /^interface Bridge1§/) cur="b1"
               else if(l ~ /^interface WifiMaster0§/) cur="w0"
@@ -470,8 +475,11 @@ object MonitorScripts {
             }
             close(PFX "_rc")
             cur_ap=""; ap_json=""
+            nrcy=0
             while((getline l < (PFX "_aps")) > 0) {
+              nrcy++
               if(l ~ /^===AP_START /) {
+                naps++
                 cur_ap=l; sub(/^===AP_START /,"",cur_ap); sub(/===${'$'}/,"",cur_ap)
                 idn=""; desc=""; st=""; lk=""; ss=""; grp=""; next
               }
@@ -495,12 +503,14 @@ object MonitorScripts {
               else if(l ~ /^[[:space:]]*group:/) grp=val_after_colon(l)
             }
             close(PFX "_aps")
-            printf "{\"g24_up\":%s,\"g24_ssid\":\"%s\",\"g24_ch\":\"%s\",\"g24_bw\":\"%s\",\"g24_rate\":%d,\"g24_temp\":\"%s\",\"g24_busy\":\"%s\",\"g5_up\":%s,\"g5_ssid\":\"%s\",\"g5_ch\":\"%s\",\"g5_bw\":\"%s\",\"g5_rate\":%d,\"g5_temp\":\"%s\",\"g5_busy\":\"%s\",\"guest_up\":%s,\"guest_rate\":%d,\"band_steer\":%s,\"ft\":%s,\"twt\":%s,\"aps\":[%s]}",
+            printf "{\"g24_up\":%s,\"g24_ssid\":\"%s\",\"g24_ch\":\"%s\",\"g24_bw\":\"%s\",\"g24_rate\":%d,\"g24_temp\":\"%s\",\"g24_busy\":\"%s\",\"g5_up\":%s,\"g5_ssid\":\"%s\",\"g5_ch\":\"%s\",\"g5_bw\":\"%s\",\"g5_rate\":%d,\"g5_temp\":\"%s\",\"g5_busy\":\"%s\",\"guest_up\":%s,\"guest_rate\":%d,\"band_steer\":%s,\"ft\":%s,\"twt\":%s,\"dbg\":{\"rc_lines\":%d,\"aps_lines\":%d,\"ap_count\":%d},\"aps\":[%s]}",
               g24_up, s24, c24, b24, r24, t24, bz24,
               g5_up, s5, c5, b5, r5, t5, bz5,
-              guest_up, gr, (bs?"true":"false"), (ft?"true":"false"), (twt1?"true":"false"), ap_json
+              guest_up, gr, (bs?"true":"false"), (ft?"true":"false"), (twt1?"true":"false"),
+              nrc, nrcy, naps,
+              ap_json
           }' 2>/dev/null)
-        [ -n "§wifi_json" ] || wifi_json='{"g24_up":false,"g24_ssid":"—","g24_ch":"—","g24_bw":"—","g24_rate":0,"g24_temp":"","g24_busy":"","g5_up":false,"g5_ssid":"—","g5_ch":"—","g5_bw":"—","g5_rate":0,"g5_temp":"","g5_busy":"","guest_up":false,"guest_rate":0,"band_steer":false,"ft":false,"twt":false,"aps":[]}'
+        [ -n "§wifi_json" ] || wifi_json='{"g24_up":false,"g24_ssid":"—","g24_ch":"—","g24_bw":"—","g24_rate":0,"g24_temp":"","g24_busy":"","g5_up":false,"g5_ssid":"—","g5_ch":"—","g5_bw":"—","g5_rate":0,"g5_temp":"","g5_busy":"","guest_up":false,"guest_rate":0,"band_steer":false,"ft":false,"twt":false,"dbg":{"rc_lines":0,"aps_lines":0,"ap_count":0},"aps":[]}'
 
         now_s=§(date +%s 2>/dev/null || echo 0)
         devs=§(awk -v PFX="§PFX" -v NOWS="§now_s" '
