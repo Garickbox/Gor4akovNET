@@ -748,10 +748,10 @@ EOFINI
         fi
 
         if [ -n "${'$'}opt_excl" ]; then
-            tar --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/tmp/*' --exclude='*.swap' --exclude='swapfile' --exclude="${'$'}opt_excl" \
+            tar --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/z2k-rollback' --exclude='opt/tmp/*' --exclude='opt/*.bin' --exclude='opt/*.tar.gz' --exclude='*.swap' --exclude='swapfile' --exclude="${'$'}opt_excl" \
                 -czf - "${'$'}@" 2>/dev/null
         else
-            tar --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/tmp/*' --exclude='*.swap' --exclude='swapfile' \
+            tar --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/z2k-rollback' --exclude='opt/tmp/*' --exclude='opt/*.bin' --exclude='opt/*.tar.gz' --exclude='*.swap' --exclude='swapfile' \
                 -czf - "${'$'}@" 2>/dev/null
         fi
         tar_rc=${'$'}?
