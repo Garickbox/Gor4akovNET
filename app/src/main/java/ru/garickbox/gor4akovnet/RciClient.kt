@@ -356,51 +356,73 @@ object RciClient {
 
     private fun parseMedia(raw: String): List<StorageMedia> {
         val result = mutableListOf<StorageMedia>()
-        val root = runCatching { JSONObject(raw) }.getOrNull() ?: return result
-        val mediaObj = root.optJSONObject("media") ?: root
-        mediaObj.keys().forEach { devName ->
-            val dev = mediaObj.optJSONObject(devName) ?: return@forEach
-            val partObj = dev.optJSONObject("partition")
-            val isStorage = devName.equals("STORAGE", ignoreCase = true) || devName.contains("STORAGE", ignoreCase = true)
-            if (partObj != null) {
-                partObj.keys().forEach { uuidKey ->
-                    val p = partObj.optJSONObject(uuidKey) ?: return@forEach
-                    val fs = p.optString("fstype", p.optString("fs", ""))
-                    val total = p.optLong("total", 0L) / 1024L / 1024L
-                    val free = p.optLong("free", 0L) / 1024L / 1024L
-                    val label = p.optString("label", p.optString("name", uuidKey))
-                    result.add(
-                        StorageMedia(
-                            name = devName,
-                            label = label,
-                            uuid = p.optString("uuid", uuidKey),
-                            fsType = fs,
-                            totalMb = total,
-                            freeMb = free,
-                            isUsb = !isStorage,
-                            isExt4 = fs.equals("ext4", ignoreCase = true),
-                            isInternalStorage = isStorage
-                        )
-                    )
-                }
-            } else {
-                val fs = dev.optString("fstype", dev.optString("fs", ""))
-                val total = dev.optLong("total", 0L) / 1024L / 1024L
-                val free = dev.optLong("free", 0L) / 1024L / 1024L
+        val trimmed = raw.trim()
+        if (trimmed.isBlank()) return result
+
+        fun addDevice(devName: String, dev: JSONObject) {
+            val isStorage = devName.equals("STORAGE", ignoreCase = true) ||
+                devName.equals("INTERNAL", ignoreCase = true) ||
+                devName.contains("STORAGE", ignoreCase = true)
+
+            fun addPart(uuidKey: String, p: JSONObject) {
+                val fs = p.optString("fstype", p.optString("fs", p.optString("filesystem", "")))
+                val total = p.optLong("total", 0L) / 1024L / 1024L
+                val free = p.optLong("free", 0L) / 1024L / 1024L
+                val label = p.optString("label", p.optString("name", uuidKey)).ifBlank { devName }
                 result.add(
                     StorageMedia(
                         name = devName,
-                        label = dev.optString("label", devName),
-                        uuid = dev.optString("uuid", devName),
+                        label = label,
+                        uuid = p.optString("uuid", uuidKey),
                         fsType = fs,
                         totalMb = total,
                         freeMb = free,
                         isUsb = !isStorage,
-                        isExt4 = fs.equals("ext4", ignoreCase = true) || isStorage,
+                        isExt4 = fs.equals("ext4", ignoreCase = true) || (isStorage && fs.isBlank()),
                         isInternalStorage = isStorage
                     )
                 )
             }
+
+            val partObj = dev.optJSONObject("partition")
+            val partArr = dev.optJSONArray("partition")
+            when {
+                partObj != null -> partObj.keys().forEach { uuidKey ->
+                    val p = partObj.optJSONObject(uuidKey) ?: return@forEach
+                    addPart(uuidKey, p)
+                }
+                partArr != null -> for (i in 0 until partArr.length()) {
+                    val p = partArr.optJSONObject(i) ?: continue
+                    addPart(p.optString("uuid", "$devName-$i"), p)
+                }
+                else -> addPart(dev.optString("uuid", devName), dev)
+            }
+        }
+
+        if (trimmed.startsWith("[")) {
+            val arr = runCatching { JSONArray(trimmed) }.getOrNull() ?: return result
+            for (i in 0 until arr.length()) {
+                val dev = arr.optJSONObject(i) ?: continue
+                val devName = dev.optString("name", dev.optString("label", "MEDIA$i"))
+                addDevice(devName, dev)
+            }
+            return result
+        }
+
+        val root = runCatching { JSONObject(trimmed) }.getOrNull() ?: return result
+        val mediaArr = root.optJSONArray("media")
+        if (mediaArr != null) {
+            for (i in 0 until mediaArr.length()) {
+                val dev = mediaArr.optJSONObject(i) ?: continue
+                val devName = dev.optString("name", dev.optString("label", "MEDIA$i"))
+                addDevice(devName, dev)
+            }
+            return result
+        }
+        val mediaObj = root.optJSONObject("media") ?: root
+        mediaObj.keys().forEach { devName ->
+            val dev = mediaObj.optJSONObject(devName) ?: return@forEach
+            addDevice(devName, dev)
         }
         return result
     }

@@ -327,6 +327,7 @@ fun MonitorPanelScreen(
         pageErrMsg = ""
         if (target == MonitorPage.BACKUPS) {
             refreshBackups()
+            if (backupEst.isBlank() || force) estimateBackupSize()
             return
         }
         if (target == MonitorPage.FILES) {
@@ -352,7 +353,11 @@ fun MonitorPanelScreen(
                     }
                     MonitorPage.NAT_PPE -> {
                         if (dnsNet == null || force) dnsNet = parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_DNS_NET, readOnly = true), "PPE/Порты")
-                        if (wifiDevs == null || force) wifiDevs = parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_WIFI_DEVICES, readOnly = true), "Клиенты")
+                        if (wifiDevs == null || force) {
+                            wifiDevs = runCatching {
+                                parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_WIFI_DEVICES, readOnly = true), "Клиенты")
+                            }.getOrNull() ?: wifiDevs
+                        }
                     }
                     MonitorPage.Z2K_MODES, MonitorPage.Z2K_LISTS -> if (bypass == null || force) {
                         bypass = parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_BYPASS_STATE, readOnly = true), "Zapret2")
@@ -953,7 +958,7 @@ fun MonitorPanelScreen(
                         out = torchOut,
                         busy = loading,
                         onTopicHelp = ::showTopic,
-                        onEnableAcct = { runAction("Включение conntrack_acct", "sysctl -w net.netfilter.nf_conntrack_acct=1 2>&1", MonitorPage.TORCH, 300L) },
+                        onEnableAcct = { runAction("Счётчик conntrack_acct", MonitorScripts.ENABLE_CONNTRACK_ACCT_CMD, MonitorPage.TORCH, 300L) },
                         onCopy = { clipboard.setText(AnnotatedString(torchOut)); statusMsg = "Скопировано" },
                         onRun = { mode -> runAction("Torch: $mode", MonitorScripts.probeHostCmd(torchHost, mode), readOnly = true, onOutput = { torchOut = it }) }
                     )
@@ -2663,13 +2668,17 @@ private fun BackupsPage(
         MiniSwitch("Включить файлы USB / Storage (100%)", "Может занять много памяти телефона — оцените размер ниже", includeMedia) { v ->
             onToggleMedia(v == 1)
         }
-        if (estText.isNotBlank()) MonoBox(estText)
+        if (estText.isNotBlank()) {
+            MonoBox(estText)
+        } else {
+            Text("Нажмите «Проверить USB / размер», чтобы увидеть подключённые накопители и размер снимка.", color = Color(0xFF94A3B8), fontSize = 9.5.sp)
+        }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
             Button(onClick = onCreateFull, enabled = !busy, modifier = Modifier.weight(1f).height(34.dp), contentPadding = PaddingValues(4.dp)) { Text("Полный v2 (.tar.gz)", fontSize = 10.sp) }
             OutlinedButton(onClick = onCreateCfg, enabled = !busy, modifier = Modifier.weight(1f).height(34.dp), contentPadding = PaddingValues(4.dp)) { Text("NDMS (.txt)", fontSize = 10.sp) }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-            OutlinedButton(onClick = onEstimate, enabled = !busy, modifier = Modifier.weight(1f).height(30.dp), contentPadding = PaddingValues(4.dp)) { Text("Оценить размер", fontSize = 9.5.sp) }
+            OutlinedButton(onClick = onEstimate, enabled = !busy, modifier = Modifier.weight(1f).height(30.dp), contentPadding = PaddingValues(4.dp)) { Text("Проверить USB / размер", fontSize = 9.5.sp) }
             OutlinedButton(onClick = onImport, enabled = !busy, modifier = Modifier.weight(1f).height(30.dp), contentPadding = PaddingValues(4.dp)) { Text("Импорт с телефона", fontSize = 9.5.sp) }
         }
     }
@@ -2821,12 +2830,16 @@ private fun TorchPage(
         MiniSwitch("Автообновление каждые 2 сек", "Живой съём интерфейсов и активных соединений", liveEnabled) { v ->
             onToggleLive(v == 1)
         }
-        if (acct == 0 && liveData != null) {
+        if (liveData != null && acct == 0) {
             Surface(color = Color(0xFF451A03), shape = RoundedCornerShape(7.dp), border = BorderStroke(1.dp, Color(0xFFF59E0B)), modifier = Modifier.fillMaxWidth()) {
                 Row(Modifier.padding(7.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("Счётчик байтов потоков (conntrack_acct) выключен", color = Color(0xFFFDE68A), fontSize = 9.5.sp, modifier = Modifier.weight(1f))
                     Button(onClick = onEnableAcct, modifier = Modifier.height(26.dp), contentPadding = PaddingValues(horizontal = 7.dp)) { Text("Включить", fontSize = 9.sp) }
                 }
+            }
+        } else if (liveData != null && acct < 0) {
+            Surface(color = Color(0xFF0F172A), shape = RoundedCornerShape(7.dp), border = BorderStroke(1.dp, Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth()) {
+                Text("Ядро этой модели Keenetic без conntrack_acct — доступны live Мбит/с, PPS и активные соединения.", color = Color(0xFF94A3B8), fontSize = 9.sp, modifier = Modifier.padding(7.dp))
             }
         }
         for (i in 0 until ifaces.length()) {

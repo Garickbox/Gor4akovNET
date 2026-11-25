@@ -606,14 +606,54 @@ EOFINI
         media_kb=0
         mounts=""
         opt_dev=${'$'}(awk '${'$'}2=="/opt"{print ${'$'}1; exit}' /proc/mounts 2>/dev/null)
-        for m in /tmp/mnt/* /storage; do
-            [ -d "${'$'}m" ] || continue
-            m_dev=${'$'}(df -P "${'$'}m" 2>/dev/null | awk 'NR==2{print ${'$'}1}')
-            [ -n "${'$'}opt_dev" ] && [ "${'$'}m_dev" = "${'$'}opt_dev" ] && continue
+        opt_ino=${'$'}(ls -id /opt 2>/dev/null | awk '{print ${'$'}1}')
+        MNT_LIST="/tmp/.gbox_mnts_${'$'}${'$'}"
+        awk '{
+            gsub(/\\040/," ",${'$'}2)
+            if (${'$'}2 ~ /^\/(tmp\/mnt|media|mnt)\/.+/ || ${'$'}2 == "/storage") {
+                if (${'$'}3 != "tmpfs" && ${'$'}3 != "devtmpfs" && ${'$'}3 != "proc" && ${'$'}3 != "sysfs") print ${'$'}2
+            }
+        }' /proc/mounts 2>/dev/null | awk '!seen[${'$'}0]++' > "${'$'}MNT_LIST"
+        if [ ! -s "${'$'}MNT_LIST" ]; then
+            for m in /tmp/mnt/* /media/* /mnt/* /storage; do
+                [ -d "${'$'}m" ] || continue
+                m_fs=${'$'}(df -PT "${'$'}m" 2>/dev/null | awk 'NR==2{print ${'$'}2}')
+                [ "${'$'}m_fs" = "tmpfs" ] && continue
+                printf '%s\n' "${'$'}m" >> "${'$'}MNT_LIST"
+            done
+        fi
+        while IFS= read -r m; do
+            [ -n "${'$'}m" ] && [ -d "${'$'}m" ] || continue
+            df_info=${'$'}(df -Pm "${'$'}m" 2>/dev/null | awk 'NF==1{d=${'$'}0; getline; ${'$'}0=d" "${'$'}0} NR==2{print ${'$'}1"|"(${'$'}2+0)"|"(${'$'}3+0)"|"(${'$'}4+0)}')
+            m_dev=${'$'}(printf '%s' "${'$'}df_info" | cut -d'|' -f1)
+            m_tot=${'$'}(printf '%s' "${'$'}df_info" | cut -d'|' -f2)
+            m_used=${'$'}(printf '%s' "${'$'}df_info" | cut -d'|' -f3)
+            m_free=${'$'}(printf '%s' "${'$'}df_info" | cut -d'|' -f4)
             ms=${'$'}(du -sk "${'$'}m" 2>/dev/null | awk '{print ${'$'}1+0}')
+            opt_tag=""
+            if [ -n "${'$'}opt_dev" ] && [ "${'$'}m_dev" = "${'$'}opt_dev" ]; then
+                m_ino=${'$'}(ls -id "${'$'}m" 2>/dev/null | awk '{print ${'$'}1}')
+                if [ -n "${'$'}opt_ino" ] && [ "${'$'}m_ino" = "${'$'}opt_ino" ]; then
+                    opt_tag=", корень /opt"
+                    ms=0
+                else
+                    for sub in "${'$'}m"/* "${'$'}m"/*/*; do
+                        [ -d "${'$'}sub" ] || continue
+                        sub_ino=${'$'}(ls -id "${'$'}sub" 2>/dev/null | awk '{print ${'$'}1}')
+                        if { [ -n "${'$'}opt_ino" ] && [ "${'$'}sub_ino" = "${'$'}opt_ino" ]; } || { [ -x "${'$'}sub/bin/opkg" ] && [ -d "${'$'}sub/etc/init.d" ]; }; then
+                            opt_sub_kb=${'$'}(du -sk "${'$'}sub" 2>/dev/null | awk '{print ${'$'}1+0}')
+                            ms=${'$'}((ms - opt_sub_kb))
+                            [ "${'$'}ms" -lt 0 ] && ms=0
+                            opt_tag=", Entware: ${'$'}{sub##*/}"
+                            break
+                        fi
+                    done
+                fi
+            fi
             media_kb=${'$'}((media_kb + ms))
-            mounts="${'$'}mounts ${'$'}m(${'$'}((ms/1024))MB)"
-        done
+            mounts="${'$'}{mounts}${'$'}{mounts:+; }${'$'}m (~${'$'}((ms/1024))MB данных, занято ${'$'}{m_used:-0}/${'$'}{m_tot:-0}MB, своб. ${'$'}{m_free:-0}MB${'$'}opt_tag)"
+        done < "${'$'}MNT_LIST"
+        rm -f "${'$'}MNT_LIST"
         echo "EST|${'$'}((core_kb/1024))|${'$'}((media_kb/1024))|${'$'}{mounts:-none}"
     """.trimIndent()
 
@@ -633,26 +673,63 @@ EOFINI
         } > "${'$'}TMPB/router-info.txt" 2>/dev/null || true
         printf '{"version":2,"arch":"%s","include_media":%s}\n' "${'$'}(uname -m)" "${if (includeUserMedia) "true" else "false"}" > "${'$'}TMPB/manifest.json"
 
-        ARGS="-C ${'$'}TMPB running-config.txt startup-config.txt router-info.txt manifest.json"
+        set -- -C "${'$'}TMPB" running-config.txt startup-config.txt router-info.txt manifest.json
         for p in /opt/etc /opt/zapret2 /opt/root /opt/home /opt/var/spool/cron; do
             if [ -e "${'$'}p" ]; then
-                ARGS="${'$'}ARGS -C / ${'$'}{p#/}"
+                set -- "${'$'}@" -C / "${'$'}{p#/}"
             fi
         done
 
-        # Скрипты/конфиги на носителях (без тяжелых медиафайлов всегда, или полный дамп при includeUserMedia=1)
+        opt_excl=""
+        # Полный дамп USB/Storage (все внешние/внутренние носители без дублирования папки Entware /opt)
         if [ "${if (includeUserMedia) 1 else 0}" = "1" ]; then
             opt_dev=${'$'}(awk '${'$'}2=="/opt"{print ${'$'}1; exit}' /proc/mounts 2>/dev/null)
-            for m in /tmp/mnt/* /storage; do
-                [ -d "${'$'}m" ] || continue
-                m_dev=${'$'}(df -P "${'$'}m" 2>/dev/null | awk 'NR==2{print ${'$'}1}')
-                [ -n "${'$'}opt_dev" ] && [ "${'$'}m_dev" = "${'$'}opt_dev" ] && continue
-                ARGS="${'$'}ARGS -C / ${'$'}{m#/}"
-            done
+            opt_ino=${'$'}(ls -id /opt 2>/dev/null | awk '{print ${'$'}1}')
+            MNT_LIST="${'$'}TMPB/.mnts"
+            awk '{
+                gsub(/\\040/," ",${'$'}2)
+                if (${'$'}2 ~ /^\/(tmp\/mnt|media|mnt)\/.+/ || ${'$'}2 == "/storage") {
+                    if (${'$'}3 != "tmpfs" && ${'$'}3 != "devtmpfs" && ${'$'}3 != "proc" && ${'$'}3 != "sysfs") print ${'$'}2
+                }
+            }' /proc/mounts 2>/dev/null | awk '!seen[${'$'}0]++' > "${'$'}MNT_LIST"
+            if [ ! -s "${'$'}MNT_LIST" ]; then
+                for m in /tmp/mnt/* /media/* /mnt/* /storage; do
+                    [ -d "${'$'}m" ] || continue
+                    m_fs=${'$'}(df -PT "${'$'}m" 2>/dev/null | awk 'NR==2{print ${'$'}2}')
+                    [ "${'$'}m_fs" = "tmpfs" ] && continue
+                    printf '%s\n' "${'$'}m" >> "${'$'}MNT_LIST"
+                done
+            fi
+            while IFS= read -r m; do
+                [ -n "${'$'}m" ] && [ -d "${'$'}m" ] || continue
+                m_dev=${'$'}(df -Pm "${'$'}m" 2>/dev/null | awk 'NF==1{d=${'$'}0; getline; ${'$'}0=d" "${'$'}0} NR==2{print ${'$'}1}')
+                skip_m=0
+                if [ -n "${'$'}opt_dev" ] && [ "${'$'}m_dev" = "${'$'}opt_dev" ]; then
+                    m_ino=${'$'}(ls -id "${'$'}m" 2>/dev/null | awk '{print ${'$'}1}')
+                    if [ -n "${'$'}opt_ino" ] && [ "${'$'}m_ino" = "${'$'}opt_ino" ]; then
+                        skip_m=1
+                    else
+                        for sub in "${'$'}m"/* "${'$'}m"/*/*; do
+                            [ -d "${'$'}sub" ] || continue
+                            sub_ino=${'$'}(ls -id "${'$'}sub" 2>/dev/null | awk '{print ${'$'}1}')
+                            if { [ -n "${'$'}opt_ino" ] && [ "${'$'}sub_ino" = "${'$'}opt_ino" ]; } || { [ -x "${'$'}sub/bin/opkg" ] && [ -d "${'$'}sub/etc/init.d" ]; }; then
+                                opt_excl="${'$'}{sub#/}"
+                                break
+                            fi
+                        done
+                    fi
+                fi
+                [ "${'$'}skip_m" = "0" ] && set -- "${'$'}@" -C / "${'$'}{m#/}"
+            done < "${'$'}MNT_LIST"
         fi
 
-        tar --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/tmp/*' --exclude='*.swap' --exclude='swapfile' \
-            -czf - ${'$'}ARGS 2>/dev/null
+        if [ -n "${'$'}opt_excl" ]; then
+            tar --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/tmp/*' --exclude='*.swap' --exclude='swapfile' --exclude="${'$'}opt_excl" \
+                -czf - "${'$'}@" 2>/dev/null
+        else
+            tar --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/tmp/*' --exclude='*.swap' --exclude='swapfile' \
+                -czf - "${'$'}@" 2>/dev/null
+        fi
         rm -rf "${'$'}TMPB"
     """.trimIndent()
 
@@ -680,8 +757,10 @@ EOFINI
             [ -d "${'$'}RST/opt/home" ] && mkdir -p /opt/home && cp -af "${'$'}RST/opt/home"/* /opt/home/ 2>/dev/null || true
             [ -d "${'$'}RST/opt/var/spool/cron" ] && mkdir -p /opt/var/spool/cron && cp -af "${'$'}RST/opt/var/spool/cron"/* /opt/var/spool/cron/ 2>/dev/null || true
             if [ "$mode" = "system_full" ]; then
-                [ -d "${'$'}RST/tmp/mnt" ] && cp -af "${'$'}RST/tmp/mnt"/* /tmp/mnt/ 2>/dev/null || true
-                [ -d "${'$'}RST/storage" ] && cp -af "${'$'}RST/storage"/* /storage/ 2>/dev/null || true
+                [ -d "${'$'}RST/tmp/mnt" ] && mkdir -p /tmp/mnt && cp -af "${'$'}RST/tmp/mnt"/* /tmp/mnt/ 2>/dev/null || true
+                [ -d "${'$'}RST/media" ] && mkdir -p /media && cp -af "${'$'}RST/media"/* /media/ 2>/dev/null || true
+                [ -d "${'$'}RST/mnt" ] && mkdir -p /mnt && cp -af "${'$'}RST/mnt"/* /mnt/ 2>/dev/null || true
+                [ -d "${'$'}RST/storage" ] && mkdir -p /storage && cp -af "${'$'}RST/storage"/* /storage/ 2>/dev/null || true
                 CFG_SRC="${'$'}RST/running-config.txt"
                 [ -s "${'$'}CFG_SRC" ] || CFG_SRC="${'$'}RST/startup-config.txt"
                 if [ -s "${'$'}CFG_SRC" ]; then

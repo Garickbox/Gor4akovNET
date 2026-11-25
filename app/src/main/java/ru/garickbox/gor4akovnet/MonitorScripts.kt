@@ -170,14 +170,14 @@ object MonitorScripts {
         """
         panel_up=true
         if command -v nc >/dev/null 2>&1; then nc -z -w 1 127.0.0.1 8088 2>/dev/null || panel_up=false; fi
-        cp_get() { if [ "§panel_up" = true ]; then curl -fsS "§@" 2>/dev/null || echo ''; else echo ''; fi; }
+        cp_get() { if [ "§panel_up" = true ]; then curl -fsS "§@" 2>/dev/null | tr -d '\r' | head -n 1 || echo ''; else echo ''; fi; }
 
         wst=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/warp/status)
-        case "§wst" in '{'*) ;; *)
+        case "§wst" in '{'*'}') ;; *)
           if [ -x /opt/zapret2/z2k-warp.sh ]; then
-            wst=§(sh /opt/zapret2/z2k-warp.sh status --json 2>/dev/null || sh /opt/zapret2/z2k-warp.sh status 2>/dev/null || echo '')
+            wst=§(sh /opt/zapret2/z2k-warp.sh status --json 2>/dev/null | tr -d '\r' | head -n 1 || echo '')
           fi
-          case "§wst" in '{'*) ;; *)
+          case "§wst" in '{'*'}') ;; *)
             winst=false; [ -x /opt/sbin/z2k-warpd ] || [ -f /opt/sbin/z2k-warpd ] || [ -f /opt/zapret2/z2k-warp.sh ] && winst=true
             wrun=false; ps w 2>/dev/null | grep -q '[z]2k-warpd' && wrun=true
             tr=§(awk -F= '/^Z2K_WARP_TRANSPORT=/{gsub(/["'"'"']/,"",§2); print §2; exit}' /opt/zapret2/config 2>/dev/null)
@@ -188,22 +188,28 @@ object MonitorScripts {
         esac
 
         wgames=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/warp/games)
-        case "§wgames" in '{'*) ;; *) wgames='{"ok":false,"games":[]}' ;; esac
+        case "§wgames" in '{'*'}') ;; *) wgames='{"ok":false,"games":[]}' ;; esac
 
         wlists=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/warp/lists)
-        case "§wlists" in '{'*) ;; *)
-          wlists=§(awk '$AWK_ESC BEGIN{printf "{\"ok\":true,\"domains\":["} {gsub(/\r/,"");sub(/#.*/,"");gsub(/^[[:space:]]+|[[:space:]]+§/,""); if(§0!="") printf "%s\"%s\"", (n++?",":""), esc(§0)} END{printf "]}"}' /opt/zapret2/lists/warp-domains.txt 2>/dev/null || echo '{"ok":true,"domains":[]}')
+        case "§wlists" in '{'*'}') ;; *)
+          if [ -r /opt/zapret2/lists/warp-domains.txt ]; then
+            wlists=§(awk '$AWK_ESC BEGIN{printf "{\"ok\":true,\"domains\":["} {gsub(/\r/,"");sub(/#.*/,"");gsub(/^[[:space:]]+|[[:space:]]+§/,""); if(§0!="") printf "%s\"%s\"", (n++?",":""), esc(§0)} END{printf "]}"}' /opt/zapret2/lists/warp-domains.txt 2>/dev/null)
+          fi
+          case "§wlists" in '{'*'}') ;; *) wlists='{"ok":true,"domains":[]}' ;; esac
           ;;
         esac
 
         wexcl=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/warp/exclude)
-        case "§wexcl" in '{'*) ;; *)
-          wexcl=§(awk '$AWK_ESC BEGIN{printf "{\"ok\":true,\"domains\":["} {gsub(/\r/,"");sub(/#.*/,"");gsub(/^[[:space:]]+|[[:space:]]+§/,""); if(§0!="") printf "%s\"%s\"", (n++?",":""), esc(§0)} END{printf "]}"}' /opt/zapret2/lists/warp-exclude.txt 2>/dev/null || echo '{"ok":true,"domains":[]}')
+        case "§wexcl" in '{'*'}') ;; *)
+          if [ -r /opt/zapret2/lists/warp-exclude.txt ]; then
+            wexcl=§(awk '$AWK_ESC BEGIN{printf "{\"ok\":true,\"domains\":["} {gsub(/\r/,"");sub(/#.*/,"");gsub(/^[[:space:]]+|[[:space:]]+§/,""); if(§0!="") printf "%s\"%s\"", (n++?",":""), esc(§0)} END{printf "]}"}' /opt/zapret2/lists/warp-exclude.txt 2>/dev/null)
+          fi
+          case "§wexcl" in '{'*'}') ;; *) wexcl='{"ok":true,"domains":[]}' ;; esac
           ;;
         esac
 
         wdevs=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/warp/devices)
-        case "§wdevs" in '{'*) ;; *) wdevs='{"ok":false,"devices":[]}' ;; esac
+        case "§wdevs" in '{'*'}') ;; *) wdevs='{"ok":false,"devices":[]}' ;; esac
 
         tun_ip=§(ip -4 addr show z2ktun0 2>/dev/null | awk '/inet /{print §2; exit}' | tr -d '\r\n"\\')
         tun_mtu=§(cat /sys/class/net/z2ktun0/mtu 2>/dev/null | tr -dc '0-9')
@@ -286,32 +292,35 @@ object MonitorScripts {
         ps | grep -q '[A]dGuardHome' && agh_up=true
         agh_port=§(awk -F: '/^  address:/{p=§NF; gsub(/[^0-9]/,"",p); if(p!="") print p; exit}' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null | tr -dc '0-9')
         [ -n "§agh_port" ] || agh_port=3000
-        agh_meta=§(awk '
-          $AWK_ESC
-          /^  upstream_dns:/ {in_u=1; next}
-          in_u && /^    - / {sub(/^    - /,""); ups[++nu]=esc(§0); next}
-          in_u && !/^    / {in_u=0}
-          /^filters:/ {in_f=1; next}
-          in_f && /^[a-z_]+:/ {in_f=0}
-          in_f && /^  - enabled:/ {fe=§3}
-          in_f && /^    name:/ {sub(/^    name:[[:space:]]*/,""); fn=esc(§0)}
-          in_f && /^    id:/ {fid=§2; f[++nf]=sprintf("{\"id\":%d,\"name\":\"%s\",\"on\":%s}", fid+0, fn, (fe=="true"?"true":"false"))}
-          /^  protection_enabled:/ {prot=§2}
-          /^  filtering_enabled:/ {filt=§2}
-          /^  enable_dnssec:/ {dsec=§2}
-          /^  cache_enabled:/ {cach=§2}
-          /^  cache_optimistic:/ {copt=§2}
-          /^  aaaa_disabled:/ {naaaa=§2}
-          /^  upstream_mode:/ {umod=esc(§2)}
-          END {
-            printf "{\"prot\":%s,\"filt\":%s,\"dnssec\":%s,\"cache\":%s,\"cache_opt\":%s,\"no_aaaa\":%s,\"up_mode\":\"%s\",\"upstreams\":[",
-              (prot=="true"?"true":"false"), (filt=="true"?"true":"false"), (dsec=="true"?"true":"false"),
-              (cach=="true"?"true":"false"), (copt=="true"?"true":"false"), (naaaa=="true"?"true":"false"), umod
-            for(i=1;i<=nu;i++) printf "%s\"%s\"", (i>1?",":""), ups[i]
-            printf "],\"filters\":["
-            for(i=1;i<=nf;i++) printf "%s%s", (i>1?",":""), f[i]
-            printf "]}"
-          }' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null)
+        agh_meta=""
+        if [ -r /opt/etc/AdGuardHome/AdGuardHome.yaml ]; then
+          agh_meta=§(awk '
+            $AWK_ESC
+            /^  upstream_dns:/ {in_u=1; next}
+            in_u && /^    - / {sub(/^    - /,""); ups[++nu]=esc(§0); next}
+            in_u && !/^    / {in_u=0}
+            /^filters:/ {in_f=1; next}
+            in_f && /^[a-z_]+:/ {in_f=0}
+            in_f && /^  - enabled:/ {fe=§3}
+            in_f && /^    name:/ {sub(/^    name:[[:space:]]*/,""); fn=esc(§0)}
+            in_f && /^    id:/ {fid=§2; f[++nf]=sprintf("{\"id\":%d,\"name\":\"%s\",\"on\":%s}", fid+0, fn, (fe=="true"?"true":"false"))}
+            /^  protection_enabled:/ {prot=§2}
+            /^  filtering_enabled:/ {filt=§2}
+            /^  enable_dnssec:/ {dsec=§2}
+            /^  cache_enabled:/ {cach=§2}
+            /^  cache_optimistic:/ {copt=§2}
+            /^  aaaa_disabled:/ {naaaa=§2}
+            /^  upstream_mode:/ {umod=esc(§2)}
+            END {
+              printf "{\"prot\":%s,\"filt\":%s,\"dnssec\":%s,\"cache\":%s,\"cache_opt\":%s,\"no_aaaa\":%s,\"up_mode\":\"%s\",\"upstreams\":[",
+                (prot=="true"?"true":"false"), (filt=="true"?"true":"false"), (dsec=="true"?"true":"false"),
+                (cach=="true"?"true":"false"), (copt=="true"?"true":"false"), (naaaa=="true"?"true":"false"), umod
+              for(i=1;i<=nu;i++) printf "%s\"%s\"", (i>1?",":""), ups[i]
+              printf "],\"filters\":["
+              for(i=1;i<=nf;i++) printf "%s%s", (i>1?",":""), f[i]
+              printf "]}"
+            }' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null)
+        fi
         [ -n "§agh_meta" ] || agh_meta='{"prot":false,"filt":false,"dnssec":false,"cache":false,"cache_opt":false,"no_aaaa":false,"up_mode":"","upstreams":[],"filters":[]}'
         qcnt=0
         if [ -r /opt/etc/AdGuardHome/data/querylog.json ]; then
@@ -363,122 +372,117 @@ object MonitorScripts {
 
     val CMD_WIFI_DEVICES = sh(
         """
-        LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" > /tmp/.gp_rc 2>/dev/null || : > /tmp/.gp_rc
-        LD_LIBRARY_PATH= /bin/ndmc -c "show interface WifiMaster0" > /tmp/.gp_w0 2>/dev/null || : > /tmp/.gp_w0
-        LD_LIBRARY_PATH= /bin/ndmc -c "show interface WifiMaster1" > /tmp/.gp_w1 2>/dev/null || : > /tmp/.gp_w1
-        LD_LIBRARY_PATH= /bin/ndmc -c "show ip hotspot" > /tmp/.gp_hs 2>/dev/null || : > /tmp/.gp_hs
-        : > /tmp/.gp_aps
-        for m in WifiMaster0 WifiMaster1; do
-          for n in 0 1 2 3 4 5; do
-            ap="§{m}/AccessPoint§{n}"
-            out=§(LD_LIBRARY_PATH= /bin/ndmc -c "show interface §ap" 2>/dev/null)
-            [ -z "§out" ] && continue
-            printf '===AP_START %s===\n%s\n===AP_END===\n' "§ap" "§out" >> /tmp/.gp_aps
-          done
+        PFX="/tmp/.gp_§$"
+        LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" > "§{PFX}_rc" 2>/dev/null || : > "§{PFX}_rc"
+        LD_LIBRARY_PATH= /bin/ndmc -c "show interface WifiMaster0" > "§{PFX}_w0" 2>/dev/null || : > "§{PFX}_w0"
+        LD_LIBRARY_PATH= /bin/ndmc -c "show interface WifiMaster1" > "§{PFX}_w1" 2>/dev/null || : > "§{PFX}_w1"
+        LD_LIBRARY_PATH= /bin/ndmc -c "show ip hotspot" > "§{PFX}_hs" 2>/dev/null || : > "§{PFX}_hs"
+        : > "§{PFX}_aps"
+        ap_list=§(printf 'WifiMaster0/AccessPoint0\nWifiMaster1/AccessPoint0\n' ; awk '/^interface WifiMaster[0-9]+\/AccessPoint[0-9]+/{print §2}' "§{PFX}_rc" 2>/dev/null)
+        ap_list=§(printf '%s\n' "§ap_list" | awk 'NF && !seen[§0]++')
+        for ap in §ap_list; do
+          out=§(LD_LIBRARY_PATH= /bin/ndmc -c "show interface §ap" 2>/dev/null)
+          [ -n "§out" ] || continue
+          printf '===AP_START %s===\n%s\n===AP_END===\n' "§ap" "§out" >> "§{PFX}_aps"
         done
-        wifi_json=§(awk '
+        cat /tmp/gbox_timer_*.meta 2>/dev/null > "§{PFX}_tm" || : > "§{PFX}_tm"
+
+        wifi_json=§(awk -v PFX="§PFX" '
           $AWK_ESC
-          function rf(fn,   l, out) { out=""; while((getline l < fn) > 0) out=out l "\n"; close(fn); return out }
-          function getv(txt, pat,   n, a, k, v) {
-            n=split(txt, a, "\n")
-            for(k=1;k<=n;k++) if(a[k] ~ pat) { v=a[k]; sub(/^[^:]+:[[:space:]]*/, "", v); return esc(v) }
-            return ""
-          }
-          function getlist(txt, pat,   n, a, k, v, res) {
-            n=split(txt, a, "\n"); res=""
-            for(k=1;k<=n;k++) if(a[k] ~ pat) { v=a[k]; sub(/^[^:]+:[[:space:]]*/, "", v); res=(res==""?v:res "," v) }
-            return esc(res)
+          function val_after_colon(line) { sub(/^[^:]+:[[:space:]]*/, "", line); return esc(line) }
+          function read_radio(fn,   l, k, v) {
+            r_ch="—"; r_bw="—"; r_rate=0; r_temp=""; r_busy=""
+            while((getline l < fn) > 0) {
+              if(l ~ /^[[:space:]]*channel:/) r_ch=val_after_colon(l)
+              else if(l ~ /^[[:space:]]*bandwidth:/) r_bw=val_after_colon(l)
+              else if(l ~ /^[[:space:]]*bitrate:/) { v=val_after_colon(l); r_rate=int((v+0)/1000000) }
+              else if(l ~ /^[[:space:]]*temperature:/) r_temp=val_after_colon(l)
+              else if(l ~ /^[[:space:]]*busy-channels:/) { v=val_after_colon(l); r_busy=(r_busy==""?v:r_busy","v) }
+            }
+            close(fn)
           }
           BEGIN {
-            rc=rf("/tmp/.gp_rc"); w0=rf("/tmp/.gp_w0"); w1=rf("/tmp/.gp_w1"); aps_raw=rf("/tmp/.gp_aps")
-            c24=getv(w0,"channel:"); if(c24=="") c24="—"
-            c5=getv(w1,"channel:"); if(c5=="") c5="—"
-            b24=getv(w0,"bandwidth:"); if(b24=="") b24="—"
-            b5=getv(w1,"bandwidth:"); if(b5=="") b5="—"
-            r24=int((getv(w0,"bitrate:")+0)/1000000)
-            r5=int((getv(w1,"bitrate:")+0)/1000000)
-            t24=getv(w0,"temperature:"); t5=getv(w1,"temperature:")
-            bz24=getlist(w0,"busy-channels:"); bz5=getlist(w1,"busy-channels:")
+            read_radio(PFX "_w0"); c24=r_ch; b24=r_bw; r24=r_rate; t24=r_temp; bz24=r_busy
+            read_radio(PFX "_w1"); c5=r_ch; b5=r_bw; r5=r_rate; t5=r_temp; bz5=r_busy
             bs=0; gr=0; ft=0; twt1=0; cur=""; guest_up="false"; g24_up="false"; g5_up="false"; s24="Home"; s5="Home"
-            n=split(rc, lines, "\n")
-            for(i=1;i<=n;i++) {
-              l=lines[i]
+            while((getline l < (PFX "_rc")) > 0) {
               if(l ~ /^interface Bridge0§/) cur="b0"
               else if(l ~ /^interface Bridge1§/) cur="b1"
               else if(l ~ /^interface WifiMaster0§/) cur="w0"
               else if(l ~ /^interface WifiMaster1§/) cur="w1"
               else if(l ~ /^interface WifiMaster0\/AccessPoint0§/) cur="ap0"
+              else if(l ~ /^interface /) { cur=""; ap_seen[substr(l,11)]=1 }
               else if(l ~ /^!/) cur=""
               if(cur=="b0" && l ~ /^[[:space:]]*band-steering§/) bs=1
               if(cur=="b1" && l ~ /^[[:space:]]*traffic-shape rate /) { split(l, p, " "); gr=p[3]+0 }
               if(cur=="ap0" && l ~ /^[[:space:]]*ft enable§/) ft=1
               if(cur=="w1" && l ~ /^[[:space:]]*target-waketime§/) twt1=1
+              if(l ~ /^[[:space:]]*include WifiMaster/) { split(l, p, " "); inc_seen[p[2]]=1 }
             }
-            ns=split(aps_raw, slines, "\n")
-            cur_ap=""; blk=""; ap_json=""
-            for(i=1;i<=ns;i++) {
-              l=slines[i]
-              if(l ~ /^===AP_START /) { cur_ap=l; sub(/^===AP_START /,"",cur_ap); sub(/===${'$'}/,"",cur_ap); blk=""; continue }
+            close(PFX "_rc")
+            cur_ap=""; ap_json=""
+            while((getline l < (PFX "_aps")) > 0) {
+              if(l ~ /^===AP_START /) {
+                cur_ap=l; sub(/^===AP_START /,"",cur_ap); sub(/===${'$'}/,"",cur_ap)
+                idn=""; desc=""; st=""; lk=""; ss=""; grp=""; next
+              }
               if(l ~ /^===AP_END===/) {
-                idn=getv(blk,"^[[:space:]]*interface-name:")
-                desc=getv(blk,"^[[:space:]]*description:")
-                st=getv(blk,"^[[:space:]]*state:")
-                lk=getv(blk,"^[[:space:]]*link:")
-                ss=getv(blk,"^[[:space:]]*ssid:")
-                grp=getv(blk,"^[[:space:]]*group:")
                 isup=(lk=="up" || st=="up")
-                dead=((ss=="" && st=="down" && desc=="") || (index(rc,"include " cur_ap)>0 && ss=="" && st=="down")) ? 1 : 0
+                dead=((ss=="" && st=="down" && desc=="") || ((cur_ap in inc_seen) && ss=="" && st=="down")) ? 1 : 0
                 if(cur_ap=="WifiMaster0/AccessPoint0") { if(isup) g24_up="true"; if(ss!="") s24=ss }
                 if(cur_ap=="WifiMaster1/AccessPoint0") { if(isup) g5_up="true"; if(ss!="") s5=ss }
                 if((cur_ap=="WifiMaster0/AccessPoint1" || tolower(idn) ~ /guest/) && isup) guest_up="true"
-                if(ss!="" || isup || index(rc,"interface " cur_ap)>0) {
-                  ap_json = ap_json (ap_json==""?"":",") sprintf("{\"id\":\"%s\",\"alias\":\"%s\",\"ssid\":\"%s\",\"desc\":\"%s\",\"grp\":\"%s\",\"up\":%s,\"dead\":%s}", esc(cur_ap), esc(idn), ss, desc, grp, (isup?"true":"false"), (dead?"true":"false"))
+                if(ss!="" || isup || (cur_ap in ap_seen)) {
+                  ap_json = ap_json (ap_json==""?"":",") sprintf("{\"id\":\"%s\",\"alias\":\"%s\",\"ssid\":\"%s\",\"desc\":\"%s\",\"grp\":\"%s\",\"up\":%s,\"dead\":%s}", esc(cur_ap), idn, ss, desc, grp, (isup?"true":"false"), (dead?"true":"false"))
                 }
-                cur_ap=""; continue
+                cur_ap=""; next
               }
-              blk = blk l "\n"
+              if(cur_ap=="") continue
+              if(l ~ /^[[:space:]]*interface-name:/) idn=val_after_colon(l)
+              else if(l ~ /^[[:space:]]*description:/) desc=val_after_colon(l)
+              else if(l ~ /^[[:space:]]*state:/) st=val_after_colon(l)
+              else if(l ~ /^[[:space:]]*link:/) lk=val_after_colon(l)
+              else if(l ~ /^[[:space:]]*ssid:/) ss=val_after_colon(l)
+              else if(l ~ /^[[:space:]]*group:/) grp=val_after_colon(l)
             }
+            close(PFX "_aps")
             printf "{\"g24_up\":%s,\"g24_ssid\":\"%s\",\"g24_ch\":\"%s\",\"g24_bw\":\"%s\",\"g24_rate\":%d,\"g24_temp\":\"%s\",\"g24_busy\":\"%s\",\"g5_up\":%s,\"g5_ssid\":\"%s\",\"g5_ch\":\"%s\",\"g5_bw\":\"%s\",\"g5_rate\":%d,\"g5_temp\":\"%s\",\"g5_busy\":\"%s\",\"guest_up\":%s,\"guest_rate\":%d,\"band_steer\":%s,\"ft\":%s,\"twt\":%s,\"aps\":[%s]}",
               g24_up, s24, c24, b24, r24, t24, bz24,
               g5_up, s5, c5, b5, r5, t5, bz5,
               guest_up, gr, (bs?"true":"false"), (ft?"true":"false"), (twt1?"true":"false"), ap_json
-          }')
+          }' 2>/dev/null)
         [ -n "§wifi_json" ] || wifi_json='{"g24_up":false,"g24_ssid":"—","g24_ch":"—","g24_bw":"—","g24_rate":0,"g24_temp":"","g24_busy":"","g5_up":false,"g5_ssid":"—","g5_ch":"—","g5_bw":"—","g5_rate":0,"g5_temp":"","g5_busy":"","guest_up":false,"guest_rate":0,"band_steer":false,"ft":false,"twt":false,"aps":[]}'
-        deny_macs=§(awk '/^[[:space:]]*host [0-9a-f:]+ deny/{print §2}' /tmp/.gp_rc | tr '\n' ' ')
-        conf_macs=§(awk '/^[[:space:]]*host [0-9a-f:]+ conform/{print §2}' /tmp/.gp_rc | tr '\n' ' ')
-        g4_macs=§(awk '/^[[:space:]]*host [0-9a-f:]+ policy Gor4akovNET/{print §2}' /tmp/.gp_rc | tr '\n' ' ')
-        # Сбор shape_rate, schedule и активных таймеров /tmp/gbox_timers/*
-        extra_meta=§(awk '/^[[:space:]]*host [0-9a-f:]+ (traffic-shape rate|schedule) /{print}' /tmp/.gp_rc)
+
         now_s=§(date +%s 2>/dev/null || echo 0)
-        timers_txt=""
-        for tf in /tmp/gbox_timer_*.meta; do
-          [ -r "§tf" ] || continue
-          timers_txt="§{timers_txt}§(cat "§tf" 2>/dev/null)
-"
-        done
-        devs=§(DM="§deny_macs" CM="§conf_macs" GM="§g4_macs" EM="§extra_meta" TM="§timers_txt" NOWS="§now_s" awk '
+        devs=§(awk -v PFX="§PFX" -v NOWS="§now_s" '
           $AWK_ESC
           BEGIN {
-            ne=split(ENVIRON["EM"], el, "\n")
-            for(i=1;i<=ne;i++){
-              split(el[i], ep, " ")
-              if(ep[3]=="traffic-shape") sh[tolower(ep[2])]=ep[5]+0
-              if(ep[3]=="schedule") sc[tolower(ep[2])]=ep[4]
+            while((getline l < (PFX "_rc")) > 0) {
+              if(l ~ /^[[:space:]]*host [0-9a-fA-F:]+ /) {
+                split(l, hp, " ")
+                hm=tolower(hp[2])
+                if(hp[3]=="deny") deny[hm]=1
+                else if(hp[3]=="conform") conf[hm]=1
+                else if(hp[3]=="policy" && hp[4]=="Gor4akovNET") g4[hm]=1
+                else if(hp[3]=="traffic-shape" && hp[4]=="rate") sh[hm]=hp[5]+0
+                else if(hp[3]=="schedule") sc[hm]=hp[4]
+              }
             }
-            nt=split(ENVIRON["TM"], tl, "\n")
-            for(i=1;i<=nt;i++){
-              if(tl[i]=="") continue
-              split(tl[i], tp, "|")
-              rem=tp[2]-ENVIRON["NOWS"]
+            close(PFX "_rc")
+            while((getline l < (PFX "_tm")) > 0) {
+              if(l=="") continue
+              split(l, tp, "|")
+              rem=tp[2]-NOWS
               if(rem>0) tmr[tolower(tp[1])]=int(rem/60)"м ("tp[3]")"
             }
+            close(PFX "_tm")
           }
           function flush(){
             if(mac!=""){
               lm=tolower(mac)
-              pol=(index(" " ENVIRON["DM"] " ", " " mac " ")>0)?"deny":"permit"
-              gpol=(index(" " ENVIRON["GM"] " ", " " mac " ")>0 || tolower(ifc) ~ /gor4akov/)?"Gor4akovNET":"Default"
-              cnf=(index(" " ENVIRON["CM"] " ", " " mac " ")>0)?"true":"false"
+              pol=(lm in deny)?"deny":"permit"
+              gpol=((lm in g4) || tolower(ifc) ~ /gor4akov/)?"Gor4akovNET":"Default"
+              cnf=(lm in conf)?"true":"false"
               shape=(lm in sh)?sh[lm]:0
               sched=(lm in sc)?sc[lm]:""
               tmr_s=(lm in tmr)?tmr[lm]:""
@@ -506,8 +510,8 @@ object MonitorScripts {
           /^[[:space:]]*ap:/ {ap=§2}
           /^[[:space:]]*txrate:/ {txr=§2}
           /^[[:space:]]*traffic-shape:/ {in_ts=1}
-          END {flush()}' /tmp/.gp_hs)
-        rm -f /tmp/.gp_rc /tmp/.gp_w0 /tmp/.gp_w1 /tmp/.gp_aps /tmp/.gp_hs
+          END {flush()}' "§{PFX}_hs" 2>/dev/null)
+        rm -f "§{PFX}_rc" "§{PFX}_w0" "§{PFX}_w1" "§{PFX}_aps" "§{PFX}_hs" "§{PFX}_tm"
         printf '{"wifi":%s,"devices":[%s]}\n' "§wifi_json" "§devs"
         """
     )
@@ -533,25 +537,36 @@ object MonitorScripts {
 
     val CMD_SERVICES = sh(
         """
+        PFX="/tmp/.gps_§$"
         mem_tot_kb=§(awk '/^MemTotal:/{print §2; exit}' /proc/meminfo 2>/dev/null | tr -dc '0-9')
         [ -n "§mem_tot_kb" ] || mem_tot_kb=262144
         mem_free_mb=§(awk '/^MemAvailable:/{a=§2} /^MemFree:/{f=§2} END{print int((a>0?a:f)/1024)}' /proc/meminfo 2>/dev/null)
-        ps_w=§(ps w 2>/dev/null)
-        ns_p=§(netstat -lntp 2>/dev/null || netstat -lnt 2>/dev/null)
-        # Построить статистику по процессам (/proc/<pid>/status VmRSS и /proc/<pid>/stat CPU)
-        proc_stats=""
-        for stf in /proc/[0-9]*/status; do
-          pid=§{stf#/proc/}; pid=§{pid%/status}
-          [ -r "§stf" ] || continue
-          rss_kb=§(awk '/^VmRSS:/{print §2+0; exit}' "§stf" 2>/dev/null)
-          cmd=§(tr '\0' ' ' < "/proc/§pid/cmdline" 2>/dev/null | head -c 160)
-          [ -n "§cmd" ] || cmd=§(awk '/^Name:/{print §2; exit}' "§stf" 2>/dev/null)
-          pcpu=§(printf '%s\n' "§ps_w" | awk -v p="§pid" '§1==p{for(i=1;i<=NF;i++)if(§i ~ /^[0-9]+(\.[0-9]+)?%§/){gsub(/%/,"",§i); print §i; exit}}')
-          proc_stats="§{proc_stats}§pid|§{rss_kb:-0}|§{pcpu:-0}|§cmd
-"
-        done
+        ps w 2>/dev/null > "§{PFX}_ps"
+        (netstat -lntp 2>/dev/null || netstat -lnt 2>/dev/null) > "§{PFX}_ns"
+        awk '
+          NR>1 && §1 ~ /^[0-9]+§/{
+            pid=§1; cpu=0
+            for(i=2;i<=NF;i++) if(§i ~ /^[0-9]+(\.[0-9]+)?%§/){ gsub(/%/,"",§i); cpu=§i; break }
+            rss=0; nm=""
+            stf="/proc/" pid "/status"
+            while((getline l < stf) > 0){
+              if(l ~ /^VmRSS:/){ split(l,a," "); rss=a[2]+0 }
+              else if(l ~ /^Name:/){ sub(/^Name:[[:space:]]*/,"",l); nm=l }
+            }
+            close(stf)
+            cmd=""
+            cf="/proc/" pid "/cmdline"
+            if((getline cmd < cf) > 0) gsub(/\0/," ",cmd)
+            close(cf)
+            if(cmd==""){
+              for(i=5;i<=NF;i++) cmd=(cmd==""?§i:cmd" "§i)
+              if(cmd=="") cmd=nm
+            }
+            gsub(/\|/," ",cmd)
+            if(length(cmd)>140) cmd=substr(cmd,1,140)
+            printf "%s|%d|%s|%s\n", pid, rss, cpu, cmd
+          }' "§{PFX}_ps" > "§{PFX}_pr" 2>/dev/null
 
-        # Автоскан всех /opt/etc/init.d/S*
         svcs_json=""
         for ini in /opt/etc/init.d/S*; do
           [ -e "§ini" ] || continue
@@ -569,29 +584,25 @@ object MonitorScripts {
             *cron*) pat="crond" ;;
             *dropbear*) pat="dropbear" ;;
           esac
-          res=§(PS="§proc_stats" NS="§ns_p" PAT="§pat" MEM="§mem_tot_kb" awk '$AWK_ESC BEGIN{
-            pat=tolower(ENVIRON["PAT"]); mem=ENVIRON["MEM"]+0
-            n=split(ENVIRON["PS"], lines, "\n")
-            tot_rss=0; tot_cpu=0; pids=""
-            for(i=1;i<=n;i++){
-              if(lines[i]=="") continue
-              split(lines[i], a, "|")
+          res=§(awk -v PAT="§pat" -v MEM="§mem_tot_kb" -v PFX="§PFX" '$AWK_ESC BEGIN{
+            pat=tolower(PAT); mem=MEM+0; tot_rss=0; tot_cpu=0; pids=""; ports=""
+            while((getline l < (PFX "_pr")) > 0){
+              split(l, a, "|")
               if(pat!="" && index(tolower(a[4]), pat)>0){
                 tot_rss+=a[2]+0; tot_cpu+=a[3]+0; pids=(pids==""?a[1]:pids","a[1])
               }
             }
-            ports=""
-            m=split(ENVIRON["NS"], nl, "\n")
-            for(i=1;i<=m;i++){
-              if(pat!="" && index(tolower(nl[i]), pat)>0){
-                split(nl[i], np, " ")
-                split(np[4], hp, ":"); pt=hp[length(hp)]
+            close(PFX "_pr")
+            while((getline l < (PFX "_ns")) > 0){
+              if(pat!="" && index(tolower(l), pat)>0){
+                split(l, np, " "); split(np[4], hp, ":"); pt=hp[length(hp)]
                 if(pt ~ /^[0-9]+§/ && index(ports, ":"pt)==0) ports=(ports==""?":"pt:ports",:"pt)
               }
             }
+            close(PFX "_ns")
             rmb=tot_rss/1024; rpct=(mem>0?tot_rss*100/mem:0)
             printf "%d|%.1f|%.1f|%.1f|%s|%s", (pids!=""?1:0), rmb, rpct, tot_cpu, esc(pids), esc(ports)
-          }')
+          }' 2>/dev/null)
           up_i=§(echo "§res" | cut -d'|' -f1)
           up=false; [ "§up_i" = "1" ] && up=true
           ram_mb=§(echo "§res" | cut -d'|' -f2)
@@ -603,17 +614,7 @@ object MonitorScripts {
           svcs_json="§{svcs_json}§([ -n "§svcs_json" ] && echo ',')§item"
         done
 
-        top_procs=§(PS="§proc_stats" awk '$AWK_ESC BEGIN{
-          n=split(ENVIRON["PS"], lines, "\n")
-          for(i=1;i<=n;i++){
-            if(lines[i]=="") continue
-            split(lines[i], a, "|")
-            if(a[2]+0 > 512){
-              c=a[4]; if(length(c)>55) c=substr(c,1,55)
-              printf "%08d|%s|%.1f|%s|%s\n", a[2]+0, a[1], a[2]/1024, a[3], esc(c)
-            }
-          }
-        }' | sort -rn | head -n 10 | awk 'BEGIN{printf "["}{split(§0,p,"|"); printf "%s{\"pid\":\"%s\",\"ram_mb\":%s,\"cpu\":%s,\"cmd\":\"%s\"}", (n++?",":""), p[2], p[3]+0, p[4]+0, p[5]} END{printf "]"}')
+        top_procs=§(awk '$AWK_ESC {split(§0,a,"|"); if(a[2]+0>512){c=a[4]; if(length(c)>55) c=substr(c,1,55); printf "%08d|%s|%.1f|%s|%s\n", a[2]+0, a[1], a[2]/1024, a[3], esc(c)}}' "§{PFX}_pr" 2>/dev/null | sort -rn | head -n 10 | awk 'BEGIN{printf "["}{split(§0,p,"|"); printf "%s{\"pid\":\"%s\",\"ram_mb\":%s,\"cpu\":%s,\"cmd\":\"%s\"}", (n++?",":""), p[2], p[3]+0, p[4]+0, p[5]} END{printf "]"}')
         [ -n "§top_procs" ] || top_procs='[]'
 
         cron_jobs=§(grep -hvE '^[[:space:]]*$|^[[:space:]]*#' /opt/var/spool/cron/crontabs/root /opt/etc/crontab 2>/dev/null | head -n 25 | awk '$AWK_ESC BEGIN{printf "["} {printf "%s\"%s\"", (n++?",":""), esc(§0)} END{printf "]"}')
@@ -626,7 +627,8 @@ object MonitorScripts {
         usb2=false; printf '%s\n' "§rc" | grep -q 'dev\.usb\.force_usb2 1' && usb2=true
         opkg_cnt=§(opkg list-installed 2>/dev/null | wc -l | head -n1 | tr -dc '0-9')
         [ -n "§opkg_cnt" ] || opkg_cnt=0
-        disks=§(df -Pm 2>/dev/null | awk '$AWK_ESC NR>1 && (§6=="/opt" || §6 ~ /^\/tmp\/mnt\//){gsub(/%/,"",§5); printf "%s{\"mnt\":\"%s\",\"tot\":%d,\"used\":%d,\"avail\":%d,\"pct\":%d}", (n++?",":""), esc(§6), §2+0, §3+0, §4+0, §5+0}')
+        disks=§(df -Pm 2>/dev/null | awk '$AWK_ESC NF==1{d=§0; getline; §0=d" "§0} NR>1{mnt=""; for(i=6;i<=NF;i++) mnt=(mnt==""?§i:mnt" "§i); if(mnt=="/opt" || mnt ~ /^\/(tmp\/mnt|media|mnt)\// || mnt=="/storage"){gsub(/%/,"",§5); printf "%s{\"mnt\":\"%s\",\"tot\":%d,\"used\":%d,\"avail\":%d,\"pct\":%d}", (n++?",":""), esc(mnt), §2+0, §3+0, §4+0, §5+0}}')
+        rm -f "§{PFX}_ps" "§{PFX}_ns" "§{PFX}_pr"
         printf '{"svcs":[%s],"top_procs":%s,"cron":%s,"mem_tot_mb":%d,"mem_free_mb":%d,"ndms":{"cifs":%s,"webdav":%s,"zram":%s,"usb2":%s},"opkg_cnt":%s,"disks":[%s]}\n' \
           "§svcs_json" "§top_procs" "§cron_jobs" "§((mem_tot_kb/1024))" "§{mem_free_mb:-0}" "§cifs" "§webdav" "§zram" "§usb2" "§opkg_cnt" "§disks"
         """
@@ -668,7 +670,7 @@ object MonitorScripts {
     val CMD_PROBE_SITES_JSON = sh(
         """
         TMPP="/tmp/.gbox_probes_§$"
-        rm -f "§TMPP"
+        : > "§TMPP"
         chk() {
           cat="§1"; host="§2"; url="§3"
           res=§(curl -IsS -L --connect-timeout 4 --max-time 6 -o /dev/null -w '%{http_code}|%{time_namelookup}|%{time_appconnect}|%{time_total}' "§url" 2>/dev/null || echo '000|0|0|0')
@@ -1407,8 +1409,20 @@ EOFINI
     fun touchFileCmd(path: String): String = sh("touch '${sq(path)}' 2>&1 && echo 'OK: Файл создан'")
     fun rmPathCmd(path: String): String = sh("rm -rf '${sq(path)}' 2>&1 && echo 'OK: Удалено'")
 
+    val ENABLE_CONNTRACK_ACCT_CMD = sh(
+        """
+        if [ -w /proc/sys/net/netfilter/nf_conntrack_acct ]; then
+          echo 1 > /proc/sys/net/netfilter/nf_conntrack_acct 2>/dev/null || sysctl -w net.netfilter.nf_conntrack_acct=1 2>&1 || true
+          echo "OK: Счётчик байтов conntrack_acct включён"
+        else
+          echo "INFO: Ядро этой модели Keenetic собрано без nf_conntrack_acct — график Мбит/с и активные потоки работают в обычном режиме."
+        fi
+        """
+    )
+
     val CMD_TORCH_LIVE = sh(
         """
+        PFX="/tmp/.gth_§$"
         snap_dev() { awk 'NR>2{gsub(/:/,"",§1); if(§1~/^(eth|br|ra|rai|wg|z2k|tun|ppp)/) printf "%s %s %s %s %s %s %s\n", §1, §2, §3, §4, §10, §11, §12}' /proc/net/dev; }
         a=§(snap_dev)
         sleep 1
@@ -1425,42 +1439,69 @@ EOFINI
           }
           printf "]"
         }')
-        hs_names=§(LD_LIBRARY_PATH= /bin/ndmc -c "show ip hotspot" 2>/dev/null | awk '/^[[:space:]]*ip:/{ip=§2} /^[[:space:]]*name:/{sub(/^[^:]*:[[:space:]]*/,""); nm=§0; if(ip!="") print ip"="nm; ip=""; nm=""}')
-        qmap=§(tail -n 120 /opt/etc/AdGuardHome/data/querylog.json 2>/dev/null | awk '{
-          if(match(§0, /"QH":"([^"]+)"/, q) && match(§0, /"Answer":\[[^\]]*"([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)"/, a)) print a[1]"="q[1]
-        }')
-        flows=§(HN="§hs_names" QM="§qmap" awk '$AWK_ESC BEGIN{
-          nh=split(ENVIRON["HN"], hl, "\n"); for(i=1;i<=nh;i++){split(hl[i],p,"="); if(p[1]!="") names[p[1]]=p[2]}
-          nq=split(ENVIRON["QM"], ql, "\n"); for(i=1;i<=nq;i++){split(ql[i],p,"="); if(p[1]!="") doms[p[1]]=p[2]}
-        }
-        NR<=220{
-          proto=§3; st=""; src=""; dst=""; dport=""; by=0
-          for(i=1;i<=NF;i++){
-            if(§i ~ /^(ESTABLISHED|SYN_SENT|TIME_WAIT|CLOSE|ASSURED)/) st=§i
-            if(§i ~ /^src=/ && src=="") src=substr(§i,5)
-            if(§i ~ /^dst=/ && dst=="") dst=substr(§i,5)
-            if(§i ~ /^dport=/ && dport=="") dport=substr(§i,7)
-            if(§i ~ /^bytes=/) by+=substr(§i,7)+0
+        LD_LIBRARY_PATH= /bin/ndmc -c "show ip hotspot" 2>/dev/null | awk '/^[[:space:]]*ip:/{ip=§2} /^[[:space:]]*name:/{sub(/^[^:]*:[[:space:]]*/,""); nm=§0; if(ip!="") print ip"="nm; ip=""; nm=""}' > "§{PFX}_hn" 2>/dev/null || : > "§{PFX}_hn"
+        : > "§{PFX}_qm"
+        if [ -r /opt/etc/AdGuardHome/data/querylog.json ]; then
+          tail -n 120 /opt/etc/AdGuardHome/data/querylog.json 2>/dev/null | awk '
+            function jstr(line, key,   pat, pos, rest, q) {
+              pat="\"" key "\":\""; pos=index(line, pat); if(pos==0) return ""
+              rest=substr(line, pos+length(pat)); q=index(rest, "\""); if(q==0) return ""
+              return substr(rest, 1, q-1)
+            }
+            {
+              qh=jstr(§0,"QH"); if(qh=="") next
+              pos=index(§0,"\"Answer\":[")
+              if(pos>0){
+                rest=substr(§0, pos)
+                if(match(rest, /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/)){
+                  print substr(rest, RSTART, RLENGTH)"="qh
+                }
+              }
+            }' > "§{PFX}_qm" 2>/dev/null || true
+        fi
+        flows=""
+        if [ -r /proc/net/nf_conntrack ]; then
+          flows=§(awk -v PFX="§PFX" '$AWK_ESC BEGIN{
+            while((getline l < (PFX "_hn")) > 0){ split(l,p,"="); if(p[1]!="") names[p[1]]=p[2] }
+            close(PFX "_hn")
+            while((getline l < (PFX "_qm")) > 0){ split(l,p,"="); if(p[1]!="") doms[p[1]]=p[2] }
+            close(PFX "_qm")
           }
-          if(src=="") next
-          sn=(src in names)?names[src]:src
-          dn=(dst in doms)?doms[dst]:dst
-          key=sn"|"dst"|"dport"|"proto
-          cnt[key]++; bytes[key]+=by; state[key]=(st!=""?st:"UDP"); host[key]=dn
-        }
-        END{
-          printf "["; c=0
-          for(k in cnt){
-            if(c>=35) break
-            split(k, p, "|")
-            printf "%s{\"src\":\"%s\",\"dst\":\"%s\",\"host\":\"%s\",\"port\":\"%s\",\"proto\":\"%s\",\"st\":\"%s\",\"conns\":%d,\"bytes\":%.0f}",
-              (c++?",":""), esc(p[1]), esc(p[2]), esc(host[k]), esc(p[3]), esc(p[4]), esc(state[k]), cnt[k], bytes[k]
+          NR<=220{
+            proto=§3; st=""; src=""; dst=""; dport=""; by=0
+            for(i=1;i<=NF;i++){
+              if(§i ~ /^(ESTABLISHED|SYN_SENT|TIME_WAIT|CLOSE|ASSURED)/) st=§i
+              if(§i ~ /^src=/ && src=="") src=substr(§i,5)
+              if(§i ~ /^dst=/ && dst=="") dst=substr(§i,5)
+              if(§i ~ /^dport=/ && dport=="") dport=substr(§i,7)
+              if(§i ~ /^bytes=/) by+=substr(§i,7)+0
+            }
+            if(src=="") next
+            sn=(src in names)?names[src]:src
+            dn=(dst in doms)?doms[dst]:dst
+            key=sn"|"dst"|"dport"|"proto
+            cnt[key]++; bytes[key]+=by; state[key]=(st!=""?st:"UDP"); host[key]=dn
           }
-          printf "]"
-        }' /proc/net/nf_conntrack 2>/dev/null)
+          END{
+            printf "["; c=0
+            for(k in cnt){
+              if(c>=35) break
+              split(k, p, "|")
+              printf "%s{\"src\":\"%s\",\"dst\":\"%s\",\"host\":\"%s\",\"port\":\"%s\",\"proto\":\"%s\",\"st\":\"%s\",\"conns\":%d,\"bytes\":%.0f}",
+                (c++?",":""), esc(p[1]), esc(p[2]), esc(host[k]), esc(p[3]), esc(p[4]), esc(state[k]), cnt[k], bytes[k]
+            }
+            printf "]"
+          }' /proc/net/nf_conntrack 2>/dev/null)
+        fi
+        rm -f "§{PFX}_hn" "§{PFX}_qm"
         [ -n "§flows" ] || flows='[]'
-        acct=§(cat /proc/sys/net/netfilter/nf_conntrack_acct 2>/dev/null | tr -dc '0-9')
-        printf '{"ifaces":%s,"flows":%s,"acct":%s}\n' "§{ifaces:-[]}" "§flows" "§{acct:-0}"
+        if [ -e /proc/sys/net/netfilter/nf_conntrack_acct ]; then
+          acct=§(cat /proc/sys/net/netfilter/nf_conntrack_acct 2>/dev/null | tr -dc '0-9')
+          [ -n "§acct" ] || acct=0
+        else
+          acct=-1
+        fi
+        printf '{"ifaces":%s,"flows":%s,"acct":%s}\n' "§{ifaces:-[]}" "§flows" "§acct"
         """
     )
 

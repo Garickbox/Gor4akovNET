@@ -60,12 +60,38 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
 
+// startKeepalive sends periodic SSH keepalive requests so Dropbear does not drop idle channels.
+func startKeepalive(client *ssh.Client, stop <-chan struct{}) {
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				_, _, _ = client.SendRequest("keepalive@openssh.com", false, nil)
+			}
+		}
+	}()
+}
+
+// prepareShellExec avoids Dropbear MAX_CMD_LEN limits on large multi-line scripts by
+// streaming the script over stdin into a self-deleting temp file in /tmp.
+func prepareShellExec(sess *ssh.Session, cleanCmd string) string {
+	if len(cleanCmd) > 1024 || strings.Contains(cleanCmd, "\n") {
+		sess.Stdin = strings.NewReader(cleanCmd + "\n")
+		return `s=/tmp/.gbox_exec_$$.sh; if cat > "$s" 2>/dev/null; then sh "$s" </dev/null; rc=$?; rm -f "$s"; exit $rc; else sh -s; fi`
+	}
+	return cleanCmd
+}
+
 // RunRouterSSH executes a command on the router via SSH without requiring a proxy.
 func RunRouterSSH(host string, port int32, user, pass, cmd string) (string, error) {
 	if port <= 0 {
 		port = 222
 	}
-	cleanCmd, timeout := parseCommandTimeout(cmd, 28*time.Second)
+	cleanCmd, timeout := parseCommandTimeout(cmd, 45*time.Second)
 	client, err := dialRouterSSH(host, port, user, pass, 10*time.Second)
 	if err != nil {
 		return "", err
@@ -80,12 +106,17 @@ func RunRouterSSH(host string, port int32, user, pass, cmd string) (string, erro
 	var stdout, stderr bytes.Buffer
 	sess.Stdout = &stdout
 	sess.Stderr = &stderr
+	execCmd := prepareShellExec(sess, cleanCmd)
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	stopKA := make(chan struct{})
+	startKeepalive(client, stopKA)
+	defer close(stopKA)
+
 	done := make(chan error, 1)
 	go func() {
-		done <- sess.Run(cleanCmd)
+		done <- sess.Run(execCmd)
 	}()
 
 	select {
@@ -278,11 +309,17 @@ func PullBytesSSH(host string, port int32, user, pass, cmd string) ([]byte, erro
 	var stdout, stderr bytes.Buffer
 	sess.Stdout = &stdout
 	sess.Stderr = &stderr
+	execCmd := prepareShellExec(sess, cleanCmd)
+
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	stopKA := make(chan struct{})
+	startKeepalive(client, stopKA)
+	defer close(stopKA)
+
 	done := make(chan error, 1)
 	go func() {
-		done <- sess.Run(cleanCmd)
+		done <- sess.Run(execCmd)
 	}()
 	select {
 	case <-ctx.Done():
@@ -335,12 +372,17 @@ func PullFileSSH(host string, port int32, user, pass, cmd, localPath string) (in
 	sess.Stdout = bw
 	var stderr bytes.Buffer
 	sess.Stderr = &stderr
+	execCmd := prepareShellExec(sess, cleanCmd)
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	stopKA := make(chan struct{})
+	startKeepalive(client, stopKA)
+	defer close(stopKA)
+
 	done := make(chan error, 1)
 	go func() {
-		done <- sess.Run(cleanCmd)
+		done <- sess.Run(execCmd)
 	}()
 
 	select {
