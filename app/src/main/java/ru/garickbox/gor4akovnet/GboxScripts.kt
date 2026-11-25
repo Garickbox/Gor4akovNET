@@ -405,18 +405,18 @@ object GboxScripts {
             {
                 printf '#!/bin/sh\nISO=%s\nSUB_PREFIX=%s\n' "'${'$'}ISO_FLAG'" "'${'$'}SUB_PREFIX'"
                 cat << 'EOFHOOK'
-[ "$ISO" = "1" ] || exit 0
-[ "${type:-ip6tables}" = "iptables" ] || exit 0
-MARK=$(LD_LIBRARY_PATH= ndmc -c "show ip policy" 2>/dev/null | awk 'tolower($0)~/description.*gor4akovnet/{f=1} f && tolower($0)~/mark/{sub(/.*[:=][ \t]*/,""); sub(/\/.*/,""); sub(/^0x/,""); print "0x"$1"/0x0fffffff"; exit}')
-WAN=$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
-[ -n "$WAN" ] || exit 0
-for w in $WAN; do
-    if [ -n "$MARK" ]; then
-        iptables -w -t mangle -C POSTROUTING -o "$w" ! -s "${SUB_PREFIX}.0/24" -m mark ! --mark "$MARK" -j CONNMARK --set-xmark 0x20000000/0x20000000 2>/dev/null || \
-        iptables -w -t mangle -I POSTROUTING -o "$w" ! -s "${SUB_PREFIX}.0/24" -m mark ! --mark "$MARK" -j CONNMARK --set-xmark 0x20000000/0x20000000 2>/dev/null || true
+[ "${'$'}ISO" = "1" ] || exit 0
+[ "${'$'}{type:-ip6tables}" = "iptables" ] || exit 0
+MARK=${'$'}(LD_LIBRARY_PATH= ndmc -c "show ip policy" 2>/dev/null | awk 'tolower($0)~/description.*gor4akovnet/{f=1} f && tolower($0)~/mark/{sub(/.*[:=][ \t]*/,""); sub(/\/.*/,""); sub(/^0x/,""); print "0x"$1"/0x0fffffff"; exit}')
+WAN=${'$'}(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if(${'$'}i=="dev"){print ${'$'}(i+1); exit}}')
+[ -n "${'$'}WAN" ] || exit 0
+for w in ${'$'}WAN; do
+    if [ -n "${'$'}MARK" ]; then
+        iptables -w -t mangle -C POSTROUTING -o "${'$'}w" ! -s "${'$'}{SUB_PREFIX}.0/24" -m mark ! --mark "${'$'}MARK" -j CONNMARK --set-xmark 0x20000000/0x20000000 2>/dev/null || \
+        iptables -w -t mangle -I POSTROUTING -o "${'$'}w" ! -s "${'$'}{SUB_PREFIX}.0/24" -m mark ! --mark "${'$'}MARK" -j CONNMARK --set-xmark 0x20000000/0x20000000 2>/dev/null || true
     else
-        iptables -w -t mangle -C POSTROUTING -o "$w" ! -s "${SUB_PREFIX}.0/24" -j CONNMARK --set-xmark 0x20000000/0x20000000 2>/dev/null || \
-        iptables -w -t mangle -I POSTROUTING -o "$w" ! -s "${SUB_PREFIX}.0/24" -j CONNMARK --set-xmark 0x20000000/0x20000000 2>/dev/null || true
+        iptables -w -t mangle -C POSTROUTING -o "${'$'}w" ! -s "${'$'}{SUB_PREFIX}.0/24" -j CONNMARK --set-xmark 0x20000000/0x20000000 2>/dev/null || \
+        iptables -w -t mangle -I POSTROUTING -o "${'$'}w" ! -s "${'$'}{SUB_PREFIX}.0/24" -j CONNMARK --set-xmark 0x20000000/0x20000000 2>/dev/null || true
     fi
 done
 EOFHOOK
@@ -472,19 +472,19 @@ EOFAGH
                     if [ -z "${'$'}AGH_INIT" ]; then
                         AGH_INIT="/opt/etc/init.d/S99AdGuardHome"
                         {
-                            printf '#!/bin/sh\nENABLED=yes\nPROCS=AdGuardHome\nARGS="-c /opt/etc/AdGuardHome/AdGuardHome.yaml -w /opt/etc/AdGuardHome --no-check-update"\nPREARGS=""\nDESC="AdGuard Home"\nPATH=/opt/sbin:/opt/bin:/opt/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n'
+                            printf '#!/bin/sh\nENABLED=yes\nPROCS=AdGuardHome\nBIN="%s"\nARGS="-c /opt/etc/AdGuardHome/AdGuardHome.yaml -w /opt/etc/AdGuardHome --no-check-update"\nPREARGS=""\nDESC="AdGuard Home"\nPATH=/opt/sbin:/opt/bin:/opt/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n' "${'$'}AGH_BIN"
                             cat << 'EOFINI'
 PIDFILE="/opt/var/run/AdGuardHome.pid"
 mkdir -p /opt/var/run
 case "$1" in
     start)
         if ps w 2>/dev/null | grep -q '[A]dGuardHome'; then echo "AdGuardHome already running"; exit 0; fi
-        nohup /opt/sbin/AdGuardHome $ARGS >/opt/var/log/AdGuardHome.log 2>&1 &
-        echo $! > "$PIDFILE"
+        nohup "${'$'}BIN" ${'$'}ARGS >/opt/var/log/AdGuardHome.log 2>&1 &
+        echo $! > "${'$'}PIDFILE"
         ;;
     stop)
         killall AdGuardHome 2>/dev/null || true
-        rm -f "$PIDFILE"
+        rm -f "${'$'}PIDFILE"
         ;;
     restart)
         $0 stop; sleep 1; $0 start

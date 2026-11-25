@@ -1113,7 +1113,7 @@ EOFAGH
             printf '#!/bin/sh\nENABLED=yes\nBIN="%s"\nARGS="-c /opt/etc/AdGuardHome/AdGuardHome.yaml -w /opt/etc/AdGuardHome --no-check-update"\n' "§AGH_BIN"
             cat << 'EOFINI'
 case "$1" in
-  start) ps w 2>/dev/null | grep -q '[A]dGuardHome' || nohup "$BIN" $ARGS >/opt/var/log/AdGuardHome.log 2>&1 & ;;
+  start) ps w 2>/dev/null | grep -q '[A]dGuardHome' || nohup "§BIN" §ARGS >/opt/var/log/AdGuardHome.log 2>&1 & ;;
   stop) killall AdGuardHome 2>/dev/null || true ;;
   restart) $0 stop; sleep 1; $0 start ;;
 esac
