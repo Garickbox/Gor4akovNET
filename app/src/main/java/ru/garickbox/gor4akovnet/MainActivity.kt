@@ -111,6 +111,26 @@ fun Gor4akovRootApp(prefs: Prefs) {
         Telemetry.recordOpen(prefs, passport?.model ?: "", passport?.ndmsTitle ?: "")
     }
 
+    // Одноразовая чистка legacy-хука 090-gor4akov-policy.sh на роутере при старте.
+    // Для тех, кто обновил APK, но ещё не запускал установку заново: хук от старых
+    // версий мог остаться в /opt/etc/ndm/netfilter.d/ и при ребуте роутера NDMS
+    // применит его — CONNMARK-exclude заглушит обход в Home/Guest. Удаляем тихо.
+    LaunchedEffect(Unit) {
+        val host = prefs.routerHost.ifBlank { return@LaunchedEffect }
+        withContext(Dispatchers.IO) {
+            runCatching {
+                if (Gboxcore.probeTCP(host, prefs.sshPort, 700)) {
+                    Gboxcore.runRouterSSH(
+                        host, prefs.sshPort, prefs.sshUser, prefs.sshPass,
+                        "rm -f /opt/etc/ndm/netfilter.d/090-gor4akov-policy.sh 2>/dev/null; " +
+                            "sed -i '/^POLICY_NAME=/d;/^POLICY_EXCLUDE=/d' /opt/zapret2/config 2>/dev/null; " +
+                            "echo HOOK_CLEANED"
+                    )
+                }
+            }
+        }
+    }
+
     LaunchedEffect(tab) {
         if (tab == 1 || tab == 2) refreshAllTelemetry()
     }

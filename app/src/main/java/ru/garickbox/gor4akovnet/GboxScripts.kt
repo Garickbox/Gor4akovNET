@@ -637,6 +637,11 @@ EOFINI
                 sleep 2
                 if ps w 2>/dev/null | grep -q '[n]fqws2' || ps 2>/dev/null | grep -q '[n]fqws2'; then nfq_cnt=1; fi
             fi
+            # ФИНАЛЬНЫЙ save: гарантирует, что всё применённое (permit global ISP,
+            # AP state=up, DHCP pool, dns-server) уйдёт в startup-config. Без этого
+            # на сценариях без ISO/AdGuard save вообще не вызывался, и после ребута
+            # политика снова оказывалась без permit global ISP.
+            LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null 2>&1 || true
             if [ "${'$'}{nfq_cnt:-0}" -gt 0 ]; then
                 touch /opt/etc/.gor4akov_installed 2>/dev/null || true
                 echo "NFQWS_PROCS=${'$'}nfq_cnt"
