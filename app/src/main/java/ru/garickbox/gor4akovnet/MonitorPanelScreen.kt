@@ -529,7 +529,7 @@ fun MonitorPanelScreen(
                 val writtenBytes = withContext(Dispatchers.IO) {
                     Gboxcore.pullFileSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, cmd, tempFile.absolutePath)
                 }
-                if (writtenBytes > 128L) {
+                if (writtenBytes > 4096L) {
                     val b = prefs.commitStreamedBackupFile(
                         file = tempFile,
                         label = if (includeMediaBackup) "Полный 100% + USB" else "Полный снимок v2",

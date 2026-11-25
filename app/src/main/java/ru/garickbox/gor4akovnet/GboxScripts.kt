@@ -768,7 +768,9 @@ EOFINI
             tar --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/tmp/*' --exclude='*.swap' --exclude='swapfile' \
                 -czf - "${'$'}@" 2>/dev/null
         fi
+        tar_rc=${'$'}?
         rm -rf "${'$'}TMPB"
+        exit ${'$'}tar_rc
     """.trimIndent()
 
     val FULL_BACKUP_TAR_CMD: String get() = buildFullBackupCmd(includeUserMedia = false)
