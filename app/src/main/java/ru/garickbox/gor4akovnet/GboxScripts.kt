@@ -363,7 +363,11 @@ object GboxScripts {
                     LD_LIBRARY_PATH= ndmc -c "interface ${'$'}BR_NAME description Gor4akovNET" >/dev/null
                     LD_LIBRARY_PATH= ndmc -c "interface ${'$'}BR_NAME security-level private" >/dev/null
                     LD_LIBRARY_PATH= ndmc -c "interface ${'$'}BR_NAME ip address ${'$'}{SUB_PREFIX}.1 255.255.255.0" >/dev/null
-                    LD_LIBRARY_PATH= ndmc -c "interface ${'$'}BR_NAME ip policy Gor4akovNET" >/dev/null
+                    # ВАЖНО: НЕ вешаем ip policy Gor4akovNET на Bridge — у неё "no permit global ISP",
+                    # это блокирует интернет. Обход работает глобально через NFQUEUE на WAN (eth3),
+                    # а точечно политика выдаётся клиентам в Мониторе через ip hotspot host <MAC> policy.
+                    # Для интернета в новой сети нужен NAT:
+                    LD_LIBRARY_PATH= ndmc -c "ip nat ${'$'}BR_NAME" >/dev/null 2>&1
                     LD_LIBRARY_PATH= ndmc -c "interface ${'$'}BR_NAME up" >/dev/null
 
                     LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET" >/dev/null
