@@ -91,7 +91,8 @@ data class ServiceStatus(
     val policyActive: Boolean = false,
     val wifiBridgeName: String = "",
     val wifiSubnet: String = "",
-    val wifiSsid: String = ""
+    val wifiSsid: String = "",
+    val installMarker: Boolean = false
 )
 
 data class ClientHost(

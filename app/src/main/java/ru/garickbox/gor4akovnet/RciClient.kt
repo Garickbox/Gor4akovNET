@@ -151,25 +151,97 @@ class RciSession(
         return request("/rci/parse", method = "POST", jsonBody = payload.toString(), readTimeoutMs = readTimeoutMs)
     }
 
-    fun restoreRunningConfigChunked(cfgText: String, skipDangerous: Boolean = true): Pair<Int, Int> {
-        val lines = cfgText.lines()
-            .map { it.trim() }
-            .filter { line ->
-                line.isNotBlank() &&
-                    !line.startsWith("!") &&
-                    !line.startsWith("#") &&
-                    !(skipDangerous && (
-                        line.startsWith("user ") ||
-                            line.startsWith("no user ") ||
-                            line.startsWith("system mode") ||
-                            line.startsWith("service ")
-                        ))
+    private fun countParseErrors(raw: String, fallbackCount: Int): Int {
+        val trimmed = raw.trim()
+        if (trimmed.isBlank()) return fallbackCount
+        fun hasItemError(item: JSONObject?): Boolean {
+            val stArr = item?.optJSONObject("parse")?.optJSONArray("status")
+                ?: item?.optJSONArray("status")
+                ?: return false
+            for (i in 0 until stArr.length()) {
+                val st = stArr.optJSONObject(i)?.optString("status", "") ?: ""
+                if (st.equals("error", ignoreCase = true)) return true
             }
+            return false
+        }
+        return runCatching {
+            when {
+                trimmed.startsWith("[") -> {
+                    val arr = JSONArray(trimmed)
+                    var errs = 0
+                    for (i in 0 until arr.length()) {
+                        if (hasItemError(arr.optJSONObject(i))) errs++
+                    }
+                    errs
+                }
+                trimmed.startsWith("{") -> if (hasItemError(JSONObject(trimmed))) 1 else 0
+                else -> 0
+            }
+        }.getOrDefault(0)
+    }
+
+    private fun flattenNdmsConfigLines(cfgText: String, skipDangerous: Boolean = true): List<String> {
+        val out = mutableListOf<String>()
+        var block = ""
+        for (rawLine in cfgText.lines()) {
+            val cleanEnd = rawLine.trimEnd()
+            val trimmed = cleanEnd.trim()
+            if (trimmed.isBlank() || trimmed.startsWith("#")) continue
+            if (trimmed.startsWith("!")) {
+                if (trimmed == "!") block = ""
+                continue
+            }
+            val indented = cleanEnd.firstOrNull()?.let { it == ' ' || it == '\t' } == true
+            val fullCmd = if (indented && block.isNotBlank()) "$block $trimmed" else trimmed
+            if (!indented) {
+                block = trimmed
+            }
+            if (skipDangerous && (
+                    fullCmd.startsWith("user ") ||
+                        fullCmd.startsWith("no user ") ||
+                        fullCmd.startsWith("system mode")
+                    )
+            ) {
+                continue
+            }
+            // Do not emit bare container line if child commands will carry it; emit leaf/top commands directly
+            if (indented || (
+                    trimmed != "system" &&
+                        trimmed != "cifs" &&
+                        trimmed != "dns-proxy" &&
+                        trimmed != "ntce" &&
+                        trimmed != "ip http webdav" &&
+                        !trimmed.startsWith("interface ") &&
+                        !trimmed.startsWith("ip dhcp pool ") &&
+                        !trimmed.startsWith("ip policy ") &&
+                        !trimmed.startsWith("mws wlan ") &&
+                        !trimmed.startsWith("schedule ") &&
+                        !trimmed.startsWith("ipv6 subnet ")
+                    )
+            ) {
+                out.add(fullCmd)
+            } else {
+                // Also ensure container object exists before subcommands
+                out.add(trimmed)
+            }
+        }
+        return out
+    }
+
+    fun restoreRunningConfigChunked(cfgText: String, skipDangerous: Boolean = true): Pair<Int, Int> {
+        val lines = flattenNdmsConfigLines(cfgText, skipDangerous)
         var applied = 0
         var failed = 0
         lines.chunked(30).forEach { chunk ->
             val res = runCatching { parseCli(chunk, readTimeoutMs = 60000) }
-            if (res.isSuccess) applied += chunk.size else failed += chunk.size
+            if (res.isSuccess) {
+                val errs = countParseErrors(res.getOrDefault(""), chunk.size)
+                val ok = (chunk.size - errs).coerceAtLeast(0)
+                applied += ok
+                failed += errs
+            } else {
+                failed += chunk.size
+            }
         }
         runCatching { parseCli(listOf("system configuration save"), readTimeoutMs = 30000) }
         return applied to failed
@@ -272,6 +344,20 @@ object RciClient {
                     comps.add(key.lowercase())
                 }
             }
+            fun addCompTokens(raw: String?) {
+                raw?.split(',', ' ', ';', '\n')?.forEach { tok ->
+                    val t = tok.trim().lowercase()
+                    if (t.isNotBlank()) comps.add(t)
+                }
+            }
+            addCompTokens(verJson.optString("components", ""))
+            addCompTokens(ndmObj?.optString("components", ""))
+            addCompTokens(verJson.optJSONObject("ndw")?.optString("components", ""))
+            listOf(verJson.optJSONArray("components"), ndmObj?.optJSONArray("components"), verJson.optJSONObject("ndw")?.optJSONArray("components")).forEach { arr ->
+                if (arr != null) {
+                    for (i in 0 until arr.length()) addCompTokens(arr.optString(i, ""))
+                }
+            }
 
             val mediaList = parseMedia(mediaRaw)
             val hasUsb = mediaList.any { it.isUsb }
@@ -285,6 +371,13 @@ object RciClient {
             val webdavPort = ndms5WebdavMatch?.groupValues?.getOrNull(1)?.toIntOrNull()
                 ?: webdavPortLine?.substringAfter("webdav port ")?.toIntOrNull()
                 ?: if (webdavEnabled5) 80 else if (runCfg.contains("webdav enable")) 8080 else 0
+
+            if (webdavEnabled5 || ndms5WebdavMatch != null || runCfg.contains("ip http webdav") || runCfg.contains("webdav enable")) {
+                comps.add("webdav")
+            }
+            if (opkgDiskLine.isNotBlank() || opkgInitrc.isNotBlank()) {
+                comps.add("opkg")
+            }
 
             val ssh222 = Gboxcore.probeTCP(host, 222, 1200)
             if (comps.none { it.contains("opkg") } || comps.none { it.contains("netfilter") }) {
@@ -366,7 +459,8 @@ object RciClient {
 
             fun addPart(uuidKey: String, p: JSONObject) {
                 val fs = p.optString("fstype", p.optString("fs", p.optString("filesystem", "")))
-                val total = p.optLong("total", 0L) / 1024L / 1024L
+                val rawTotal = p.optLong("total", 0L).let { if (it > 0L) it else p.optLong("size", 0L) }
+                val total = rawTotal / 1024L / 1024L
                 val free = p.optLong("free", 0L) / 1024L / 1024L
                 val label = p.optString("label", p.optString("name", uuidKey)).ifBlank { devName }
                 result.add(

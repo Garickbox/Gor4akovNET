@@ -323,6 +323,27 @@ fun MonitorPanelScreen(
         }
     }
 
+    fun estimateBackupSize() {
+        scope.launch {
+            loading = true
+            actionErrMsg = ""
+            try {
+                val raw = runSshCmd(prefs, GboxScripts.ESTIMATE_BACKUP_SIZE_CMD, readOnly = true)
+                val line = raw.lines().firstOrNull { it.startsWith("EST|") } ?: ""
+                val p = line.split("|")
+                backupEst = if (p.size >= 4) {
+                    "Система (/opt + конфиг): ~${p[1]} МБ (до сжатия) • Носители: ${p[2]} МБ (${p[3]})"
+                } else {
+                    raw.take(180)
+                }
+            } catch (e: Throwable) {
+                actionErrMsg = "Оценка размера: ${e.message}"
+            } finally {
+                loading = false
+            }
+        }
+    }
+
     fun loadPage(target: MonitorPage, force: Boolean = false) {
         pageErrMsg = ""
         if (target == MonitorPage.BACKUPS) {
@@ -485,27 +506,6 @@ fun MonitorPanelScreen(
                 loadPage(MonitorPage.DNS, force = true)
             } catch (e: Throwable) {
                 actionErrMsg = "AdGuard: ${e.message}"
-            } finally {
-                loading = false
-            }
-        }
-    }
-
-    fun estimateBackupSize() {
-        scope.launch {
-            loading = true
-            actionErrMsg = ""
-            try {
-                val raw = runSshCmd(prefs, GboxScripts.ESTIMATE_BACKUP_SIZE_CMD, readOnly = true)
-                val line = raw.lines().firstOrNull { it.startsWith("EST|") } ?: ""
-                val p = line.split("|")
-                backupEst = if (p.size >= 4) {
-                    "Система (/opt + конфиг): ~${p[1]} МБ (до сжатия) • Носители: ${p[2]} МБ (${p[3]})"
-                } else {
-                    raw.take(180)
-                }
-            } catch (e: Throwable) {
-                actionErrMsg = "Оценка размера: ${e.message}"
             } finally {
                 loading = false
             }
@@ -1443,14 +1443,16 @@ private fun OverviewPage(
         val aghInst = wan?.optBoolean("agh_inst", false) == true
         val aghUp = svc?.optBoolean("adguard", false) == true
         val dnsOv = wan?.optBoolean("dns_ov", false) == true
-        val polOk = wan?.optBoolean("policy_ok", false) == true
+        val polMode = wan?.optString("policy_mode", "policy") ?: "policy"
+        val polName = wan?.optString("policy_name", "Gor4akovNET").orEmpty().ifBlank { "Gor4akovNET" }
+        val polOk = wan?.optBoolean("policy_ok", false) == true || polMode == "global"
 
         val warns = mutableListOf<String>()
         if (!entOk) warns.add("Entware не смонтирован")
         if (!nfqUp) warns.add("nfqws2 остановлен")
         if (nfqRules == 0) warns.add("нет правил NFQUEUE")
         if (dnsOv && !aghUp) warns.add("dns-override при спящем AdGuard!")
-        if (!polOk) warns.add("политика Gor4akovNET выкл")
+        if (polMode != "global" && !polOk) warns.add("политика $polName выкл")
         if (aghInst && !aghUp && !dnsOv) warns.add("AdGuard остановлен")
 
         val isGreen = warns.isEmpty()
@@ -1478,7 +1480,7 @@ private fun OverviewPage(
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold
                     )
-                    Text("NFQUEUE правил: $nfqRules • Entware: ${if (entOk) "OK" else "Нет"} • Политика: ${if (polOk) "ON" else "OFF"}", color = Color(0xFFCBD5E1), fontSize = 9.5.sp)
+                    Text("NFQUEUE правил: $nfqRules • Entware: ${if (entOk) "OK" else "Нет"} • Политика: ${if (polMode == "global") "Общая (LAN)" else if (polOk) "ON ($polName)" else "OFF"}", color = Color(0xFFCBD5E1), fontSize = 9.5.sp)
                 }
                 if (!isGreen) {
                     Button(onClick = onAutoDiag, enabled = !busy, modifier = Modifier.height(28.dp), contentPadding = PaddingValues(horizontal = 8.dp)) {
@@ -1575,11 +1577,11 @@ private fun OverviewPage(
     }
 
     // Optimizer Do / Posle
-    var optZram by remember(data) { mutableStateOf(true) }
-    var optPpeHw by remember(data) { mutableStateOf(true) }
-    var optPpeSw by remember(data) { mutableStateOf(true) }
-    var optCache by remember(data) { mutableStateOf(true) }
-    var optCt by remember(data) { mutableStateOf(true) }
+    var optZram by remember { mutableStateOf(true) }
+    var optPpeHw by remember { mutableStateOf(true) }
+    var optPpeSw by remember { mutableStateOf(true) }
+    var optCache by remember { mutableStateOf(true) }
+    var optCt by remember { mutableStateOf(true) }
     MiniCard("Тест и автооптимизация (До / После)") {
         Text("Замерьте скорость, включите оптимизации ядра/AdGuard и сравните реальный прирост.", color = Color(0xFF94A3B8), fontSize = 10.sp)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -1785,10 +1787,10 @@ private fun StoragePage(
             onAction("WebDAV", MonitorScripts.ndmcSaveCmd(if (v == 1) "ip http webdav" else "no ip http webdav", if (v == 1) "ip http webdav enable" else "no ip http webdav enable"))
         }
         MiniSwitch("ZRAM (сжатие RAM)", "Увеличивает доступную память без износа флешки", ndms.optBoolean("zram"), { onToggleHelp("zram") }) { v ->
-            onAction("ZRAM", MonitorScripts.ndmcSaveCmd(if (v == 1) "zram" else "no zram"))
+            onAction("ZRAM", MonitorScripts.ndmcSaveCmd(if (v == 1) "system zram" else "system no zram"))
         }
         MiniSwitch("Режим USB 2.0", "Повышает стабильность питания и убирает помехи 2.4 ГГц", ndms.optBoolean("usb2"), { onToggleHelp("usb2") }) { v ->
-            onAction("USB 2.0", MonitorScripts.ndmcSaveCmd(if (v == 1) "dev.usb.force_usb2 1" else "no dev.usb.force_usb2"))
+            onAction("USB 2.0", MonitorScripts.ndmcSaveCmd(if (v == 1) "system set dev.usb.force_usb2 1" else "system set dev.usb.force_usb2 0"))
         }
     }
 }
@@ -2406,12 +2408,11 @@ private fun WifiPage(
     }
 
     MiniCard("Функции Wi-Fi и Гостевая сеть") {
-        MiniSwitch("Band Steering (Bridge0)", "Переводит гаджеты между 2.4G и 5G", wifi.optBoolean("band_steer"), { onToggleHelp("band_steer") }) { v ->
-            onAction("Band Steering", MonitorScripts.ndmcSaveCmd("interface Bridge0 ${if (v == 1) "band-steering" else "no band-steering"}"))
+        MiniSwitch("Band Steering (Bridge0 / MWS)", "Переводит гаджеты между 2.4G и 5G", wifi.optBoolean("band_steer"), { onToggleHelp("band_steer") }) { v ->
+            onAction("Band Steering", MonitorScripts.setBandSteeringCmd(v == 1))
         }
         MiniSwitch("Быстрый роуминг 802.11r (FT)", "Мгновенный переход 2.4G <-> 5G", wifi.optBoolean("ft"), { onToggleHelp("ft") }) { v ->
-            val c = if (v == 1) "ft enable" else "no ft enable"
-            onAction("802.11r FT", MonitorScripts.ndmcSaveCmd("interface WifiMaster0/AccessPoint0 $c", "interface WifiMaster1/AccessPoint0 $c"))
+            onAction("802.11r FT", MonitorScripts.setWifiFtCmd(v == 1))
         }
         MiniSwitch("Target Wake Time (Wi-Fi 6 AX)", "Экономит батарею устройств на 5 ГГц", wifi.optBoolean("twt"), { onToggleHelp("twt") }) { v ->
             onAction("Wi-Fi 6 TWT", MonitorScripts.ndmcSaveCmd("interface WifiMaster1 ${if (v == 1) "target-waketime" else "no target-waketime"}"))
@@ -2775,7 +2776,7 @@ private fun FilesPage(
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(5.dp))
                     .background(Color(0xFF111827))
-                    .clickable { if (isDir || isLink) onOpenDir(full) else onOpenFile(full) }
+                    .clickable { if (isDir) onOpenDir(full) else onOpenFile(full) }
                     .padding(horizontal = 7.dp, vertical = 5.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween

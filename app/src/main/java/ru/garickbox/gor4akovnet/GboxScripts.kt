@@ -32,7 +32,7 @@ object GboxScripts {
         mem_avail=${'$'}(awk '/MemAvailable/{print int(${'$'}2/1024)}' /proc/meminfo)
         [ -z "${'$'}mem_avail" ] && mem_avail=${'$'}(awk '/MemFree/{print int(${'$'}2/1024)}' /proc/meminfo)
         mem_used=${'$'}((mem_tot - mem_avail))
-        zram_used=${'$'}(awk '/zram/{u+=${'$'}3} END{print int(u/1024)}' /proc/swaps 2>/dev/null || echo 0)
+        zram_used=${'$'}(awk '/zram/{u+=${'$'}4} END{print int(u/1024)}' /proc/swaps 2>/dev/null || echo 0)
         zram_tot=${'$'}(awk '/zram/{t+=${'$'}3} END{print int(t/1024)}' /proc/swaps 2>/dev/null || echo 0)
         sw_used=${'$'}(awk 'NR>1 && !/zram/{u+=${'$'}4} END{print int(u/1024)}' /proc/swaps 2>/dev/null || echo 0)
         sw_tot=${'$'}(awk 'NR>1 && !/zram/{t+=${'$'}3} END{print int(t/1024)}' /proc/swaps 2>/dev/null || echo 0)
@@ -80,11 +80,18 @@ object GboxScripts {
         elif ps w 2>/dev/null | grep -q '[z]2k-warpd'; then warp_run=1
         elif ps 2>/dev/null | grep -q '[z]2k-warpd'; then warp_run=1
         fi
-        tg_run=0; ps | grep -q '[t]g-mtproxy-client' && tg_run=1
-        db_run=0; ps | grep -q '[d]ropbear' && db_run=1
+        ps_all=${'$'}(ps w 2>/dev/null || ps 2>/dev/null)
+        tg_run=0; printf '%s\n' "${'$'}ps_all" | grep -q '[t]g-mtproxy-client' && tg_run=1
+        db_run=0; printf '%s\n' "${'$'}ps_all" | grep -q '[d]ropbear' && db_run=1
         pol_name=${'$'}(awk -F= '/^POLICY_NAME=/{gsub(/["'"'"']/,"",${'$'}2); print ${'$'}2; exit}' /opt/zapret2/config 2>/dev/null)
-        [ -z "${'$'}pol_name" ] && pol_name="Gor4akovNET"
-        pol_act=0; echo "${'$'}cfg" | grep -q "ip policy Gor4akovNET" && pol_act=1
+        pol_act=0
+        if [ -n "${'$'}pol_name" ]; then
+            echo "${'$'}cfg" | grep -q "^ip policy ${'$'}pol_name${'$'}" && pol_act=1
+        else
+            echo "${'$'}cfg" | grep -q "^ip policy Gor4akovNET" && pol_act=1
+            pol_name="Gor4akovNET"
+        fi
+        inst_mark=0; [ -f /opt/etc/.gor4akov_installed ] && inst_mark=1
         eval_br=${'$'}(echo "${'$'}cfg" | awk '
             /^interface Bridge[0-9]+/ { cur=${'$'}2; inb=1; isg=0; ip="" }
             inb && /^[ \t]+description Gor4akovNET/ { isg=1 }
@@ -101,7 +108,7 @@ object GboxScripts {
             inw && /^!/ { if (inw && isg && ss!="") { print ss; exit } inw=0 }
             END { if (inw && isg && ss!="") print ss }
         ')
-        echo "SVC|${'$'}ent|${'$'}z2k_inst|${'$'}z2k_run|${'$'}z2k_mode|${'$'}nfq|${'$'}ipt_cnt|${'$'}agh_inst|${'$'}agh_run|${'$'}dns_ov|${'$'}warp_inst|${'$'}warp_run|${'$'}tg_run|${'$'}db_run|${'$'}pol_name|${'$'}pol_act|${'$'}br_name|${'$'}br_sub|${'$'}br_ssid"
+        echo "SVC|${'$'}ent|${'$'}z2k_inst|${'$'}z2k_run|${'$'}z2k_mode|${'$'}nfq|${'$'}ipt_cnt|${'$'}agh_inst|${'$'}agh_run|${'$'}dns_ov|${'$'}warp_inst|${'$'}warp_run|${'$'}tg_run|${'$'}db_run|${'$'}pol_name|${'$'}pol_act|${'$'}br_name|${'$'}br_sub|${'$'}br_ssid|${'$'}inst_mark"
     """.trimIndent()
 
     val CLIENTS_SCRIPT = """
@@ -152,9 +159,10 @@ object GboxScripts {
             set +e
             MAC=$qMac
             if [ "${if (highPriority) 1 else 0}" = "1" ]; then
-                LD_LIBRARY_PATH= ndmc -c "ip hotspot host ${'$'}MAC qos class 1"
+                LD_LIBRARY_PATH= ndmc -c "ip hotspot host ${'$'}MAC permit" >/dev/null 2>&1
+                LD_LIBRARY_PATH= ndmc -c "ip hotspot host ${'$'}MAC priority 1"
             else
-                LD_LIBRARY_PATH= ndmc -c "no ip hotspot host ${'$'}MAC qos"
+                LD_LIBRARY_PATH= ndmc -c "ip hotspot host ${'$'}MAC priority 6"
             fi
             LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null 2>&1
             echo "OK"
@@ -335,7 +343,7 @@ object GboxScripts {
                     done
                 fi
                 SUB_THIRD=77
-                while echo "${'$'}CFG" | grep -q "192.168.${'$'}{SUB_THIRD}." && ! echo "${'$'}CFG" | awk -v b="^interface ${'$'}BR_NAME${'$'}" "${'$'}0 ~ b{f=1} f && /^!/{f=0} f" | grep -q "192.168.${'$'}{SUB_THIRD}."; do
+                while echo "${'$'}CFG" | grep -q "192.168.${'$'}{SUB_THIRD}." && ! echo "${'$'}CFG" | awk -v b="^interface ${'$'}BR_NAME${'$'}" '${'$'}0 ~ b{f=1} f && /^!/{f=0} f' | grep -q "192.168.${'$'}{SUB_THIRD}."; do
                     SUB_THIRD=${'$'}((SUB_THIRD + 1))
                 done
                 SUB_PREFIX="192.168.${'$'}{SUB_THIRD}"
@@ -355,17 +363,17 @@ object GboxScripts {
 
                     for master in WifiMaster0 WifiMaster1; do
                         if echo "${'$'}CFG" | grep -q "^interface ${'$'}{master}${'$'}"; then
-                            ap="${'$'}(echo "${'$'}CFG" | awk -v m="^interface ${'$'}{master}/" "${'$'}0 ~ m{cur=${'$'}2; inb=1; g=0} inb && /description Gor4akovNET/{g=1} inb && /^!/{if(g){print cur; exit} inb=0} END{if(inb && g) print cur}")"
+                            ap="${'$'}(echo "${'$'}CFG" | awk -v m="^interface ${'$'}{master}/" '${'$'}0 ~ m{cur=${'$'}2; inb=1; g=0} inb && /description Gor4akovNET/{g=1} inb && /^!/{if(g){print cur; exit} inb=0} END{if(inb && g) print cur}')"
                             if [ -z "${'$'}ap" ]; then
                                 for slot in 1 2 3 4 5 6 7; do
                                     cand="${'$'}{master}/AccessPoint${'$'}{slot}"
                                     if ! LD_LIBRARY_PATH= ndmc -c "show interface ${'$'}cand" 2>/dev/null | grep -qiE "id:|AccessPoint|type:"; then
                                         continue
                                     fi
-                                    blk="${'$'}(echo "${'$'}CFG" | awk -v c="^interface ${'$'}cand${'$'}" "${'$'}0 ~ c{f=1} f{print} f && /^!/{exit}")"
+                                    blk="${'$'}(echo "${'$'}CFG" | awk -v c="^interface ${'$'}cand${'$'}" '${'$'}0 ~ c{f=1} f{print} f && /^!/{exit}')"
                                     if [ -n "${'$'}blk" ]; then
                                         alias="${'$'}(echo "${'$'}blk" | awk '/^[ \t]+rename /{print ${'$'}2; exit}')"
-                                        echo "${'$'}blk" | grep -qE "^[ \t]+(ssid |description )" && continue
+                                        echo "${'$'}blk" | grep -qE "^[ \t]+(ssid |description |authentication |encryption (enable|wpa))" && continue
                                         echo "${'$'}CFG" | grep -qE "^[ \t]+include (${'$'}cand|${'$'}{alias:-__NONE__})${'$'}" && continue
                                     fi
                                     ap="${'$'}cand"
@@ -376,6 +384,7 @@ object GboxScripts {
                             LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap" >/dev/null
                             LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap description Gor4akovNET" >/dev/null
                             LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap ssid ${'$'}SAFE_SSID" >/dev/null
+                            LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap encryption enable" >/dev/null 2>&1 || true
                             LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap encryption wpa2" >/dev/null
                             LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap authentication wpa-psk ${'$'}SAFE_PASS" >/dev/null
                             LD_LIBRARY_PATH= ndmc -c "interface ${'$'}{BR_NAME} include ${'$'}ap" >/dev/null
@@ -538,6 +547,7 @@ EOFINI
                 sleep 2
                 if ps w 2>/dev/null | grep -q '[n]fqws2' || ps 2>/dev/null | grep -q '[n]fqws2'; then nfq_cnt=1; fi
             fi
+            [ "${'$'}{nfq_cnt:-0}" -gt 0 ] && touch /opt/etc/.gor4akov_installed 2>/dev/null || true
             echo "NFQWS_PROCS=${'$'}{nfq_cnt:-0}"
             echo "INSTALL_DONE"
         """.trimIndent()
@@ -583,10 +593,13 @@ EOFINI
             LD_LIBRARY_PATH= ndmc -c "no opkg dns-override" >/dev/null 2>&1 || true
         fi
         LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null 2>&1
-        rm -f /opt/etc/ndm/netfilter.d/090-gor4akov-policy.sh
+        rm -f /opt/etc/ndm/netfilter.d/090-gor4akov-policy.sh /opt/etc/.gor4akov_installed
         if [ "${if (removeZapret) 1 else 0}" = "1" ]; then
-            [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 stop >/dev/null 2>&1 || true
-            rm -rf /opt/zapret2 /opt/etc/init.d/S99zapret2 /opt/etc/ndm/netfilter.d/000-zapret2.sh
+            for ini in /opt/etc/init.d/S99zapret2 /opt/etc/init.d/S96z2k-webpanel /opt/etc/init.d/S99z2k-scheduler /opt/etc/init.d/S51z2k-warp /opt/etc/init.d/S98tg-tunnel /opt/etc/init.d/S97z2k-http-tunnel; do
+                [ -x "${'$'}ini" ] && "${'$'}ini" stop >/dev/null 2>&1 || true
+                rm -f "${'$'}ini"
+            done
+            rm -rf /opt/zapret2 /opt/etc/ndm/netfilter.d/000-zapret2.sh
         else
             [ -f /opt/zapret2/config ] && sed -i '/^POLICY_NAME=/d;/^POLICY_EXCLUDE=/d' /opt/zapret2/config
             [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true
@@ -765,12 +778,34 @@ EOFINI
                 [ -s "${'$'}CFG_SRC" ] || CFG_SRC="${'$'}RST/startup-config.txt"
                 if [ -s "${'$'}CFG_SRC" ]; then
                     echo "=== Восстановление NDMS конфигурации ==="
-                    grep -vE '^[[:space:]]*$|^[[:space:]]*!|^[[:space:]]*#|^[[:space:]]*(user|no user|system mode) ' "${'$'}CFG_SRC" | \
+                    err_cnt=0
+                    ok_cnt=0
+                    awk '
+                      { sub(/\r$/, "") }
+                      /^[[:space:]]*$/ || /^[[:space:]]*#/ { next }
+                      /^[[:space:]]*!/ { if (${'$'}0 ~ /^!$/) blk=""; next }
+                      /^[ \t]+/ {
+                        sub(/^[ \t]+/, "")
+                        cmd = (blk != "" ? blk " " ${'$'}0 : ${'$'}0)
+                        if (cmd !~ /^(user|no user|system mode) /) print cmd
+                        next
+                      }
+                      {
+                        blk = ${'$'}0
+                        if (blk !~ /^(user|no user|system mode) /) print blk
+                      }
+                    ' "${'$'}CFG_SRC" > "${'$'}RST/.ndms_flat.txt"
                     while IFS= read -r line; do
-                        LD_LIBRARY_PATH= /bin/ndmc -c "${'$'}line" >/dev/null 2>&1 || true
-                    done
+                        [ -n "${'$'}line" ] || continue
+                        out_c=${'$'}(LD_LIBRARY_PATH= /bin/ndmc -c "${'$'}line" 2>&1)
+                        if printf '%s' "${'$'}out_c" | grep -qiE 'error|invalid|no such command'; then
+                            err_cnt=${'$'}((err_cnt + 1))
+                        else
+                            ok_cnt=${'$'}((ok_cnt + 1))
+                        fi
+                    done < "${'$'}RST/.ndms_flat.txt"
                     LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1 || true
-                    echo "[OK] NDMS конфигурация применена и сохранена"
+                    echo "[OK] NDMS конфигурация: применено ${'$'}ok_cnt, пропущено/ошибок ${'$'}err_cnt"
                 fi
             fi
             [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true
@@ -794,8 +829,23 @@ EOFINI
             exit 1
         fi
         echo "[OK] Entware активен"
+        pol_name=${'$'}(awk -F= '/^POLICY_NAME=/{gsub(/["'"'"'\r\n]/,"",${'$'}2); print ${'$'}2; exit}' /opt/zapret2/config 2>/dev/null)
+        if [ -n "${'$'}pol_name" ]; then
+            rc_pol=${'$'}(LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" 2>/dev/null)
+            if ! printf '%s\n' "${'$'}rc_pol" | grep -q "^ip policy ${'$'}pol_name${'$'}"; then
+                echo "[FIX] Создаю отсутствующую политику NDMS: ${'$'}pol_name..."
+                LD_LIBRARY_PATH= /bin/ndmc -c "ip policy ${'$'}pol_name" >/dev/null 2>&1
+                LD_LIBRARY_PATH= /bin/ndmc -c "ip policy ${'$'}pol_name description Gor4akovNET" >/dev/null 2>&1
+                LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1
+            else
+                echo "[OK] Политика ${'$'}pol_name активна"
+            fi
+        else
+            echo "[OK] Режим общего обхода (без отдельной политики)"
+        fi
         if [ -x /opt/etc/init.d/S99zapret2 ]; then
-            nfq=${'$'}(ps | grep -c '[n]fqws2' | head -n1 | tr -dc '0-9')
+            ps_all=${'$'}(ps w 2>/dev/null || ps 2>/dev/null)
+            nfq=${'$'}(printf '%s\n' "${'$'}ps_all" | grep -c '[n]fqws2' | head -n1 | tr -dc '0-9')
             if [ "${'$'}{nfq:-0}" -eq 0 ]; then
                 echo "[FIX] nfqws2 был остановлен — запускаю S99zapret2..."
                 /opt/etc/init.d/S99zapret2 restart

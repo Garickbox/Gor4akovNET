@@ -95,7 +95,8 @@ fun Gor4akovRootApp(prefs: Prefs) {
                                     policyActive = p[15] == "1",
                                     wifiBridgeName = p[16],
                                     wifiSubnet = p[17],
-                                    wifiSsid = p[18]
+                                    wifiSsid = p[18],
+                                    installMarker = p.getOrNull(19) == "1"
                                 )
                             }
                         }
@@ -250,7 +251,8 @@ fun Gor4akovRootApp(prefs: Prefs) {
                         return@TextButton
                     }
                     val isPriv = prefs.setAppPin(clean)
-                    if (isPriv) privileged = true
+                    privileged = isPriv
+                    if (!isPriv && tab == 3) tab = 0
                     showPinDialog = false
                 }) { Text("Сохранить", color = DeckColors.Emerald) }
             },

@@ -273,6 +273,10 @@ func pushReaderSSH(host string, port int32, user, pass, remotePath string, src i
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	stopKA := make(chan struct{})
+	startKeepalive(client, stopKA)
+	defer close(stopKA)
+
 	done := make(chan error, 1)
 	go func() {
 		done <- sess.Run(cmd)

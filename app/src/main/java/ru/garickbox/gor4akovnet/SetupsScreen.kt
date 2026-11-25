@@ -52,8 +52,14 @@ fun SetupsScreen(
         }
     }
 
-    var installLocked by remember(prefs.networkInstallLocked, prefs.privilegedMode) {
-        mutableStateOf(prefs.networkInstallLocked && !prefs.privilegedMode)
+    var installLocked by remember(prefs.networkInstallLocked, prefs.privilegedMode, services?.installMarker) {
+        mutableStateOf((prefs.networkInstallLocked || services?.installMarker == true) && !prefs.privilegedMode)
+    }
+    LaunchedEffect(services?.installMarker, prefs.privilegedMode) {
+        if (services?.installMarker == true && !prefs.privilegedMode && !prefs.networkInstallLocked) {
+            prefs.networkInstallLocked = true
+            installLocked = true
+        }
     }
 
     fun appendLog(line: String) {
@@ -350,7 +356,7 @@ fun SetupsScreen(
                 }
             }
 
-            if (services?.policyActive == true || services?.wifiBridgeName?.isNotBlank() == true || installLog.contains("INSTALL_DONE")) {
+            if (services?.policyActive == true || services?.wifiBridgeName?.isNotBlank() == true || services?.z2kInstalled == true || services?.installMarker == true || installLog.contains("INSTALL_DONE")) {
                 OutlinedButton(
                     onClick = { confirmRollback = true },
                     enabled = !installing && sshReady,
@@ -366,7 +372,7 @@ fun SetupsScreen(
             }
         }
 
-        if (services?.wifiBridgeName?.isNotBlank() == true || installLog.contains("INSTALL_DONE")) {
+        if (services?.wifiBridgeName?.isNotBlank() == true || (isolatedMode && installLog.contains("INSTALL_DONE"))) {
             WiFiQrCard(
                 ssid = services?.wifiSsid?.ifBlank { wifiSsid } ?: wifiSsid,
                 pass = wifiPass,

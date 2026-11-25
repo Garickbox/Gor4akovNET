@@ -106,7 +106,7 @@ class Prefs(private val context: Context) {
         val clean = rawPin.trim()
         val priv = isPrivilegedInput(clean)
         appPinHash = sha256("pin_v1:$clean")
-        if (priv) privilegedMode = true
+        privilegedMode = priv
         return priv
     }
 

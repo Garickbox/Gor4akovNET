@@ -74,7 +74,7 @@ object MonitorScripts {
         [ -n "§agh_loc" ] || agh_loc=§(/opt/sbin/AdGuardHome --version 2>/dev/null | awk '{for(i=1;i<=NF;i++)if(§i~/^v?[0-9]+\./){print §i;exit}}' | tr -d '\r\n"\\')
         nfq_rules=§(iptables -t mangle -S 2>/dev/null | grep -c NFQUEUE | head -n1 | tr -dc '0-9')
         [ -n "§nfq_rules" ] || nfq_rules=0
-        zst=§(curl -fsS -m 3 http://127.0.0.1:8088/cgi-bin/api/status 2>/dev/null || echo '')
+        zst=§(curl -fsS -m 3 http://127.0.0.1:8088/cgi-bin/api/status 2>/dev/null | tr -d '\r\n' || echo '')
         case "§zst" in '{'*) ;; *)
           nfq_c=§(printf '%s\n' "§ps_w" | grep -c '[n]fqws2' | head -n1 | tr -dc '0-9')
           zmode=§(awk -F= '/^(MODE|Z2K_PRESET)=/{gsub(/["'"'"']/,"",§2); print §2; exit}' /opt/zapret2/config 2>/dev/null | tr -d '\r\n"\\')
@@ -82,19 +82,27 @@ object MonitorScripts {
           ;;
         esac
         if [ "${if (forceUpdates) "1" else "0"}" = "1" ]; then
-          z2u=§(curl -fsS -m 8 -X POST -H 'Referer: http://127.0.0.1:8088/' 'http://127.0.0.1:8088/cgi-bin/api/update/check' 2>/dev/null || echo '{"ok":false}')
+          z2u=§(curl -fsS -m 8 -X POST -H 'Referer: http://127.0.0.1:8088/' 'http://127.0.0.1:8088/cgi-bin/api/update/check' 2>/dev/null | tr -d '\r\n' || echo '{"ok":false}')
         else
-          z2u=§(curl -fsS -m 3 'http://127.0.0.1:8088/cgi-bin/api/update/status' 2>/dev/null || echo '{"ok":false}')
+          z2u=§(curl -fsS -m 3 'http://127.0.0.1:8088/cgi-bin/api/update/status' 2>/dev/null | tr -d '\r\n' || echo '{"ok":false}')
         fi
-        case "§z2u" in '{'*) ;; *) z2u='{"ok":false}' ;; esac
-        rc=§(LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" 2>/dev/null)
-        pol_ok=false; printf '%s\n' "§rc" | grep -q "^ip policy Gor4akovNET" && pol_ok=true
+        case "§z2u" in '{'*'}') ;; *) z2u='{"ok":false}' ;; esac
+        rc=§(LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" 2>/dev/null | tr -d '\r')
+        pol_name=§(awk -F= '/^POLICY_NAME=/{gsub(/["'"'"'\r\n]/,"",§2); print §2; exit}' /opt/zapret2/config 2>/dev/null | tr -d '"\\')
+        pol_mode="policy"
+        pol_ok=false
+        if [ -n "§pol_name" ]; then
+          printf '%s\n' "§rc" | grep -qx "ip policy §{pol_name}" && pol_ok=true
+        else
+          pol_mode="global"
+          pol_ok=true
+        fi
         dns_ov=false; printf '%s\n' "§rc" | grep -q "^opkg dns-override" && dns_ov=true
         zram_on=false; printf '%s\n' "§rc" | grep -q "^[[:space:]]*zram" && zram_on=true
         ent_ok=false; [ -x /opt/bin/opkg ] && ent_ok=true
-        printf '{"sys":{"model":"%s","ndms":"%s","up_sec":%s,"load":"%s","cpus":%s,"ct":%s,"ct_max":%s,"mem":%s,"disk":%s,"temp24":"%s","temp5":"%s","zram":%s},"wan":{"dev":"%s","ip":"%s","spd":"%s","gw":"%s","policy_ok":%s,"nfq_rules":%s,"ent_ok":%s,"agh_inst":%s,"dns_ov":%s},"svc":{"nfqws2":%s,"gvsub":%s,"adguard":%s,"tg_tunnel":%s,"http_tunnel":%s,"warp":%s,"z2k_panel":%s,"scheduler":%s},"ver":{"z2k_local":"%s","agh":"%s","z2u":%s},"z2k":%s}\n' \
+        printf '{"sys":{"model":"%s","ndms":"%s","up_sec":%s,"load":"%s","cpus":%s,"ct":%s,"ct_max":%s,"mem":%s,"disk":%s,"temp24":"%s","temp5":"%s","zram":%s},"wan":{"dev":"%s","ip":"%s","spd":"%s","gw":"%s","policy_ok":%s,"policy_name":"%s","policy_mode":"%s","nfq_rules":%s,"ent_ok":%s,"agh_inst":%s,"dns_ov":%s},"svc":{"nfqws2":%s,"gvsub":%s,"adguard":%s,"tg_tunnel":%s,"http_tunnel":%s,"warp":%s,"z2k_panel":%s,"scheduler":%s},"ver":{"z2k_local":"%s","agh":"%s","z2u":%s},"z2k":%s}\n' \
           "§model" "§ndms" "§up_sec" "§load" "§cpu_cnt" "§ct_cnt" "§ct_max" "§mem_json" "§disk_json" "§t24" "§t5" "§zram_on" \
-          "§wan_dev" "§wan" "§wan_spd" "§wan_gw" "§pol_ok" "§nfq_rules" "§ent_ok" "§agh_inst" "§dns_ov" \
+          "§wan_dev" "§wan" "§wan_spd" "§wan_gw" "§pol_ok" "§pol_name" "§pol_mode" "§nfq_rules" "§ent_ok" "§agh_inst" "§dns_ov" \
           "§(has_ps '/nfqws2')" "§(has_ps 'z2k-detect')" "§agh_up" \
           "§(has_pt 1443)" "§(has_pt 1444)" "§(has_ps 'z2k-warpd')" "§(has_pt 8088)" \
           "§(has_ps 'z2k-scheduler')" \
@@ -108,7 +116,7 @@ object MonitorScripts {
         if command -v nc >/dev/null 2>&1; then
           nc -z -w 1 127.0.0.1 8088 2>/dev/null || panel_up=false
         fi
-        cp_get() { if [ "§panel_up" = true ]; then curl -fsS "§@" 2>/dev/null || echo ''; else echo ''; fi; }
+        cp_get() { if [ "§panel_up" = true ]; then curl -fsS "§@" 2>/dev/null | tr -d '\r\n' || echo ''; else echo ''; fi; }
         zst=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/status)
         case "§zst" in '{'*) ;; *)
           zrun=false
@@ -156,8 +164,6 @@ object MonitorScripts {
         [ -n "§raw_cfg" ] || raw_cfg='[]'
         nfq_pkts=§(iptables -t mangle -L -v -n 2>/dev/null | awk '$AWK_ESC /NFQUEUE/{a[++n]=sprintf("%s pkts | %s B | %s", §1, §2, esc(§0))} END{printf "["; for(i=1;i<=n;i++)printf "%s\"%s\"", (i>1?",":""), a[i]; printf "]"}')
         [ -n "§nfq_pkts" ] || nfq_pkts='[]'
-        pools=§(awk '$AWK_ESC /^[A-Z0-9_]*STRAT|AUTOCIRCULAR|CUSTOM_LIST/{printf "%s\"%s\"", (n++?",":""), esc(§0)}' /opt/zapret2/config 2>/dev/null | awk 'BEGIN{printf "["}{print}END{printf "]"}')
-        [ -n "§pools" ] || pools='[]'
         # Извлечь реальные пулы из config или extra_strats
         pool_info=§(grep -hE '^(RKN_TCP|YT_TCP|GV_TCP|YT_QUIC|DISCORD_UDP|AUTOCIRCULAR)=' /opt/zapret2/config /opt/zapret2/extra_strats/pool*.conf 2>/dev/null | head -n 20 | awk '$AWK_ESC BEGIN{printf "["} {printf "%s\"%s\"", (n++?",":""), esc(§0)} END{printf "]"}')
         [ -n "§pool_info" ] || pool_info='[]'
@@ -170,12 +176,12 @@ object MonitorScripts {
         """
         panel_up=true
         if command -v nc >/dev/null 2>&1; then nc -z -w 1 127.0.0.1 8088 2>/dev/null || panel_up=false; fi
-        cp_get() { if [ "§panel_up" = true ]; then curl -fsS "§@" 2>/dev/null | tr -d '\r' | head -n 1 || echo ''; else echo ''; fi; }
+        cp_get() { if [ "§panel_up" = true ]; then curl -fsS "§@" 2>/dev/null | tr -d '\r\n' || echo ''; else echo ''; fi; }
 
         wst=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/warp/status)
         case "§wst" in '{'*'}') ;; *)
           if [ -x /opt/zapret2/z2k-warp.sh ]; then
-            wst=§(sh /opt/zapret2/z2k-warp.sh status --json 2>/dev/null | tr -d '\r' | head -n 1 || echo '')
+            wst=§(sh /opt/zapret2/z2k-warp.sh status --json 2>/dev/null | tr -d '\r\n' || echo '')
           fi
           case "§wst" in '{'*'}') ;; *)
             winst=false; [ -x /opt/sbin/z2k-warpd ] || [ -f /opt/sbin/z2k-warpd ] || [ -f /opt/zapret2/z2k-warp.sh ] && winst=true
@@ -289,7 +295,7 @@ object MonitorScripts {
     val CMD_DNS_NET = sh(
         """
         agh_up=false
-        ps | grep -q '[A]dGuardHome' && agh_up=true
+        (ps w 2>/dev/null || ps 2>/dev/null) | grep -q '[A]dGuardHome' && agh_up=true
         agh_port=§(awk -F: '/^  address:/{p=§NF; gsub(/[^0-9]/,"",p); if(p!="") print p; exit}' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null | tr -dc '0-9')
         [ -n "§agh_port" ] || agh_port=3000
         agh_meta=""
@@ -299,11 +305,21 @@ object MonitorScripts {
             /^  upstream_dns:/ {in_u=1; next}
             in_u && /^    - / {sub(/^    - /,""); ups[++nu]=esc(§0); next}
             in_u && !/^    / {in_u=0}
+            function flush_f() {
+              if(f_act) { f[++nf]=sprintf("{\"id\":%d,\"name\":\"%s\",\"on\":%s}", fid+0, (fn==""?("Filter #" (fid+0)):fn), (fe=="true"?"true":"false")); f_act=0; fe="false"; fn=""; fid=0 }
+            }
             /^filters:/ {in_f=1; next}
-            in_f && /^[a-z_]+:/ {in_f=0}
-            in_f && /^  - enabled:/ {fe=§3}
+            in_f && /^[a-z_]+:/ {flush_f(); in_f=0}
+            in_f && /^  - / {
+              flush_f(); f_act=1
+              if(§0 ~ /^  - enabled:/) fe=§3
+              else if(§0 ~ /^  - name:/){ sub(/^  - name:[[:space:]]*/,""); fn=esc(§0) }
+              else if(§0 ~ /^  - id:/){ fid=§3 }
+              next
+            }
+            in_f && /^    enabled:/ {fe=§2}
             in_f && /^    name:/ {sub(/^    name:[[:space:]]*/,""); fn=esc(§0)}
-            in_f && /^    id:/ {fid=§2; f[++nf]=sprintf("{\"id\":%d,\"name\":\"%s\",\"on\":%s}", fid+0, fn, (fe=="true"?"true":"false"))}
+            in_f && /^    id:/ {fid=§2}
             /^  protection_enabled:/ {prot=§2}
             /^  filtering_enabled:/ {filt=§2}
             /^  enable_dnssec:/ {dsec=§2}
@@ -312,6 +328,7 @@ object MonitorScripts {
             /^  aaaa_disabled:/ {naaaa=§2}
             /^  upstream_mode:/ {umod=esc(§2)}
             END {
+              flush_f()
               printf "{\"prot\":%s,\"filt\":%s,\"dnssec\":%s,\"cache\":%s,\"cache_opt\":%s,\"no_aaaa\":%s,\"up_mode\":\"%s\",\"upstreams\":[",
                 (prot=="true"?"true":"false"), (filt=="true"?"true":"false"), (dsec=="true"?"true":"false"),
                 (cach=="true"?"true":"false"), (copt=="true"?"true":"false"), (naaaa=="true"?"true":"false"), umod
@@ -350,7 +367,7 @@ object MonitorScripts {
         [ -n "§qlog" ] || qlog='[]'
         errs=§(grep '\[error\]' /opt/var/log/AdGuardHome.log 2>/dev/null | tail -n 5 | tr -d '\r' | awk '$AWK_ESC BEGIN{printf "["} {printf "%s\"%s\"", (n++?",":""), esc(substr(§0,1,220))} END{printf "]"}')
         [ -n "§errs" ] || errs='[]'
-        rc=§(LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" 2>/dev/null)
+        rc=§(LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" 2>/dev/null | tr -d '\r')
         ndms_json=§(printf '%s\n' "§rc" | awk '
           /^ppe hardware§/ {ph=1} /^no ppe hardware§/ {ph=0}
           /^ppe software§/ {ps=1} /^no ppe software§/ {ps=0}
@@ -411,11 +428,12 @@ object MonitorScripts {
               else if(l ~ /^interface WifiMaster0§/) cur="w0"
               else if(l ~ /^interface WifiMaster1§/) cur="w1"
               else if(l ~ /^interface WifiMaster0\/AccessPoint0§/) cur="ap0"
+              else if(l ~ /^mws wlan Home§/) cur="mws_home"
               else if(l ~ /^interface /) { cur=""; ap_seen[substr(l,11)]=1 }
               else if(l ~ /^!/) cur=""
-              if(cur=="b0" && l ~ /^[[:space:]]*band-steering§/) bs=1
+              if((cur=="b0" || cur=="mws_home") && l ~ /^[[:space:]]*band-steering([[:space:]]+enable)?§/) bs=1
               if(cur=="b1" && l ~ /^[[:space:]]*traffic-shape rate /) { split(l, p, " "); gr=p[3]+0 }
-              if(cur=="ap0" && l ~ /^[[:space:]]*ft enable§/) ft=1
+              if((cur=="ap0" || cur=="mws_home") && l ~ /^[[:space:]]*ft enable§/) ft=1
               if(cur=="w1" && l ~ /^[[:space:]]*target-waketime§/) twt1=1
               if(l ~ /^[[:space:]]*include WifiMaster/) { split(l, p, " "); inc_seen[p[2]]=1 }
             }
@@ -493,7 +511,7 @@ object MonitorScripts {
             mac="";ip="";hn="";nm="";ifc="";ap="";lk="";sp="";rx=0;tx=0;pr=6;rssi="";md="";txr="";in_i=0;in_ts=0
           }
           /^[[:space:]]*host:/ {flush()}
-          /^[[:space:]]*mac:/ {mac=§2}
+          /^[[:space:]]*mac:/ {if(mac!="") flush(); mac=§2}
           /^[[:space:]]*ip:/ {ip=§2}
           /^[[:space:]]*hostname:/ {sub(/^[^:]*:[[:space:]]*/,""); hn=§0}
           /^[[:space:]]*name:/ && !in_i {sub(/^[^:]*:[[:space:]]*/,""); nm=§0}
@@ -594,10 +612,16 @@ object MonitorScripts {
             }
             close(PFX "_pr")
             while((getline l < (PFX "_ns")) > 0){
-              if(pat!="" && index(tolower(l), pat)>0){
-                split(l, np, " "); split(np[4], hp, ":"); pt=hp[length(hp)]
-                if(pt ~ /^[0-9]+§/ && index(ports, ":"pt)==0) ports=(ports==""?":"pt:ports",:"pt)
-              }
+              split(l, np, " "); split(np[4], hp, ":"); pt=hp[length(hp)]
+              if(pt !~ /^[0-9]+§/) continue
+              hit=0
+              if(pat!="" && index(tolower(l), pat)>0) hit=1
+              else if(pat=="adguardhome" && (pt=="3000" || pt=="53")) hit=1
+              else if((pat=="lighttpd" || pat=="z2k-webpanel") && pt=="8088") hit=1
+              else if(pat=="tg-mtproxy" && pt=="1443") hit=1
+              else if((pat=="z2k-http" || pat=="z2k-http-tunnel") && pt=="1444") hit=1
+              else if(pat=="dropbear" && (pt=="222" || pt=="22")) hit=1
+              if(hit && index(ports, ":"pt)==0) ports=(ports==""?":"pt:ports",:"pt)
             }
             close(PFX "_ns")
             rmb=tot_rss/1024; rpct=(mem>0?tot_rss*100/mem:0)
@@ -620,9 +644,9 @@ object MonitorScripts {
         cron_jobs=§(grep -hvE '^[[:space:]]*$|^[[:space:]]*#' /opt/var/spool/cron/crontabs/root /opt/etc/crontab 2>/dev/null | head -n 25 | awk '$AWK_ESC BEGIN{printf "["} {printf "%s\"%s\"", (n++?",":""), esc(§0)} END{printf "]"}')
         [ -n "§cron_jobs" ] || cron_jobs='[]'
 
-        rc=§(LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" 2>/dev/null)
+        rc=§(LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" 2>/dev/null | tr -d '\r')
         cifs=false; printf '%s\n' "§rc" | grep -q '^service cifs§' && cifs=true
-        webdav=false; printf '%s\n' "§rc" | awk '/^(ip http webdav|webdav enable)/{f=1} END{exit !f}' && webdav=true
+        webdav=false; printf '%s\n' "§rc" | awk '/^ip http webdav§/{inw=1; next} /^!/{inw=0} inw && /^[[:space:]]*enable§/{f=1} inw && /^[[:space:]]*no enable§/{f=0} /^webdav enable§/{f=1} END{exit !f}' && webdav=true
         zram=false; printf '%s\n' "§rc" | grep -q '^[[:space:]]*zram§' && zram=true
         usb2=false; printf '%s\n' "§rc" | grep -q 'dev\.usb\.force_usb2 1' && usb2=true
         opkg_cnt=§(opkg list-installed 2>/dev/null | wc -l | head -n1 | tr -dc '0-9')
@@ -719,7 +743,7 @@ object MonitorScripts {
         yt=§(curl -IsS -L --connect-timeout 4 --max-time 6 -o /dev/null -w '%{http_code}|%{time_namelookup}|%{time_total}' https://www.youtube.com 2>/dev/null || echo '000|0|0')
         dc=§(curl -IsS -L --connect-timeout 4 --max-time 6 -o /dev/null -w '%{http_code}|%{time_total}' https://discord.com 2>/dev/null || echo '000|0')
         ram_free=§(awk '/^MemAvailable:/{a=§2} /^MemFree:/{f=§2} END{print int((a>0?a:f)/1024)}' /proc/meminfo 2>/dev/null)
-        rc=§(LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" 2>/dev/null)
+        rc=§(LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" 2>/dev/null | tr -d '\r')
         ppe_hw=false; printf '%s\n' "§rc" | grep -q '^ppe hardware§' && ppe_hw=true
         ppe_sw=false; printf '%s\n' "§rc" | grep -q '^ppe software§' && ppe_sw=true
         zram=false; printf '%s\n' "§rc" | grep -q '^[[:space:]]*zram§' && zram=true
@@ -741,7 +765,7 @@ object MonitorScripts {
     ): String = sh(
         """__LONG__
         ndm_cmds=""
-        ${if (enableZram) "LD_LIBRARY_PATH= /bin/ndmc -c 'zram' >/dev/null 2>&1 || true" else ""}
+        ${if (enableZram) "LD_LIBRARY_PATH= /bin/ndmc -c 'system zram' >/dev/null 2>&1 || true" else ""}
         ${if (enablePpeHw) "LD_LIBRARY_PATH= /bin/ndmc -c 'ppe hardware' >/dev/null 2>&1 || true" else ""}
         ${if (enablePpeSw) "LD_LIBRARY_PATH= /bin/ndmc -c 'ppe software' >/dev/null 2>&1 || true" else ""}
         ${if (boostConntrack) "LD_LIBRARY_PATH= /bin/ndmc -c 'ip conntrack max-entries 65536' >/dev/null 2>&1 || true" else ""}
@@ -1018,16 +1042,33 @@ object MonitorScripts {
         [ -f /opt/etc/AdGuardHome/AdGuardHome.yaml ] || { echo "ERR: AdGuardHome.yaml не найден"; exit 1; }
         cp -f /opt/etc/AdGuardHome/AdGuardHome.yaml /opt/etc/AdGuardHome/AdGuardHome.yaml.bak
         awk -v fid="$id" -v val="${if (enable) "true" else "false"}" '
-          function flush_item(   j) { for(j=1;j<=k;j++) print arr[j]; k=0 }
-          /^filters:/ { print; in_f=1; k=0; next }
-          in_f && /^[a-z_]+:/ { flush_item(); in_f=0; print; next }
-          in_f && /^  - enabled:/ { flush_item(); k=1; arr[1]=§0; next }
-          in_f {
-            arr[++k]=§0
-            if (/^    id:[[:space:]]*/ && §2 == fid) {
-              arr[1] = "  - enabled: " val
-              flush_item()
+          function flush_item(   j, found_en) {
+            if (k == 0) return
+            if (matched) {
+              found_en = 0
+              for (j = 1; j <= k; j++) {
+                if (arr[j] ~ /^  - enabled:/) { arr[j] = "  - enabled: " val; found_en = 1 }
+                else if (arr[j] ~ /^    enabled:/) { arr[j] = "    enabled: " val; found_en = 1 }
+              }
+              if (!found_en && k >= 1) {
+                sub(/^  - /, "    ", arr[1])
+                print "  - enabled: " val
+              }
             }
+            for (j = 1; j <= k; j++) print arr[j]
+            k = 0; matched = 0
+          }
+          /^filters:/ { print; in_f=1; k=0; matched=0; next }
+          in_f && /^[a-z_]+:/ { flush_item(); in_f=0; print; next }
+          in_f && /^  - / {
+            flush_item()
+            k = 1; arr[1] = §0
+            if (§0 ~ /^  - id:[[:space:]]*/ && §3 == fid) matched = 1
+            next
+          }
+          in_f {
+            arr[++k] = §0
+            if (/^    id:[[:space:]]*/ && §2 == fid) matched = 1
             next
           }
           { print }
@@ -1144,12 +1185,26 @@ EOFINI
         val pr = if (proto.lowercase() == "udp") "udp" else "tcp"
         val ep = extPort.trim().replace("-", " through ")
         val lp = localPort.trim()
-        val rule = if (lp.isNotBlank() && lp != extPort.trim() && !ep.contains("through")) {
-            "ip static $pr ISP $ep ${localIp.trim()} $lp"
+        val tail = if (lp.isNotBlank() && lp != extPort.trim() && !ep.contains("through")) {
+            "$ep ${localIp.trim()} $lp"
         } else {
-            "ip static $pr ISP $ep ${localIp.trim()}"
+            "$ep ${localIp.trim()}"
         }
-        return ndmcSaveCmd(rule)
+        return sh(
+            """
+            wan_if=§(LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" 2>/dev/null | awk '
+              /^interface / { cur=§2; inb=1; isw=0; rnm="" }
+              inb && /^[ \t]+rename / { rnm=§2 }
+              inb && /^[ \t]+ip global / { isw=1 }
+              inb && /^!/ { if (isw) { print (rnm!=""?rnm:cur); exit } inb=0 }
+              END { if (inb && isw) print (rnm!=""?rnm:cur) }
+            ')
+            [ -n "§wan_if" ] || wan_if="ISP"
+            LD_LIBRARY_PATH= /bin/ndmc -c "ip static $pr §wan_if ${sq(tail)}"
+            LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1
+            echo "OK: Проброс $pr (§wan_if) сохранён"
+            """
+        )
     }
 
     fun delStaticPortCmd(fullRule: String): String = ndmcSaveCmd("no ${fullRule.trim()}")
@@ -1164,11 +1219,46 @@ EOFINI
 
     fun setWifiSsidCmd(ssid: String): String {
         val s = GboxScripts.sanitizeSsid(ssid)
-        return ndmcSaveCmd(
-            "interface WifiMaster0/AccessPoint0 ssid $s",
-            "interface WifiMaster1/AccessPoint0 ssid $s"
+        return sh(
+            """
+            s='${sq(s)}'
+            rc=§(LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" 2>/dev/null | tr -d '\r')
+            if printf '%s\n' "§rc" | grep -q '^mws wlan Home§'; then
+              LD_LIBRARY_PATH= /bin/ndmc -c "mws wlan Home ssid §s"
+            fi
+            LD_LIBRARY_PATH= /bin/ndmc -c "interface WifiMaster0/AccessPoint0 ssid §s" >/dev/null 2>&1 || true
+            LD_LIBRARY_PATH= /bin/ndmc -c "interface WifiMaster1/AccessPoint0 ssid §s" >/dev/null 2>&1 || true
+            LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1
+            echo "OK: SSID обновлён на §s"
+            """
         )
     }
+
+    fun setBandSteeringCmd(enable: Boolean): String = sh(
+        """
+        rc=§(LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" 2>/dev/null | tr -d '\r')
+        if printf '%s\n' "§rc" | grep -q '^mws wlan Home§'; then
+          LD_LIBRARY_PATH= /bin/ndmc -c "mws wlan Home ${if (enable) "band-steering enable" else "no band-steering enable"}"
+        else
+          LD_LIBRARY_PATH= /bin/ndmc -c "interface Bridge0 ${if (enable) "band-steering" else "no band-steering"}"
+        fi
+        LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1
+        echo "OK: Band Steering ${if (enable) "включён" else "выключен"}"
+        """
+    )
+
+    fun setWifiFtCmd(enable: Boolean): String = sh(
+        """
+        rc=§(LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" 2>/dev/null | tr -d '\r')
+        if printf '%s\n' "§rc" | grep -q '^mws wlan Home§'; then
+          LD_LIBRARY_PATH= /bin/ndmc -c "mws wlan Home ${if (enable) "ft enable" else "no ft enable"}"
+        fi
+        LD_LIBRARY_PATH= /bin/ndmc -c "interface WifiMaster0/AccessPoint0 ${if (enable) "ft enable" else "no ft enable"}" >/dev/null 2>&1 || true
+        LD_LIBRARY_PATH= /bin/ndmc -c "interface WifiMaster1/AccessPoint0 ${if (enable) "ft enable" else "no ft enable"}" >/dev/null 2>&1 || true
+        LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1
+        echo "OK: 802.11r FT ${if (enable) "включён" else "выключен"}"
+        """
+    )
 
     fun disableDeadApCmd(apId: String): String = sh(
         """
@@ -1292,7 +1382,14 @@ EOFINI
     }
 
     fun svcCmd(id: String, action: String): String = sh(
-        "/opt/etc/init.d/${sq(id)} ${sq(action)} 2>&1"
+        """
+        scr="/opt/etc/init.d/${sq(id)}"
+        if [ ! -x "§scr" ] && [ "${sq(id)}" = "S99AdGuardHome" ] && [ -x /opt/etc/init.d/S99adguardhome ]; then
+          scr="/opt/etc/init.d/S99adguardhome"
+        fi
+        [ -x "§scr" ] || { echo "ERR: скрипт §scr не найден"; exit 1; }
+        "§scr" '${sq(action)}' 2>&1
+        """
     )
 
     val CMD_OPKG_CHECK = sh(
@@ -1347,7 +1444,8 @@ EOFINI
             """
             m='${sq(cleanMac)}'
             if LD_LIBRARY_PATH= /bin/ndmc -c "ip hotspot wake §m" 2>/dev/null | grep -qiE 'error|such command|invalid'; then
-              bcast=§(ip -4 addr show br0 2>/dev/null | awk '/inet /{print §4; exit}')
+              bcast=§(ip -4 addr show br0 2>/dev/null | awk '/brd /{for(i=1;i<=NF;i++) if(§i=="brd"){print §(i+1); exit}}')
+              [ -n "§bcast" ] || bcast=§(ip -4 addr show 2>/dev/null | awk '/brd / && /192\.168\.|10\.|172\./{for(i=1;i<=NF;i++) if(§i=="brd"){print §(i+1); exit}}')
               [ -n "§bcast" ] || bcast="255.255.255.255"
               LC_ALL=C awk -v m="§m" 'BEGIN{m=tolower(m);gsub(/:/,"",m);h="0123456789abcdef";p="";for(i=0;i<6;i++)p=p sprintf("%c",255);for(i=1;i<=16;i++)for(j=1;j<=12;j+=2){v=(index(h,substr(m,j,1))-1)*16+(index(h,substr(m,j+1,1))-1);p=p sprintf("%c",v)}printf "%s",p}' | nc -u -w1 "§bcast" 9 2>/dev/null || true
             fi
@@ -1359,10 +1457,14 @@ EOFINI
     fun listDirCmd(dir: String): String = sh(
         """
         d='${sq(dir)}'
-        [ -d "§d" ] || { printf '{"path":"%s","err":"Папка не найдена","entries":[]}\n' "§d"; exit 0; }
+        if [ ! -d "§d" ]; then
+          dp=§(printf '%s' "§d" | awk '$AWK_ESC {print esc(§0)}')
+          printf '{"path":"%s","err":"Папка не найдена","entries":[]}\n' "§dp"
+          exit 0
+        fi
         real=§(cd "§d" 2>/dev/null && pwd)
         [ -n "§real" ] || real="§d"
-        items=§(ls -la "§real" 2>/dev/null | awk '$AWK_ESC NR>1{perm=§1;sz=§5+0;nm="";for(i=9;i<=NF;i++)nm=(nm==""?§i:nm " " §i);if(nm==""||nm=="."||nm=="..")next;isd=(substr(perm,1,1)=="d")?"true":"false";isl=(substr(perm,1,1)=="l")?"true":"false";sub(/ -> .*§/,"",nm);printf "%s{\"name\":\"%s\",\"dir\":%s,\"link\":%s,\"size\":%d,\"perm\":\"%s\"}",(n++?",":""),esc(nm),isd,isl,sz,esc(perm)}')
+        items=§(ls -la "§real" 2>/dev/null | awk -v REAL="§real" '$AWK_ESC NR>1{perm=§1;sz=§5+0;nm="";for(i=9;i<=NF;i++)nm=(nm==""?§i:nm " " §i);if(nm==""||nm=="."||nm=="..")next;sub(/ -> .*§/,"",nm);tc=substr(perm,1,1);isl=(tc=="l")?"true":"false";isd=(tc=="d")?"true":"false";if(tc=="l"){q=REAL"/"nm; gsub(/'\''/,"'\''\\'\'''\''",q); if(system("test -d '\''" q "'\''")==0) isd="true"}printf "%s{\"name\":\"%s\",\"dir\":%s,\"link\":%s,\"size\":%d,\"perm\":\"%s\"}",(n++?",":""),esc(nm),isd,isl,sz,esc(perm)}')
         rp=§(printf '%s' "§real" | awk '$AWK_ESC {print esc(§0)}')
         printf '{"path":"%s","entries":[%s]}\n' "§rp" "§items"
         """
@@ -1423,7 +1525,7 @@ EOFINI
     val CMD_TORCH_LIVE = sh(
         """
         PFX="/tmp/.gth_§$"
-        snap_dev() { awk 'NR>2{gsub(/:/,"",§1); if(§1~/^(eth|br|ra|rai|wg|z2k|tun|ppp)/) printf "%s %s %s %s %s %s %s\n", §1, §2, §3, §4, §10, §11, §12}' /proc/net/dev; }
+        snap_dev() { awk 'NR>2{sub(/:/," ",§0); if(§1~/^(eth|br|ra|rai|wg|z2k|tun|ppp)/) printf "%s %s %s %s %s %s %s\n", §1, §2, §3, §4, §10, §11, §12}' /proc/net/dev; }
         a=§(snap_dev)
         sleep 1
         b=§(snap_dev)
@@ -1524,7 +1626,7 @@ EOFINI
             "dpi" -> sh(
                 """
                 echo "=== Диагностика DPI / TLS ClientHello: '$h' ==="
-                curl -vI --connect-timeout 5 --max-time 8 "https://$h" 2>&1 | grep -iE 'Trying|Connected|SSL connection|ALPN|HTTP/|subject:|issuer:|error|reset|timed out' | head -n 25
+                curl -vI --connect-timeout 5 --max-time 8 'https://$h' 2>&1 | grep -iE 'Trying|Connected|SSL connection|ALPN|HTTP/|subject:|issuer:|error|reset|timed out' | head -n 25
                 echo "--- Статус NFQUEUE mangle ---"
                 iptables -t mangle -L -v -n 2>/dev/null | grep -E 'Chain|NFQUEUE' | head -n 15
                 """
@@ -1544,9 +1646,9 @@ EOFINI
             "ports" -> sh("netstat -tulnp 2>/dev/null || netstat -lnt 2>/dev/null")
             "traffic" -> sh(
                 """
-                a=§(awk 'NR>2{gsub(/:/,"",§1); if(§1~/^(eth|br|ra|rai|wg|z2k|tun|ppp)/) print §1, §2, §10}' /proc/net/dev)
+                a=§(awk 'NR>2{sub(/:/," ",§0); if(§1~/^(eth|br|ra|rai|wg|z2k|tun|ppp)/) print §1, §2, §10}' /proc/net/dev)
                 sleep 1
-                b=§(awk 'NR>2{gsub(/:/,"",§1); if(§1~/^(eth|br|ra|rai|wg|z2k|tun|ppp)/) print §1, §2, §10}' /proc/net/dev)
+                b=§(awk 'NR>2{sub(/:/," ",§0); if(§1~/^(eth|br|ra|rai|wg|z2k|tun|ppp)/) print §1, §2, §10}' /proc/net/dev)
                 awk -v A="§a" -v B="§b" 'BEGIN{
                   na=split(A,la,"\n"); for(i=1;i<=na;i++){split(la[i],p," "); r1[p[1]]=p[2]; t1[p[1]]=p[3]}
                   nb=split(B,lb,"\n"); for(i=1;i<=nb;i++){split(lb[i],p," "); if(p[1]!=""){dr=(p[2]-r1[p[1]])*8/1000; dt=(p[3]-t1[p[1]])*8/1000; printf "%-14s ↓ %8.1f kbps   ↑ %8.1f kbps\n", p[1], dr, dt}}

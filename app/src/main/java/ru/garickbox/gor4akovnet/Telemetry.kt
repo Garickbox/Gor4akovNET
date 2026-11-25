@@ -149,6 +149,20 @@ object Telemetry {
     }
 
     private fun pushRemoteStrict(installId: String, payload: JSONObject) {
+        if (BuildConfig.STATS_URL.isNotBlank()) {
+            val conn = (URL(BuildConfig.STATS_URL).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 6000
+                readTimeout = 8000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                outputStream.use { it.write(payload.toString().toByteArray(StandardCharsets.UTF_8)) }
+            }
+            val code = conn.responseCode
+            conn.disconnect()
+            if (code !in 200..299) error("Stats URL HTTP $code")
+            return
+        }
         if (BuildConfig.STATS_GIST_ID.isNotBlank() && BuildConfig.STATS_TOKEN.isNotBlank()) {
             val gistUrl = "https://api.github.com/gists/${BuildConfig.STATS_GIST_ID}"
             val body = JSONObject().apply {
@@ -173,19 +187,6 @@ object Telemetry {
             conn.disconnect()
             if (code !in 200..299) error("GitHub Gist HTTP $code")
             return
-        }
-        if (BuildConfig.STATS_URL.isNotBlank()) {
-            val conn = (URL(BuildConfig.STATS_URL).openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = 6000
-                readTimeout = 8000
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                outputStream.use { it.write(payload.toString().toByteArray(StandardCharsets.UTF_8)) }
-            }
-            val code = conn.responseCode
-            conn.disconnect()
-            if (code !in 200..299) error("Stats URL HTTP $code")
         }
     }
 
@@ -224,7 +225,30 @@ object Telemetry {
         var remoteOk = false
         var note = "Локальная статистика устройства. Запустите scripts/setup_github_stats.sh для автонастройки GitHub."
 
-        if (BuildConfig.STATS_GIST_ID.isNotBlank() && BuildConfig.STATS_TOKEN.isNotBlank()) {
+        if (BuildConfig.STATS_URL.isNotBlank()) {
+            runCatching {
+                val conn = (URL(BuildConfig.STATS_URL).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 8000
+                    readTimeout = 10000
+                }
+                val code = conn.responseCode
+                val text = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                    ?.let { BufferedReader(InputStreamReader(it, StandardCharsets.UTF_8)).readText() } ?: ""
+                conn.disconnect()
+                require(code in 200..299) { "Stats URL HTTP $code" }
+                val arr = JSONArray(text)
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val parsed = parseDeviceObj("u$i", o)
+                    devices[parsed.id] = parsed
+                }
+                remoteOk = true
+                note = "Синхронизировано с внешним эндпоинтом (${devices.size} устр.)"
+            }.onFailure { e ->
+                note = "Ошибка эндпоинта: ${e.message}"
+            }
+        } else if (BuildConfig.STATS_GIST_ID.isNotBlank() && BuildConfig.STATS_TOKEN.isNotBlank()) {
             runCatching {
                 val conn = (URL("https://api.github.com/gists/${BuildConfig.STATS_GIST_ID}").openConnection() as HttpURLConnection).apply {
                     requestMethod = "GET"
@@ -254,26 +278,6 @@ object Telemetry {
                 note = "Синхронизировано с GitHub Gist (${devices.size} устр.)"
             }.onFailure { e ->
                 note = "Ошибка синхронизации GitHub: ${e.message} (показаны локальные данные)"
-            }
-        } else if (BuildConfig.STATS_URL.isNotBlank()) {
-            runCatching {
-                val conn = (URL(BuildConfig.STATS_URL).openConnection() as HttpURLConnection).apply {
-                    requestMethod = "GET"
-                    connectTimeout = 8000
-                    readTimeout = 10000
-                }
-                val text = BufferedReader(InputStreamReader(conn.inputStream, StandardCharsets.UTF_8)).readText()
-                conn.disconnect()
-                val arr = JSONArray(text)
-                for (i in 0 until arr.length()) {
-                    val o = arr.optJSONObject(i) ?: continue
-                    val parsed = parseDeviceObj("u$i", o)
-                    devices[parsed.id] = parsed
-                }
-                remoteOk = true
-                note = "Синхронизировано с внешним эндпоинтом (${devices.size} устр.)"
-            }.onFailure { e ->
-                note = "Ошибка эндпоинта: ${e.message}"
             }
         }
 
