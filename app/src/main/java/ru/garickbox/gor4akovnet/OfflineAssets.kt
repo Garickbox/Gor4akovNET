@@ -170,6 +170,11 @@ object OfflineAssets {
                 val data = readAssetBytes(context, ipksPath)
                 onLog("Отправка офлайн-пакетов ($entwareArch, ${data.size / 1024} КБ) -> роутер...")
                 Gboxcore.pushBytesSSH(host, sshPort, sshUser, sshPass, "/opt/gor4akov-offline/ipks.tar.gz", data)
+                val sizeOut = Gboxcore.runRouterSSH(host, sshPort, sshUser, sshPass, "wc -c < /opt/gor4akov-offline/ipks.tar.gz 2>/dev/null | tr -d ' '")
+                val remoteSize = sizeOut.trim().toLongOrNull() ?: 0L
+                if (remoteSize != data.size.toLong()) {
+                    error("Офлайн-пакеты обрезаны при передаче: локально ${data.size} Б, на роутере ${remoteSize} Б.")
+                }
             } else {
                 onLog("Внимание: $ipksPath отсутствует в APK — будут использованы пакеты из сети.")
             }
@@ -178,12 +183,22 @@ object OfflineAssets {
                 val data = readAssetBytes(context, z2kRepoPath)
                 onLog("Отправка z2k-enhanced (${data.size / 1024} КБ) -> роутер...")
                 Gboxcore.pushBytesSSH(host, sshPort, sshUser, sshPass, "/opt/gor4akov-offline/z2k-repo.tar.gz", data)
+                val sizeOut = Gboxcore.runRouterSSH(host, sshPort, sshUser, sshPass, "wc -c < /opt/gor4akov-offline/z2k-repo.tar.gz 2>/dev/null | tr -d ' '")
+                val remoteSize = sizeOut.trim().toLongOrNull() ?: 0L
+                if (remoteSize != data.size.toLong()) {
+                    error("z2k-enhanced обрезан при передаче: локально ${data.size} Б, на роутере ${remoteSize} Б.")
+                }
             }
 
             if (assetExists(context, zapret2Path)) {
                 val data = readAssetBytes(context, zapret2Path)
                 onLog("Отправка движка nfqws2 / zapret2 (${data.size / 1024} КБ) -> роутер...")
                 Gboxcore.pushBytesSSH(host, sshPort, sshUser, sshPass, "/opt/gor4akov-offline/openwrt-embedded.tar.gz", data)
+                val sizeOut = Gboxcore.runRouterSSH(host, sshPort, sshUser, sshPass, "wc -c < /opt/gor4akov-offline/openwrt-embedded.tar.gz 2>/dev/null | tr -d ' '")
+                val remoteSize = sizeOut.trim().toLongOrNull() ?: 0L
+                if (remoteSize != data.size.toLong()) {
+                    error("nfqws2/zapret2 обрезан при передаче: локально ${data.size} Б, на роутере ${remoteSize} Б.")
+                }
             }
         }
     }

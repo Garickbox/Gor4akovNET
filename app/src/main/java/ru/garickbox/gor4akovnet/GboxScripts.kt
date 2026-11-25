@@ -161,6 +161,11 @@ object GboxScripts {
 
             echo "=== [1/6] Установка локальных системных пакетов ==="
             if [ -s /opt/gor4akov-offline/ipks.tar.gz ]; then
+                if ! tar -tzf /opt/gor4akov-offline/ipks.tar.gz >/dev/null 2>&1; then
+                    echo "[FATAL] ipks.tar.gz повреждён (tar -tzf fail). Проверьте передачу по SSH."
+                    echo "PREFLIGHT_FAIL"
+                    exit 1
+                fi
                 rm -rf /opt/gor4akov-offline/ipks/*
                 tar -xzf /opt/gor4akov-offline/ipks.tar.gz -C /opt/gor4akov-offline/ipks/
                 cp -f /opt/etc/opkg.conf /opt/etc/opkg.conf.bak 2>/dev/null || true
@@ -172,10 +177,35 @@ object GboxScripts {
                         opkg -f /opt/etc/opkg.conf.local install "${'$'}pkg" >/dev/null 2>&1 || opkg -f /opt/etc/opkg.conf.local install /opt/gor4akov-offline/ipks/"${'$'}pkg"_*.ipk >/dev/null 2>&1 || true
                     fi
                 done
+                # I-3: проверяем, что критичные пакеты реально встали
+                missing_pkgs=""
+                for pkg in libmnl libnetfilter-queue libnfnetlink libcap iptables; do
+                    if ! opkg list-installed 2>/dev/null | grep -q "^${'$'}{pkg} "; then
+                        missing_pkgs="${'$'}missing_pkgs ${'$'}pkg"
+                    fi
+                done
+                if [ -n "${'$'}missing_pkgs" ]; then
+                    echo "[FATAL] Не установились критичные пакеты:${'$'}missing_pkgs"
+                    echo "[FATAL] nfqws2 не сможет собраться. Проверьте /opt/gor4akov-offline/ipks.tar.gz в APK."
+                    echo "PREFLIGHT_FAIL"
+                    exit 1
+                fi
                 echo "[OK] Критичные пакеты развёрнуты локально из APK"
             else
                 opkg update || true
                 opkg install libmnl libnetfilter-queue libnfnetlink libcap zlib curl flock unzip iptables xtables-addons_legacy kmod_ndms ipset openssl-util || true
+                # I-3 (сетевой путь): тоже проверяем критичные пакеты
+                missing_pkgs=""
+                for pkg in libmnl libnetfilter-queue libnfnetlink libcap iptables; do
+                    if ! opkg list-installed 2>/dev/null | grep -q "^${'$'}{pkg} "; then
+                        missing_pkgs="${'$'}missing_pkgs ${'$'}pkg"
+                    fi
+                done
+                if [ -n "${'$'}missing_pkgs" ]; then
+                    echo "[FATAL] Не установились критичные пакеты:${'$'}missing_pkgs (нет интернета и нет локальных ipk?)"
+                    echo "PREFLIGHT_FAIL"
+                    exit 1
+                fi
             fi
 
             echo "=== [2/6] Распаковка z2k-enhanced и nfqws2 ==="
@@ -183,6 +213,12 @@ object GboxScripts {
             rm -rf "${'$'}WORK_STAGE" /opt/gor4akov-offline/z2k_src
             mkdir -p "${'$'}WORK_STAGE/zapret2_build" /opt/gor4akov-offline/z2k_src
             if [ -s /opt/gor4akov-offline/z2k-repo.tar.gz ]; then
+                # I-4: проверяем целостность архива z2k-repo
+                if ! tar -tzf /opt/gor4akov-offline/z2k-repo.tar.gz >/dev/null 2>&1; then
+                    echo "[FATAL] z2k-repo.tar.gz повреждён. Проверьте передачу по SSH."
+                    echo "PREFLIGHT_FAIL"
+                    exit 1
+                fi
                 tar -xzf /opt/gor4akov-offline/z2k-repo.tar.gz -C /opt/gor4akov-offline/z2k_src --strip-components=1
                 cp -a /opt/gor4akov-offline/z2k_src/* "${'$'}WORK_STAGE/"
                 echo "[OK] z2k-enhanced подготовлен локально"
