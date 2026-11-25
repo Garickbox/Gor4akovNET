@@ -614,13 +614,12 @@ EOFINI
 
     val ESTIMATE_BACKUP_SIZE_CMD = """
         set +e
-        core_kb=0
-        for p in /opt/etc /opt/zapret2 /opt/root /opt/home /opt/var/spool/cron /opt/var/lib /opt/bin /opt/sbin /opt/lib /opt/usr /opt/libexec /opt/share; do
-            if [ -e "${'$'}p" ]; then
-                s=${'$'}(du -sk "${'$'}p" 2>/dev/null | awk '{print ${'$'}1+0}')
-                core_kb=${'$'}((core_kb + s))
-            fi
+        # /opt целиком (все пакеты и файлы пользователя) минус мусор установки и логи.
+        core_kb=${'$'}(du -sk /opt 2>/dev/null | awk '{print ${'$'}1+0}')
+        for _ex in /opt/gor4akov-offline /opt/z2k-work /opt/z2k-rollback /opt/tmp /opt/var/log; do
+            [ -e "${'$'}_ex" ] && core_kb=${'$'}((core_kb - ${'$'}(du -sk "${'$'}_ex" 2>/dev/null | awk '{print ${'$'}1+0}')))
         done
+        [ "${'$'}core_kb" -lt 0 ] && core_kb=0
         media_kb=0
         mounts=""
         opt_dev=${'$'}(awk '${'$'}2=="/opt"{print ${'$'}1; exit}' /proc/mounts 2>/dev/null)
@@ -698,11 +697,8 @@ EOFINI
         printf '{"version":2,"arch":"%s","include_media":%s}\n' "${'$'}(uname -m)" "${if (includeUserMedia) "true" else "false"}" > "${'$'}TMPB/manifest.json"
 
         set -- -C "${'$'}TMPB" running-config.txt startup-config.txt router-info.txt manifest.json
-        for p in /opt/etc /opt/zapret2 /opt/root /opt/home /opt/var/spool/cron /opt/var/lib /opt/bin /opt/sbin /opt/lib /opt/usr /opt/libexec /opt/share; do
-            if [ -e "${'$'}p" ]; then
-                set -- "${'$'}@" -C / "${'$'}{p#/}"
-            fi
-        done
+        # ВЕСЬ /opt — никаких белых списков. Исплючения только масками ниже.
+        [ -d /opt ] && set -- "${'$'}@" -C / opt
 
         opt_excl=""
         # Полный дамп USB/Storage (все внешние/внутренние носители без дублирования папки Entware /opt)
@@ -748,10 +744,10 @@ EOFINI
         fi
 
         if [ -n "${'$'}opt_excl" ]; then
-            tar --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/z2k-rollback' --exclude='opt/tmp/*' --exclude='opt/*.bin' --exclude='opt/*.tar.gz' --exclude='*.swap' --exclude='swapfile' --exclude="${'$'}opt_excl" \
+            tar --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/z2k-rollback' --exclude='opt/tmp' --exclude='opt/var/log' --exclude='*.log' --exclude='*.swap' --exclude='swapfile' --exclude="${'$'}opt_excl" \
                 -czf - "${'$'}@" 2>/dev/null
         else
-            tar --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/z2k-rollback' --exclude='opt/tmp/*' --exclude='opt/*.bin' --exclude='opt/*.tar.gz' --exclude='*.swap' --exclude='swapfile' \
+            tar --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/z2k-rollback' --exclude='opt/tmp' --exclude='opt/var/log' --exclude='*.log' --exclude='*.swap' --exclude='swapfile' \
                 -czf - "${'$'}@" 2>/dev/null
         fi
         tar_rc=${'$'}?
