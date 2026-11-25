@@ -188,6 +188,9 @@ object GboxScripts {
             set +e
             export PATH="/opt/bin:/opt/sbin:/opt/usr/bin:/opt/usr/sbin:/bin:/sbin:/usr/bin:/usr/sbin"
             export TMPDIR=/opt/tmp
+            # GNU tar обязателен: busybox tar в /opt/usr/bin НЕ умеет -c и --strip-components
+            TAR=/opt/bin/tar
+            [ -x "${'$'}TAR" ] || TAR=tar
             SAFE_SSID=$qSsid
             SAFE_PASS=$qPass
             ISO_FLAG='$isoFlag'
@@ -202,13 +205,13 @@ object GboxScripts {
 
             echo "=== [1/6] Установка локальных системных пакетов ==="
             if [ -s /opt/gor4akov-offline/ipks.tar.gz ]; then
-                if ! tar -tzf /opt/gor4akov-offline/ipks.tar.gz >/dev/null 2>&1; then
-                    echo "[FATAL] ipks.tar.gz повреждён (tar -tzf fail). Проверьте передачу по SSH."
+                if ! ${'$'}{TAR} -tzf /opt/gor4akov-offline/ipks.tar.gz >/dev/null 2>&1; then
+                    echo "[FATAL] ipks.tar.gz повреждён (${'$'}{TAR} -tzf fail). Проверьте передачу по SSH."
                     echo "PREFLIGHT_FAIL"
                     exit 1
                 fi
                 rm -rf /opt/gor4akov-offline/ipks/*
-                tar -xzf /opt/gor4akov-offline/ipks.tar.gz -C /opt/gor4akov-offline/ipks/
+                ${'$'}{TAR} -xzf /opt/gor4akov-offline/ipks.tar.gz -C /opt/gor4akov-offline/ipks/
                 cp -f /opt/etc/opkg.conf /opt/etc/opkg.conf.bak 2>/dev/null || true
                 printf 'src/gz gor4akov_local file:///opt/gor4akov-offline/ipks\n' > /opt/etc/opkg.conf.local
                 grep -E '^(dest|option|arch)' /opt/etc/opkg.conf >> /opt/etc/opkg.conf.local 2>/dev/null || true
@@ -251,18 +254,18 @@ object GboxScripts {
             rm -rf "${'$'}WORK_STAGE" /opt/gor4akov-offline/z2k_src
             mkdir -p "${'$'}WORK_STAGE/zapret2_build" /opt/gor4akov-offline/z2k_src
             if [ -s /opt/gor4akov-offline/z2k-repo.tar.gz ]; then
-                if ! tar -tzf /opt/gor4akov-offline/z2k-repo.tar.gz >/dev/null 2>&1; then
+                if ! ${'$'}{TAR} -tzf /opt/gor4akov-offline/z2k-repo.tar.gz >/dev/null 2>&1; then
                     echo "[FATAL] z2k-repo.tar.gz повреждён. Проверьте передачу по SSH."
                     echo "PREFLIGHT_FAIL"
                     exit 1
                 fi
-                tar -xzf /opt/gor4akov-offline/z2k-repo.tar.gz -C /opt/gor4akov-offline/z2k_src --strip-components=1
+                ${'$'}{TAR} -xzf /opt/gor4akov-offline/z2k-repo.tar.gz -C /opt/gor4akov-offline/z2k_src --strip-components=1
                 cp -a /opt/gor4akov-offline/z2k_src/* "${'$'}WORK_STAGE/"
                 echo "[OK] z2k-enhanced подготовлен локально"
             else
                 echo "[INFO] Пробую скачать z2k-enhanced из сети..."
                 curl -fsSL "https://github.com/necronicle/z2k/archive/refs/heads/z2k-enhanced.tar.gz" -o /opt/gor4akov-offline/z2k-repo.tar.gz && \
-                tar -xzf /opt/gor4akov-offline/z2k-repo.tar.gz -C "${'$'}WORK_STAGE" --strip-components=1
+                ${'$'}{TAR} -xzf /opt/gor4akov-offline/z2k-repo.tar.gz -C "${'$'}WORK_STAGE" --strip-components=1
             fi
             if [ -s /opt/gor4akov-offline/openwrt-embedded.tar.gz ]; then
                 cp -f /opt/gor4akov-offline/openwrt-embedded.tar.gz "${'$'}WORK_STAGE/zapret2_build/openwrt-embedded.tar.gz"
@@ -766,7 +769,7 @@ EOFINI
         fi
         if ! ${'$'}{TAR} -tzf "${'$'}STAGE" >/dev/null 2>&1; then
             rm -f "${'$'}STAGE"
-            echo "FATAL: архив повреждён (tar -tzf fail)" >&2
+            echo "FATAL: архив повреждён (${'$'}{TAR} -tzf fail)" >&2
             exit 1
         fi
         cat "${'$'}STAGE"
@@ -779,11 +782,14 @@ EOFINI
 
     fun restoreArchiveCmd(mode: String): String = """__LONG__
         set +e
-        ARCH="/tmp/gbox_restore.tar.gz"
+        TAR=/opt/bin/tar
+        [ -x "${'$'}TAR" ] || TAR=tar
+        # Архив и распаковка на флешке (/opt), не в /tmp - там tmpfs 242 МБ RAM -> OOM
+        ARCH="/opt/.gbox_restore.tar.gz"
         [ -s "${'$'}ARCH" ] || { echo "ERR: Архив бэкапа не найден"; exit 1; }
-        RST="/tmp/.gbox_rst_${'$'}${'$'}"
+        RST="/opt/.gbox_rst_${'$'}${'$'}"
         rm -rf "${'$'}RST" && mkdir -p "${'$'}RST"
-        tar -xzf "${'$'}ARCH" -C "${'$'}RST" 2>/dev/null || { echo "ERR: Некорректный или повреждённый tar.gz архив"; rm -rf "${'$'}RST" "${'$'}ARCH"; exit 1; }
+        ${'$'}{TAR} -xzf "${'$'}ARCH" -C "${'$'}RST" || { echo "ERR: Некорректный или повреждённый tar.gz архив"; rm -rf "${'$'}RST" "${'$'}ARCH"; exit 1; }
         if [ "$mode" = "bypass" ]; then
             [ -d "${'$'}RST/opt/zapret2" ] && rm -rf /opt/zapret2 && cp -a "${'$'}RST/opt/zapret2" /opt/zapret2
             [ -d "${'$'}RST/opt/etc/ndm/netfilter.d" ] && mkdir -p /opt/etc/ndm/netfilter.d && cp -af "${'$'}RST/opt/etc/ndm/netfilter.d"/* /opt/etc/ndm/netfilter.d/ 2>/dev/null || true

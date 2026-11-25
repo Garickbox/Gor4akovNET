@@ -589,7 +589,7 @@ fun MonitorPanelScreen(
                 if (entry.filePath.endsWith(".tar.gz", true)) {
                     val bytes = withContext(Dispatchers.IO) { File(entry.filePath).readBytes() }
                     withContext(Dispatchers.IO) {
-                        Gboxcore.pushBytesSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, "/tmp/gbox_restore.tar.gz", bytes)
+                        Gboxcore.pushBytesSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, "/opt/.gbox_restore.tar.gz", bytes)
                     }
                     val out = runSshCmd(prefs, GboxScripts.restoreArchiveCmd(mode), readOnly = false)
                     statusMsg = out.lines().lastOrNull { it.isNotBlank() } ?: "Откат завершён"
