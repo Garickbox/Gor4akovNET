@@ -517,7 +517,7 @@ mws wlan Home
     bind Home
     ssid <SSID> Netcraze-1070
     encryption wpa2
-    wpa psk ns3 xJ+qfC/Hoznp+tsl1Z58saI/
+    wpa psk ns3 <REDACTED>
     wps enable
     rrm enable
     ft mdid dC
