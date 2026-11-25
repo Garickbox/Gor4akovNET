@@ -81,16 +81,29 @@ fun SetupsScreen(
                     Gboxcore.pullBytesSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, GboxScripts.FULL_BACKUP_TAR_CMD)
                 }.getOrNull()
             }
+            var backupOk = false
             if (tarBytes != null && tarBytes.size > 64) {
                 val b = prefs.saveBinaryBackup("Полный перед установкой", routerModel, tarBytes, "tar.gz")
                 onBackupSaved(b)
                 appendLog("[OK] Полный бэкап (.tar.gz) сохранён (${b.sizeBytes / 1024} КБ)")
+                backupOk = true
             } else {
                 RciClient.fetchRunningConfig(host, prefs.rciUser, prefs.rciPass).onSuccess { cfg ->
-                    val b = prefs.saveBackup("Перед Gor4akovNET", routerModel, cfg)
-                    onBackupSaved(b)
-                    appendLog("[OK] Бэкап конфигурации сохранён (${b.sizeBytes / 1024} КБ)")
+                    if (cfg.isNotBlank()) {
+                        val b = prefs.saveBackup("Перед Gor4akovNET", routerModel, cfg)
+                        onBackupSaved(b)
+                        appendLog("[OK] Бэкап конфигурации сохранён (${b.sizeBytes / 1024} КБ)")
+                        backupOk = true
+                    }
                 }
+            }
+            // I-1: без бэкапа установку не начинаем — иначе откатить нечего
+            if (!backupOk) {
+                val em = "Не удалось создать резервную копию (ни .tar.gz по SSH, ни конфиг по RCI). Установка отменена — без бэкапа откат невозможен."
+                appendLog("[ERR] $em")
+                Telemetry.recordError(prefs, "setup_backup", em, routerModel, ndmsVer)
+                installing = false
+                return@launch
             }
 
             // 2. Push offline payloads from APK -> /opt/gor4akov-offline/
@@ -127,15 +140,24 @@ fun SetupsScreen(
             execRes.onSuccess { out ->
                 appendLog(out)
                 val nfqCount = Regex("""NFQWS_PROCS=(\d+)""").find(out)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
-                val done = out.contains("INSTALL_DONE") && nfqCount > 0
+                val preflightFail = out.contains("PREFLIGHT_FAIL")
+                val done = out.contains("INSTALL_DONE") && nfqCount > 0 && !preflightFail
                 if (done) {
                     Telemetry.recordInstallSuccess(prefs, routerModel, ndmsVer)
                     if (!prefs.privilegedMode) {
                         prefs.networkInstallLocked = true
                         installLocked = true
                     }
+                    appendLog("[OK] Установка завершена, nfqws2 запущен.")
                 } else {
-                    Telemetry.recordError(prefs, "setup_verify", "INSTALL_INCOMPLETE (nfqws=$nfqCount)", routerModel, ndmsVer)
+                    val reason = when {
+                        preflightFail -> "PREFLIGHT_FAIL — Entware (/opt/bin/opkg) не смонтирован. Установка НЕ выполнена. Проверьте шаг 4 мастера (USB ext4 + Entware)."
+                        !out.contains("INSTALL_DONE") -> "Скрипт завершился без INSTALL_DONE — смотрите лог выше. Установка НЕ завершена."
+                        nfqCount == 0 -> "INSTALL_DONE, но nfqws2 не найден — обход НЕ запущен. Проверьте /opt/etc/init.d/S99zapret2 restart в Мониторе."
+                        else -> "Установка не завершена. Смотрите лог."
+                    }
+                    appendLog("[ERR] $reason")
+                    Telemetry.recordError(prefs, "setup_verify", "INSTALL_INCOMPLETE nfqws=$nfqCount reason=$reason", routerModel, ndmsVer)
                 }
                 onServicesRefresh()
             }.onFailure { err ->
