@@ -786,6 +786,14 @@ EOFINI
         [ -x "${'$'}TAR" ] || TAR=tar
         ARCH="/opt/.gbox_restore.tar.gz"
         [ -s "${'$'}ARCH" ] || { echo "ERR: Архив не найден на /opt/.gbox_restore.tar.gz"; exit 1; }
+        if [ "$mode" = "opt_full" ] || [ "$mode" = "system_full" ]; then
+            if [ ! -d /opt/etc ] || [ ! -x /opt/bin/opkg ]; then
+                echo "[FATAL] Entware /opt не смонтирован. Сначала установи Entware на флешку."
+                echo "PREFLIGHT_FAIL"
+                rm -f "${'$'}ARCH"
+                exit 1
+            fi
+        fi
         find /opt -maxdepth 1 -name '.gbox_rst_*' -type d -exec rm -rf {} + 2>/dev/null || true
         RST="/opt/.gbox_rst_${'$'}${'$'}"
         rm -rf "${'$'}RST" && mkdir -p "${'$'}RST"
@@ -864,8 +872,8 @@ EOFINI
                   /^[[:space:]]*${'$'}/ {next}
                   /^[[:space:]]*#/ {next}
                   /^[[:space:]]*!/ {if (${'$'}0 ~ /^!${'$'}/) blk=""; next}
-                  /^[[:space:]]/ {sub(/^[[:space:]]+/,""); cmd=(blk!="" ? blk" "${'$'}0 : ${'$'}0); if (cmd !~ /^(user|no user|system mode) /) print cmd; next}
-                  {blk=${'$'}0; if (blk !~ /^(user|no user|system mode) /) print blk}
+                  /^[[:space:]]/ {sub(/^[[:space:]]+/,""); cmd=(blk!="" ? blk" "${'$'}0 : ${'$'}0); if (cmd !~ /^(user|no user|system mode|opkg disk|no opkg disk) /) print cmd; next}
+                  {blk=${'$'}0; if (blk !~ /^(user|no user|system mode|opkg disk|no opkg disk) /) print blk}
                 ' > "${'$'}RST/.ndms_flat.txt"
                 while IFS= read -r line; do
                     [ -n "${'$'}line" ] || continue
@@ -878,6 +886,19 @@ EOFINI
                 done < "${'$'}RST/.ndms_flat.txt"
                 LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1 || true
                 echo "[OK] NDMS: применено ${'$'}ok_cnt, ошибок ${'$'}err_cnt"
+            fi
+            # Auto-UUID: после restore могла быть другая флешка. Привязываем opkg disk к текущей.
+            OPT_DEV=${'$'}(mount 2>/dev/null | awk '${'$'}3=="/opt"{print ${'$'}1;exit}')
+            if [ -n "${'$'}OPT_DEV" ]; then
+                OPT_UUID=${'$'}(blkid "${'$'}OPT_DEV" 2>/dev/null | sed -n 's/.*UUID="\([^"]*\)".*/\1/p')
+                if [ -n "${'$'}OPT_UUID" ]; then
+                    LD_LIBRARY_PATH= /bin/ndmc -c "opkg disk ${'$'}OPT_UUID:" >/dev/null 2>&1
+                    LD_LIBRARY_PATH= /bin/ndmc -c "opkg initrc /opt/etc/init.d/rc.unslung" >/dev/null 2>&1
+                    LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1
+                    echo "[OK] opkg disk привязан к текущей флешке: ${'$'}OPT_UUID"
+                else
+                    echo "[WARN] UUID текущей /opt не определён"
+                fi
             fi
         fi
 
