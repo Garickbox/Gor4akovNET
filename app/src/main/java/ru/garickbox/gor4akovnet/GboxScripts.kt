@@ -420,12 +420,13 @@ object GboxScripts {
                 echo "[INFO] Режим без отдельного Wi-Fi: политика Gor4akovNET создана (можно назначать на устройства в Мониторе)."
             fi
 
+            # ВАЖНО: POLICY_NAME в zapret2/config запускает CONNMARK-exclude в S99zapret2 —
+            # это ИСКЛЮЧАЕТ из обхода все сети, кроме указанной политики. Обход должен
+            # работать глобально через NFQUEUE на WAN, поэтому POLICY_NAME НЕ пишем.
+            # Точечный обход по устройствам — ip hotspot host <MAC> policy Gor4akovNET.
             ZCFG="/opt/zapret2/config"
             if [ -f "${'$'}ZCFG" ]; then
                 sed -i '/^POLICY_NAME=/d;/^POLICY_EXCLUDE=/d' "${'$'}ZCFG"
-                if [ "${'$'}ISO_FLAG" = "1" ]; then
-                    printf 'POLICY_NAME="Gor4akovNET"\nPOLICY_EXCLUDE=0\n' >> "${'$'}ZCFG"
-                fi
             fi
 
             # ВНИМАНИЕ: раньше здесь создавался хук 090-gor4akov-policy.sh, который
