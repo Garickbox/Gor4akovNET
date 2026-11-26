@@ -158,7 +158,7 @@ ZH='X-Z2K-Panel: 1'
         """
         panel_up=true
         if command -v nc >/dev/null 2>&1; then
-          nc -z -w 1 "$PH" 8088 2>/dev/null || panel_up=false
+          nc -z -w 1 "§PH" 8088 2>/dev/null || panel_up=false
         fi
         cp_get() { if [ "§panel_up" = true ]; then curl -fsS "§@" 2>/dev/null | tr -d '\000-\037' || echo ''; else echo ''; fi; }
         zst=§(cp_get -m 4 §ZB/cgi-bin/api/status)
@@ -219,7 +219,7 @@ ZH='X-Z2K-Panel: 1'
     val CMD_WARP_FULL = sh(
         """
         panel_up=true
-        if command -v nc >/dev/null 2>&1; then nc -z -w 1 "$PH" 8088 2>/dev/null || panel_up=false; fi
+        if command -v nc >/dev/null 2>&1; then nc -z -w 1 "§PH" 8088 2>/dev/null || panel_up=false; fi
         cp_get() { if [ "§panel_up" = true ]; then curl -fsS "§@" 2>/dev/null | tr -d '\000-\037' || echo ''; else echo ''; fi; }
 
         wst=§(cp_get -m 4 §ZB/cgi-bin/api/warp/status)
@@ -853,9 +853,9 @@ ZH='X-Z2K-Panel: 1'
     fun z2kApiJob(ep: String, postData: String, waitSec: Int = 25): String {
         val url = "§ZB/cgi-bin/api/${sq(ep)}"
         val cmd = if (postData.isEmpty()) {
-            "curl -sS -m 10 -X POST -H "§ZH" '$url'"
+            "curl -sS -m 10 -X POST -H 'X-Z2K-Panel: 1' \"$url\""
         } else {
-            "curl -sS -m 12 -X POST -H "§ZH" -d '${sq(postData)}' '$url'"
+            "curl -sS -m 12 -X POST -H 'X-Z2K-Panel: 1' -d '${sq(postData)}' \"$url\""
         }
         return sh(
             """__LONG__
