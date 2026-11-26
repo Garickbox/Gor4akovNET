@@ -807,7 +807,10 @@ EOFINI
             echo "FATAL: /opt отсутствует или Entware не смонтирован — полный бэкап невозможен." >&2
             exit 1
         fi
+        rm -rf /opt/.gbox_backup_stage.* /opt/tmp/.gbox_bkp_* 2>/dev/null || true
         TMPB="/opt/tmp/.gbox_bkp_${'$'}${'$'}"
+        STAGE="/opt/.gbox_backup_stage.${'$'}${'$'}.tar.gz"
+        trap 'rm -rf "${'$'}TMPB" "${'$'}STAGE"' EXIT INT TERM
         mkdir -p "${'$'}TMPB" /opt/tmp
         LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" > "${'$'}TMPB/running-config.txt" 2>/dev/null || true
         LD_LIBRARY_PATH= /bin/ndmc -c "show startup-config" > "${'$'}TMPB/startup-config.txt" 2>/dev/null || cp -f "${'$'}TMPB/running-config.txt" "${'$'}TMPB/startup-config.txt" 2>/dev/null || true
@@ -883,21 +886,26 @@ EOFINI
 
         # Диагностика: какой тар работает (GNU из /opt/bin или busybox-fallback).
         _tar_ver=${'$'}("${'$'}TAR" --version 2>&1 | head -n1)
+        _is_gnu=0
+        _tar_opts=""
+        if printf '%s' "${'$'}_tar_ver" | grep -qi "GNU tar"; then
+            _is_gnu=1
+            _tar_opts="--warning=no-file-changed --ignore-failed-read"
+        fi
         echo "[INFO] TAR=${'$'}TAR (${'$'}{_tar_ver:-unknown})" >&2
         # Пишем архив на флешку (/opt), а НЕ в /tmp (tmpfs = RAM, OOM) и НЕ в SSH-стрим.
         # После проверки целостности отдаём содержимое в stdout через cat.
-        STAGE="/opt/.gbox_backup_stage.${'$'}${'$'}.tar.gz"
         rm -f "${'$'}STAGE"
         if [ -n "${'$'}opt_excl" ]; then
-            ${'$'}{TAR} --exclude='opt/.gbox_backup_stage*' --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/z2k-rollback' --exclude='opt/tmp' --exclude='opt/var/log' --exclude='*.log' --exclude='*.swap' --exclude='swapfile' --exclude="${'$'}opt_excl" \
+            ${'$'}{TAR} ${'$'}_tar_opts --exclude='opt/.gbox_backup_stage*' --exclude='opt/.gbox_prerestore.*' --exclude='opt/.gbox_rst_*' --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/z2k-rollback' --exclude='opt/tmp' --exclude='opt/var/log' --exclude='*.log' --exclude='*.swap' --exclude='swapfile' --exclude='*.db-wal' --exclude='*.db-shm' --exclude="${'$'}opt_excl" \
                 -czf "${'$'}STAGE" "${'$'}@"
         else
-            ${'$'}{TAR} --exclude='opt/.gbox_backup_stage*' --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/z2k-rollback' --exclude='opt/tmp' --exclude='opt/var/log' --exclude='*.log' --exclude='*.swap' --exclude='swapfile' \
+            ${'$'}{TAR} ${'$'}_tar_opts --exclude='opt/.gbox_backup_stage*' --exclude='opt/.gbox_prerestore.*' --exclude='opt/.gbox_rst_*' --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/z2k-rollback' --exclude='opt/tmp' --exclude='opt/var/log' --exclude='*.log' --exclude='*.swap' --exclude='swapfile' --exclude='*.db-wal' --exclude='*.db-shm' \
                 -czf "${'$'}STAGE" "${'$'}@"
         fi
         tar_rc=${'$'}?
         rm -rf "${'$'}TMPB"
-        if [ "${'$'}tar_rc" -ne 0 ] || [ ! -s "${'$'}STAGE" ]; then
+        if { [ "${'$'}_is_gnu" = "1" ] && [ "${'$'}tar_rc" -ge 2 ]; } || { [ "${'$'}_is_gnu" != "1" ] && [ "${'$'}tar_rc" -ne 0 ]; } || [ ! -s "${'$'}STAGE" ]; then
             _sz=${'$'}(wc -c < "${'$'}STAGE" 2>/dev/null || echo 0)
             rm -f "${'$'}STAGE"
             echo "FATAL: tar не смог создать архив (rc=${'$'}tar_rc, size=${'$'}{_sz:-0} B, TAR=${'$'}TAR ${'$'}{_tar_ver:-})" >&2
@@ -932,6 +940,7 @@ EOFINI
             fi
         fi
         find /opt -maxdepth 1 -name '.gbox_rst_*' -type d -exec rm -rf {} + 2>/dev/null || true
+        find /opt -maxdepth 1 -name '.gbox_prerestore.*' -type f -exec rm -f {} + 2>/dev/null || true
         RST="/opt/.gbox_rst_${'$'}${'$'}"
         rm -rf "${'$'}RST" && mkdir -p "${'$'}RST"
         echo "=== Распаковка архива ==="
@@ -982,6 +991,7 @@ EOFINI
         if [ "${'$'}RESTORE_OK" -ne 1 ]; then
             echo "[FATAL] Ошибка распаковки -> откат pre-snapshot"
             if [ -n "${'$'}PRE" ] && [ -s "${'$'}PRE" ]; then
+                [ -x "${'$'}TAR" ] || TAR=tar
                 "${'$'}TAR" -xzf "${'$'}PRE" -C / 2>&1 | tail -3
                 echo "[OK] Pre-snapshot восстановлен"
             else
@@ -1029,15 +1039,29 @@ EOFINI
                   /^[[:space:]]/ {sub(/^[[:space:]]+/,""); cmd=(blk!="" ? blk" "${'$'}0 : ${'$'}0); if (!skip(cmd)) print cmd; next}
                   {blk=${'$'}0; if (!skip(blk)) print blk}
                 ' > "${'$'}RST/.ndms_flat.txt"
+                : > "${'$'}RST/.ndms_retry.txt"
                 while IFS= read -r line; do
                     [ -n "${'$'}line" ] || continue
                     out_c=${'$'}(LD_LIBRARY_PATH= /bin/ndmc -c "${'$'}line" 2>&1)
                     if printf '%s' "${'$'}out_c" | grep -qiE 'error|invalid|no such command'; then
-                        err_cnt=${'$'}((err_cnt + 1))
+                        printf '%s
+' "${'$'}line" >> "${'$'}RST/.ndms_retry.txt"
                     else
                         ok_cnt=${'$'}((ok_cnt + 1))
                     fi
                 done < "${'$'}RST/.ndms_flat.txt"
+                if [ -s "${'$'}RST/.ndms_retry.txt" ]; then
+                    while IFS= read -r line; do
+                        [ -n "${'$'}line" ] || continue
+                        out_c=${'$'}(LD_LIBRARY_PATH= /bin/ndmc -c "${'$'}line" 2>&1)
+                        if printf '%s' "${'$'}out_c" | grep -qiE 'error|invalid|no such command'; then
+                            err_cnt=${'$'}((err_cnt + 1))
+                            [ "${'$'}err_cnt" -le 5 ] && echo "[WARN] ndmc: ${'$'}line -> ${'$'}out_c"
+                        else
+                            ok_cnt=${'$'}((ok_cnt + 1))
+                        fi
+                    done < "${'$'}RST/.ndms_retry.txt"
+                fi
                 LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1 || true
                 echo "[OK] NDMS: применено ${'$'}ok_cnt, ошибок ${'$'}err_cnt"
             fi
