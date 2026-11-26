@@ -42,13 +42,12 @@ object MonitorDiagScripts {
                 split(l, a, " ")
                 pid=a[1]
                 if(pid !~ /^[0-9]+§/) continue
+                # /proc/PID/cmdline НЕ читаем: файл разделён NUL-байтами, а busybox awk
+                # падает на них ("Unexpected token") и весь блок молча умирает -> все
+                # службы выглядят остановленными. Имя программы и так есть в полях 5..NF
+                # строки `ps w`, а PAT — это имя (AdGuardHome/nfqws2/dropbear/…), не argv.
                 cmd=""
-                cf="/proc/" pid "/cmdline"
-                if((getline cmd < cf) > 0) gsub(/\0/," ",cmd)
-                close(cf)
-                if(cmd==""){
-                  for(i=5;i<=length(a);i++) cmd=(cmd==""?a[i]:cmd" "a[i])
-                }
+                for(i=5;i<=length(a);i++) cmd=(cmd==""?a[i]:cmd" "a[i])
                 if(pat!="" && index(tolower(cmd), pat)>0){
                   rss=0
                   stf="/proc/" pid "/status"
