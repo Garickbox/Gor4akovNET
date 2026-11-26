@@ -180,6 +180,38 @@ class RciSession(
         }.getOrDefault(0)
     }
 
+    fun parseCliChecked(commands: List<String>, readTimeoutMs: Int = 45000): Pair<Int, List<String>> {
+        if (commands.isEmpty()) return 0 to emptyList()
+        val raw = parseCli(commands, readTimeoutMs = readTimeoutMs).trim()
+        if (raw.isBlank()) return commands.size to emptyList()
+        val errors = mutableListOf<String>()
+        fun inspectItem(idx: Int, item: JSONObject?) {
+            val stArr = item?.optJSONObject("parse")?.optJSONArray("status")
+                ?: item?.optJSONArray("status")
+                ?: return
+            for (j in 0 until stArr.length()) {
+                val stObj = stArr.optJSONObject(j) ?: continue
+                val st = stObj.optString("status", "")
+                if (st.equals("error", ignoreCase = true)) {
+                    val msg = stObj.optString("message", stObj.optString("code", "Ошибка команды"))
+                    val cmd = commands.getOrNull(idx) ?: "#$idx"
+                    errors.add("$cmd -> $msg")
+                }
+            }
+        }
+        runCatching {
+            when {
+                raw.startsWith("[") -> {
+                    val arr = JSONArray(raw)
+                    for (i in 0 until arr.length()) inspectItem(i, arr.optJSONObject(i))
+                }
+                raw.startsWith("{") -> inspectItem(0, JSONObject(raw))
+            }
+        }
+        val ok = (commands.size - errors.size).coerceAtLeast(0)
+        return ok to errors
+    }
+
     private fun flattenNdmsConfigLines(cfgText: String, skipDangerous: Boolean = true): List<String> {
         val out = mutableListOf<String>()
         var block = ""

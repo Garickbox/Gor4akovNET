@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import gboxcore.Gboxcore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -53,6 +54,7 @@ import java.io.File
 
 private enum class MonitorGroup(val title: String) {
     SYSTEM("СИСТЕМА"),
+    NDMS("НАСТРОЙКИ NDMS"),
     NET("СЕТЬ & DNS"),
     BYPASS("ОБХОД & WARP"),
     WIFI("WI-FI & КЛИЕНТЫ"),
@@ -67,8 +69,12 @@ private enum class MonitorPage(
 ) {
     OVERVIEW(MonitorGroup.SYSTEM, "Обзор", Icons.Rounded.Speed, "overview"),
     SERVICES(MonitorGroup.SYSTEM, "Службы & opkg", Icons.Rounded.Memory, "services"),
-    STORAGE(MonitorGroup.SYSTEM, "USB & NDMS", Icons.Rounded.Storage, "storage"),
-    WAN(MonitorGroup.NET, "WAN & Сеть", Icons.Rounded.Public, "wan"),
+    STORAGE(MonitorGroup.SYSTEM, "USB & Накопители", Icons.Rounded.Storage, "storage"),
+    APP_CENTER(MonitorGroup.SYSTEM, "Центр пакетов", Icons.Rounded.Apps, "app_center"),
+    NDMS_IFACES(MonitorGroup.NDMS, "Интерфейсы & VPN", Icons.Rounded.Router, "ndms_ifaces"),
+    NDMS_POLICIES(MonitorGroup.NDMS, "Политики & Сеть", Icons.Rounded.AccountTree, "ndms_policies"),
+    NDMS_LAN_SYS(MonitorGroup.NDMS, "LAN, DHCP & Vault", Icons.Rounded.Tune, "ndms_lan_sys"),
+    WAN(MonitorGroup.NET, "WAN & Интернет", Icons.Rounded.Public, "wan"),
     DNS(MonitorGroup.NET, "AdGuard DNS", Icons.Rounded.Dns, "dns"),
     NAT_PPE(MonitorGroup.NET, "PPE & Порты", Icons.Rounded.Security, "nat_ppe"),
     Z2K_MODES(MonitorGroup.BYPASS, "Zapret2 (z2k)", Icons.Rounded.Shield, "z2k"),
@@ -79,7 +85,7 @@ private enum class MonitorPage(
     BACKUPS(MonitorGroup.TOOLS, "Бэкапы v2", Icons.Rounded.Save, "backups"),
     FILES(MonitorGroup.TOOLS, "X-plore Файлы", Icons.Rounded.Folder, "files"),
     TORCH(MonitorGroup.TOOLS, "Torch & Трафик", Icons.Rounded.NetworkCheck, "torch"),
-    LOGS_SSH(MonitorGroup.TOOLS, "Логи & SSH", Icons.Rounded.Terminal, "logs")
+    LOGS_SSH(MonitorGroup.TOOLS, "Логи, Сводка & SSH", Icons.Rounded.Terminal, "logs")
 }
 
 private suspend fun runSshCmd(prefs: Prefs, cmd: String, readOnly: Boolean = false): String {
@@ -126,27 +132,7 @@ private fun parseJsonOut(raw: String, tag: String): JSONObject {
     return JSONObject(raw.substring(i, end + 1))
 }
 
-private fun formatUptime(sec: Long): String {
-    if (sec <= 0L) return "—"
-    val d = sec / 86400
-    val h = (sec % 86400) / 3600
-    val m = (sec % 3600) / 60
-    return if (d > 0) "${d}д ${h}ч ${m}м" else "${h}ч ${m}м"
-}
-
-private fun formatBytes(b: Double): String = when {
-    b <= 0.0 -> "0 Б"
-    b >= 1073741824.0 -> String.format("%.2f ГБ", b / 1073741824.0)
-    b >= 1048576.0 -> String.format("%.1f МБ", b / 1048576.0)
-    b >= 1024.0 -> String.format("%.0f КБ", b / 1024.0)
-    else -> String.format("%.0f Б", b)
-}
-
-private fun formatSizeMb(bytes: Long): String = when {
-    bytes >= 1024L * 1024L -> String.format("%.1f МБ", bytes / 1048576.0)
-    bytes >= 1024L -> "${bytes / 1024L} КБ"
-    else -> "$bytes Б"
-}
+// Shared formatters and Monitor UI helpers live in MonitorComponents.kt
 
 private fun decodeB64(b64: String): String {
     if (b64.isBlank()) return ""
@@ -169,6 +155,7 @@ fun MonitorPanelScreen(
     var autoCollapse by remember { mutableStateOf(true) }
     var loading by remember { mutableStateOf(false) }
     var loadGen by remember { mutableIntStateOf(0) }
+    var activeLoadJob by remember { mutableStateOf<Job?>(null) }
     var statusMsg by remember { mutableStateOf("") }
     var pageErrMsg by remember { mutableStateOf("") }
     var actionErrMsg by remember { mutableStateOf("") }
@@ -179,6 +166,17 @@ fun MonitorPanelScreen(
 
     var overview by remember { mutableStateOf<JSONObject?>(null) }
     var services by remember { mutableStateOf<JSONObject?>(null) }
+    var storageDoctor by remember { mutableStateOf<JSONObject?>(null) }
+    var appCenter by remember { mutableStateOf<JSONObject?>(null) }
+    var appCenterOut by remember { mutableStateOf("") }
+    var inspectInitId by remember { mutableStateOf<String?>(null) }
+    var inspectData by remember { mutableStateOf<JSONObject?>(null) }
+    var ndmsState by remember { mutableStateOf<NdmsControlState?>(null) }
+    var ndmsIfaceOut by remember { mutableStateOf("") }
+    var ndmsCliOut by remember { mutableStateOf("") }
+    var routeDoctor by remember { mutableStateOf<JSONObject?>(null) }
+    var vaultEntries by remember { mutableStateOf(ConfigVault.listSnapshots(ctx)) }
+    var syslogSummary by remember { mutableStateOf<JSONObject?>(null) }
     var wanNet by remember { mutableStateOf<JSONObject?>(null) }
     var dnsNet by remember { mutableStateOf<JSONObject?>(null) }
     var bypass by remember { mutableStateOf<JSONObject?>(null) }
@@ -344,6 +342,44 @@ fun MonitorPanelScreen(
         }
     }
 
+    fun refreshVault() {
+        vaultEntries = ConfigVault.listSnapshots(ctx)
+    }
+
+    fun inspectService(id: String) {
+        inspectInitId = id
+        inspectData = null
+        scope.launch {
+            runCatching {
+                parseJsonOut(runSshCmd(prefs, MonitorScripts.serviceInspectCmd(id), readOnly = true), "Инспектор $id")
+            }.onSuccess { inspectData = it }
+                .onFailure { actionErrMsg = "Инспектор $id: ${it.message}"; inspectInitId = null }
+        }
+    }
+
+    fun applyNdmsWithVault(reason: String, cmds: List<String>, reloadTarget: MonitorPage = page) {
+        scope.launch {
+            loading = true
+            actionErrMsg = ""
+            statusMsg = "$reason..."
+            val res = RouterControlClient.executeNdmsWithVault(ctx, prefs, reason, cmds, saveConfig = true)
+            refreshVault()
+            res.onSuccess { msg ->
+                statusMsg = msg
+                ndmsState = RouterControlClient.loadState(ctx, prefs).getOrNull() ?: ndmsState
+                if (reloadTarget != MonitorPage.NDMS_IFACES && reloadTarget != MonitorPage.NDMS_POLICIES && reloadTarget != MonitorPage.NDMS_LAN_SYS) {
+                    loading = false
+                    loadPage(reloadTarget, force = true)
+                    return@launch
+                }
+            }.onFailure { err ->
+                actionErrMsg = "$reason: ${err.message}"
+                statusMsg = ""
+            }
+            loading = false
+        }
+    }
+
     fun loadPage(target: MonitorPage, force: Boolean = false) {
         pageErrMsg = ""
         if (target == MonitorPage.BACKUPS) {
@@ -355,16 +391,36 @@ fun MonitorPanelScreen(
             if (dirData == null || force) openDir(dirPath)
             return
         }
+        activeLoadJob?.cancel()
         val gen = ++loadGen
-        scope.launch {
+        activeLoadJob = scope.launch {
             loading = true
             try {
                 when (target) {
                     MonitorPage.OVERVIEW -> if (overview == null || force) {
                         overview = parseJsonOut(runSshCmd(prefs, MonitorScripts.buildOverviewCmd(force), readOnly = true), "Обзор")
                     }
-                    MonitorPage.SERVICES, MonitorPage.STORAGE -> if (services == null || force) {
+                    MonitorPage.SERVICES -> if (services == null || force) {
                         services = parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_SERVICES, readOnly = true), "Службы")
+                    }
+                    MonitorPage.STORAGE -> {
+                        if (services == null || force) {
+                            services = parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_SERVICES, readOnly = true), "Хранилище")
+                        }
+                        if (storageDoctor == null || force) {
+                            storageDoctor = runCatching {
+                                parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_STORAGE_DOCTOR, readOnly = true), "Storage Doctor")
+                            }.getOrNull() ?: storageDoctor
+                        }
+                    }
+                    MonitorPage.APP_CENTER -> if (appCenter == null || force) {
+                        appCenter = parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_APP_CENTER_STATE, readOnly = true), "Центр пакетов")
+                    }
+                    MonitorPage.NDMS_IFACES, MonitorPage.NDMS_POLICIES, MonitorPage.NDMS_LAN_SYS -> {
+                        refreshVault()
+                        if (ndmsState == null || force) {
+                            ndmsState = RouterControlClient.loadState(ctx, prefs).getOrThrow()
+                        }
                     }
                     MonitorPage.WAN -> if (wanNet == null || force) {
                         wanNet = parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_WAN_NET, readOnly = true), "WAN")
@@ -392,11 +448,20 @@ fun MonitorPanelScreen(
                     MonitorPage.TORCH -> if (torchData == null || force) {
                         torchData = parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_TORCH_LIVE, readOnly = true), "Live Torch")
                     }
-                    MonitorPage.LOGS_SSH -> if (logsOut.isBlank() || force) {
-                        logsOut = runSshCmd(prefs, MonitorScripts.fetchLog(logSrc), readOnly = true)
+                    MonitorPage.LOGS_SSH -> {
+                        if (logsOut.isBlank() || force) {
+                            logsOut = runSshCmd(prefs, MonitorScripts.fetchLog(logSrc), readOnly = true)
+                        }
+                        if (syslogSummary == null || force) {
+                            syslogSummary = runCatching {
+                                parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_SYSLOG_SUMMARY, readOnly = true), "Syslog")
+                            }.getOrNull() ?: syslogSummary
+                        }
                     }
                     MonitorPage.FILES, MonitorPage.BACKUPS -> {}
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Throwable) {
                 pageErrMsg = e.message ?: "Нет связи по SSH"
                 Telemetry.recordError(
@@ -503,7 +568,7 @@ fun MonitorPanelScreen(
                 val bootOut = runSshCmd(prefs, MonitorScripts.adguardBootstrapInitCmd(), readOnly = false)
                 dnsProbeOut = bootOut
                 statusMsg = "AdGuard Home настроен"
-                loadPage(MonitorPage.DNS, force = true)
+                loadPage(if (page == MonitorPage.APP_CENTER) MonitorPage.APP_CENTER else MonitorPage.DNS, force = true)
             } catch (e: Throwable) {
                 actionErrMsg = "AdGuard: ${e.message}"
             } finally {
@@ -832,6 +897,7 @@ fun MonitorPanelScreen(
                                 caution = if (guide.configPath.isNotBlank()) "Конфиг: ${guide.configPath}" else ""
                             )
                         },
+                        onInspect = { id -> inspectService(id) },
                         onSvcAct = { id, act ->
                             if (id.contains("dropbear", true) && (act == "stop" || act == "restart")) {
                                 confirmStopDropbear = id to act
@@ -845,9 +911,115 @@ fun MonitorPanelScreen(
                     )
                     MonitorPage.STORAGE -> StoragePage(
                         data = services,
+                        doctor = storageDoctor,
+                        busy = loading,
                         onTopicHelp = ::showTopic,
                         onToggleHelp = ::showToggleHelp,
+                        onRefreshDoctor = {
+                            runAction("Диагностика FS", MonitorScripts.CMD_STORAGE_DOCTOR, readOnly = true) { out ->
+                                runCatching { parseJsonOut(out, "Storage Doctor") }.onSuccess { storageDoctor = it }
+                            }
+                        },
+                        onCleanupStorage = {
+                            runAction("Очистка логов /opt", MonitorScripts.CMD_STORAGE_CLEANUP, MonitorPage.STORAGE, 400L) { out ->
+                                statusMsg = out.lines().lastOrNull { it.isNotBlank() } ?: statusMsg
+                            }
+                        },
                         onAction = { lbl, cmd -> runAction(lbl, cmd, MonitorPage.STORAGE, 500L) }
+                    )
+                    MonitorPage.APP_CENTER -> AppCenterPage(
+                        data = appCenter,
+                        actionOut = appCenterOut,
+                        busy = loading,
+                        onTopicHelp = ::showTopic,
+                        onInstallAdguard = { installOrBootstrapAdguard() },
+                        onAction = { lbl, cmd ->
+                            runAction(lbl, cmd, MonitorPage.APP_CENTER, 700L) { out ->
+                                appCenterOut = out
+                            }
+                        },
+                        onCopy = { txt -> clipboard.setText(AnnotatedString(txt)); statusMsg = "Скопировано" }
+                    )
+                    MonitorPage.NDMS_IFACES -> NdmsIfacesPage(
+                        state = ndmsState,
+                        inspectOut = ndmsIfaceOut,
+                        busy = loading,
+                        onTopicHelp = ::showTopic,
+                        onReload = { loadPage(MonitorPage.NDMS_IFACES, true) },
+                        onApplyCmds = { reason, cmds -> applyNdmsWithVault(reason, cmds) },
+                        onInspectIface = { ifcId ->
+                            scope.launch {
+                                loading = true
+                                RouterControlClient.runNdmsCli(prefs, "show interface $ifcId")
+                                    .onSuccess { ndmsIfaceOut = it }
+                                    .onFailure { actionErrMsg = it.message ?: "Ошибка" }
+                                loading = false
+                            }
+                        },
+                        onCopy = { txt -> clipboard.setText(AnnotatedString(txt)); statusMsg = "Скопировано" }
+                    )
+                    MonitorPage.NDMS_POLICIES -> NdmsPoliciesPage(
+                        state = ndmsState,
+                        routeDoctor = routeDoctor,
+                        busy = loading,
+                        onTopicHelp = ::showTopic,
+                        onRunDoctor = {
+                            runAction("Доктор маршрутов", MonitorScripts.CMD_ROUTE_DOCTOR, readOnly = true) { out ->
+                                runCatching { parseJsonOut(out, "Route Doctor") }.onSuccess { routeDoctor = it }
+                            }
+                        },
+                        onApplyCmds = { reason, cmds -> applyNdmsWithVault(reason, cmds) }
+                    )
+                    MonitorPage.NDMS_LAN_SYS -> NdmsLanSysPage(
+                        state = ndmsState,
+                        vaultEntries = vaultEntries,
+                        cliOut = ndmsCliOut,
+                        busy = loading,
+                        onTopicHelp = ::showTopic,
+                        onApplyCmds = { reason, cmds -> applyNdmsWithVault(reason, cmds) },
+                        onRunCli = { cmdLine ->
+                            scope.launch {
+                                loading = true
+                                actionErrMsg = ""
+                                RouterControlClient.runNdmsCli(prefs, cmdLine)
+                                    .onSuccess { ndmsCliOut = it }
+                                    .onFailure { actionErrMsg = it.message ?: "Ошибка NDM CLI" }
+                                loading = false
+                            }
+                        },
+                        onTakeVault = { lbl ->
+                            scope.launch {
+                                loading = true
+                                RouterControlClient.takeManualVaultSnapshot(ctx, prefs, lbl)
+                                    .onSuccess {
+                                        refreshVault()
+                                        statusMsg = "Снимок Config Vault сохранён"
+                                    }.onFailure { actionErrMsg = "Vault: ${it.message}" }
+                                loading = false
+                            }
+                        },
+                        onRestoreVault = { entry ->
+                            scope.launch {
+                                loading = true
+                                RouterControlClient.restoreVaultSnapshot(ctx, prefs, entry)
+                                    .onSuccess { msg ->
+                                        refreshVault()
+                                        statusMsg = msg
+                                        ndmsState = RouterControlClient.loadState(ctx, prefs).getOrNull() ?: ndmsState
+                                    }.onFailure { actionErrMsg = "Откат Vault: ${it.message}" }
+                                loading = false
+                            }
+                        },
+                        onDeleteVault = { entry ->
+                            ConfigVault.deleteSnapshot(entry)
+                            refreshVault()
+                        },
+                        onFormatUsbExt4 = { dev ->
+                            runAction("Format $dev -> ext4", MonitorScripts.usbFormatExt4Cmd(dev), MonitorPage.NDMS_LAN_SYS, 1000L) { out ->
+                                ndmsCliOut = out
+                            }
+                        },
+                        onCopy = { txt -> clipboard.setText(AnnotatedString(txt)); statusMsg = "Скопировано" }
                     )
                     MonitorPage.WAN -> WanPage(
                         data = wanNet,
@@ -970,12 +1142,19 @@ fun MonitorPanelScreen(
                     MonitorPage.LOGS_SSH -> LogsSshPage(
                         logSrc = logSrc,
                         logsOut = logsOut,
+                        syslogSummary = syslogSummary,
+                        busy = loading,
                         logFilter = logFilter,
                         onLogFilterChange = { logFilter = it },
                         customCmd = customCmd,
                         onCustomCmdChange = { customCmd = it },
                         consoleOut = consoleOut,
                         onTopicHelp = ::showTopic,
+                        onRefreshSummary = {
+                            runAction("Анализ Syslog", MonitorScripts.CMD_SYSLOG_SUMMARY, readOnly = true) { out ->
+                                runCatching { parseJsonOut(out, "Syslog") }.onSuccess { syslogSummary = it }
+                            }
+                        },
                         onSelectLog = { src ->
                             logSrc = src
                             runAction("Лог $src", MonitorScripts.fetchLog(src), readOnly = true, onOutput = { logsOut = it })
@@ -1002,6 +1181,30 @@ fun MonitorPanelScreen(
                 }
             },
             confirmButton = { TextButton(onClick = { helpTopic = null }) { Text("Понятно") } }
+        )
+    }
+
+    // Service Inspector Modal
+    inspectInitId?.let { id ->
+        ServiceInspectorDialog(
+            initId = id,
+            data = inspectData,
+            busy = loading,
+            onDismiss = { inspectInitId = null; inspectData = null },
+            onSvcAct = { svcId, act ->
+                inspectInitId = null
+                inspectData = null
+                if (svcId.contains("dropbear", true) && (act == "stop" || act == "restart")) {
+                    confirmStopDropbear = svcId to act
+                } else {
+                    runAction("$act $svcId", MonitorScripts.svcCmd(svcId, act), MonitorPage.SERVICES, 700L)
+                }
+            },
+            onOpenConfig = { cfgPath ->
+                inspectInitId = null
+                inspectData = null
+                openFile(cfgPath)
+            }
         )
     }
 
@@ -1316,102 +1519,7 @@ fun MonitorPanelScreen(
     }
 }
 
-@Composable
-private fun HelpSection(label: String, text: String, color: Color) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(label, color = color, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-        Text(text, color = Color(0xFFE2E8F0), fontSize = 12.sp, lineHeight = 16.sp)
-    }
-}
-
-@Composable
-private fun HelpBadge(onClick: () -> Unit) {
-    Box(
-        modifier = Modifier.size(17.dp).clip(CircleShape).background(Color(0xFF1E293B)).clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) { Text("?", color = Color(0xFF93C5FD), fontSize = 10.sp, fontWeight = FontWeight.Bold) }
-}
-
-@Composable
-private fun MiniCard(title: String, helpClick: (() -> Unit)? = null, content: @Composable ColumnScope.() -> Unit) {
-    Surface(color = Color(0xFF0F172A), shape = RoundedCornerShape(9.dp), border = BorderStroke(1.dp, Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text(title, color = Color(0xFF93C5FD), fontSize = 11.5.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                if (helpClick != null) HelpBadge(helpClick)
-            }
-            content()
-        }
-    }
-}
-
-@Composable
-private fun MiniRow(label: String, value: String, color: Color = Color.White, helpClick: (() -> Unit)? = null) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.weight(1f)) {
-            Text(label, color = Color(0xFF94A3B8), fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (helpClick != null) HelpBadge(helpClick)
-        }
-        Text(value, color = color, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace)
-    }
-}
-
-@Composable
-private fun MiniBar(label: String, detail: String, progress: Float) {
-    val p = progress.coerceIn(0f, 1f)
-    val c = when { p > 0.85f -> Color(0xFFEF4444); p > 0.65f -> Color(0xFFF59E0B); else -> Color(0xFF3B82F6) }
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(label, color = Color(0xFF94A3B8), fontSize = 10.sp)
-            Text(detail, color = Color(0xFFE2E8F0), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
-        }
-        LinearProgressIndicator(progress = { p }, modifier = Modifier.fillMaxWidth().height(5.dp).clip(RoundedCornerShape(3.dp)), color = c, trackColor = Color(0xFF1E293B))
-    }
-}
-
-@Composable
-private fun MiniSwitch(title: String, sub: String, checked: Boolean, helpClick: (() -> Unit)? = null, onToggle: (Int) -> Unit) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f).padding(end = 6.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                Text(title, color = Color.White, fontSize = 11.5.sp, fontWeight = FontWeight.Medium)
-                if (helpClick != null) HelpBadge(helpClick)
-            }
-            if (sub.isNotBlank()) Text(sub, color = Color(0xFF64748B), fontSize = 9.5.sp)
-        }
-        Switch(checked = checked, onCheckedChange = { onToggle(if (it) 1 else 0) }, modifier = Modifier.scale(0.78f))
-    }
-}
-
-@Composable
-private fun MiniPill(label: String, ok: Boolean, modifier: Modifier = Modifier, onClick: (() -> Unit)? = null) {
-    val m = if (onClick != null) modifier.clickable(onClick = onClick) else modifier
-    Surface(
-        color = if (ok) Color(0xFF052E16) else Color(0xFF1E293B),
-        shape = RoundedCornerShape(6.dp),
-        border = BorderStroke(1.dp, if (ok) Color(0xFF16A34A) else Color(0xFF334155)),
-        modifier = m
-    ) {
-        Row(Modifier.padding(horizontal = 7.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            Box(Modifier.size(6.dp).clip(CircleShape).background(if (ok) Color(0xFF22C55E) else Color(0xFF64748B)))
-            Text(label, color = if (ok) Color(0xFF86EFAC) else Color(0xFF94A3B8), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
-    }
-}
-
-@Composable
-private fun MonoBox(text: String, onCopy: (() -> Unit)? = null) {
-    Surface(color = Color(0xFF020617), shape = RoundedCornerShape(7.dp), border = BorderStroke(1.dp, Color(0xFF1E293B)), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(8.dp)) {
-            if (onCopy != null) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    Text("Копировать", color = Color(0xFF60A5FA), fontSize = 9.sp, modifier = Modifier.clickable(onClick = onCopy).padding(bottom = 3.dp))
-                }
-            }
-            Text(text, color = Color(0xFFCBD5E1), fontSize = 10.sp, fontFamily = FontFamily.Monospace, lineHeight = 13.5.sp)
-        }
-    }
-}
+// Shared Monitor UI helpers moved to MonitorComponents.kt
 
 @Composable
 private fun OverviewPage(
@@ -1667,6 +1775,7 @@ private fun ServicesPage(
     busy: Boolean,
     onTopicHelp: (String) -> Unit,
     onHelpGuide: (ServiceGuide) -> Unit,
+    onInspect: (String) -> Unit,
     onSvcAct: (String, String) -> Unit,
     onCronAdd: (String, String) -> Unit,
     onCronDel: (String) -> Unit,
@@ -1706,6 +1815,7 @@ private fun ServicesPage(
                         }
                         if (inst) {
                             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                OutlinedButton(onClick = { onInspect(id) }, enabled = !busy, modifier = Modifier.height(24.dp), contentPadding = PaddingValues(horizontal = 6.dp)) { Text("Инсп.", fontSize = 9.sp) }
                                 OutlinedButton(onClick = { onSvcAct(id, "restart") }, enabled = !busy, modifier = Modifier.height(24.dp), contentPadding = PaddingValues(horizontal = 6.dp)) { Text("Рест.", fontSize = 9.sp) }
                                 OutlinedButton(onClick = { onSvcAct(id, if (up) "stop" else "start") }, enabled = !busy, modifier = Modifier.height(24.dp), contentPadding = PaddingValues(horizontal = 6.dp)) { Text(if (up) "Стоп" else "Старт", fontSize = 9.sp) }
                             }
@@ -1790,8 +1900,12 @@ private fun ServicesPage(
 @Composable
 private fun StoragePage(
     data: JSONObject?,
+    doctor: JSONObject?,
+    busy: Boolean,
     onTopicHelp: (String) -> Unit,
     onToggleHelp: (String) -> Unit,
+    onRefreshDoctor: () -> Unit,
+    onCleanupStorage: () -> Unit,
     onAction: (String, String) -> Unit
 ) {
     val disks = data?.optJSONArray("disks") ?: JSONArray()
@@ -1817,6 +1931,12 @@ private fun StoragePage(
             onAction("USB 2.0", MonitorScripts.ndmcSaveCmd(if (v == 1) "system set dev.usb.force_usb2 1" else "system set dev.usb.force_usb2 0"))
         }
     }
+    StorageDoctorCard(
+        doctor = doctor,
+        busy = busy,
+        onRefresh = onRefreshDoctor,
+        onCleanup = onCleanupStorage
+    )
 }
 
 @Composable
@@ -2945,16 +3065,25 @@ private fun TorchPage(
 private fun LogsSshPage(
     logSrc: String,
     logsOut: String,
+    syslogSummary: JSONObject?,
+    busy: Boolean,
     logFilter: String,
     onLogFilterChange: (String) -> Unit,
     customCmd: String,
     onCustomCmdChange: (String) -> Unit,
     consoleOut: String,
     onTopicHelp: (String) -> Unit,
+    onRefreshSummary: () -> Unit,
     onSelectLog: (String) -> Unit,
     onRunCmd: (String) -> Unit,
     onCopy: (String) -> Unit
 ) {
+    SyslogSummaryCard(
+        summary = syslogSummary,
+        busy = busy,
+        onRefresh = onRefreshSummary,
+        onCopy = onCopy
+    )
     MiniCard("Логи служб роутера", { onTopicHelp("logs") }) {
         val logBtns = listOf("agh" to "AdGuard", "ndms" to "NDMS", "sched" to "Планир.", "au" to "Автообн.", "tg" to "TG", "http" to "HTTP", "warp" to "WARP", "circ" to "Autocirc", "dmesg" to "dmesg")
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
