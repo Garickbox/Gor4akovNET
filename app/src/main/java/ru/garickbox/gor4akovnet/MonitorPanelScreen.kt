@@ -351,7 +351,7 @@ fun MonitorPanelScreen(
         inspectData = null
         scope.launch {
             runCatching {
-                parseJsonOut(runSshCmd(prefs, MonitorScripts.serviceInspectCmd(id), readOnly = true), "Инспектор $id")
+                parseJsonOut(runSshCmd(prefs, MonitorDiagScripts.serviceInspectCmd(id), readOnly = true), "Инспектор $id")
             }.onSuccess { inspectData = it }
                 .onFailure { actionErrMsg = "Инспектор $id: ${it.message}"; inspectInitId = null }
         }
@@ -409,12 +409,12 @@ fun MonitorPanelScreen(
                         }
                         if (storageDoctor == null || force) {
                             storageDoctor = runCatching {
-                                parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_STORAGE_DOCTOR, readOnly = true), "Storage Doctor")
+                                parseJsonOut(runSshCmd(prefs, MonitorDiagScripts.CMD_STORAGE_DOCTOR, readOnly = true), "Storage Doctor")
                             }.getOrNull() ?: storageDoctor
                         }
                     }
                     MonitorPage.APP_CENTER -> if (appCenter == null || force) {
-                        appCenter = parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_APP_CENTER_STATE, readOnly = true), "Центр пакетов")
+                        appCenter = parseJsonOut(runSshCmd(prefs, MonitorDiagScripts.CMD_APP_CENTER_STATE, readOnly = true), "Центр пакетов")
                     }
                     MonitorPage.NDMS_IFACES, MonitorPage.NDMS_POLICIES, MonitorPage.NDMS_LAN_SYS -> {
                         refreshVault()
@@ -454,7 +454,7 @@ fun MonitorPanelScreen(
                         }
                         if (syslogSummary == null || force) {
                             syslogSummary = runCatching {
-                                parseJsonOut(runSshCmd(prefs, MonitorScripts.CMD_SYSLOG_SUMMARY, readOnly = true), "Syslog")
+                                parseJsonOut(runSshCmd(prefs, MonitorDiagScripts.CMD_SYSLOG_SUMMARY, readOnly = true), "Syslog")
                             }.getOrNull() ?: syslogSummary
                         }
                     }
@@ -916,12 +916,12 @@ fun MonitorPanelScreen(
                         onTopicHelp = ::showTopic,
                         onToggleHelp = ::showToggleHelp,
                         onRefreshDoctor = {
-                            runAction("Диагностика FS", MonitorScripts.CMD_STORAGE_DOCTOR, readOnly = true) { out ->
+                            runAction("Диагностика FS", MonitorDiagScripts.CMD_STORAGE_DOCTOR, readOnly = true) { out ->
                                 runCatching { parseJsonOut(out, "Storage Doctor") }.onSuccess { storageDoctor = it }
                             }
                         },
                         onCleanupStorage = {
-                            runAction("Очистка логов /opt", MonitorScripts.CMD_STORAGE_CLEANUP, MonitorPage.STORAGE, 400L) { out ->
+                            runAction("Очистка логов /opt", MonitorDiagScripts.CMD_STORAGE_CLEANUP, MonitorPage.STORAGE, 400L) { out ->
                                 statusMsg = out.lines().lastOrNull { it.isNotBlank() } ?: statusMsg
                             }
                         },
@@ -964,7 +964,7 @@ fun MonitorPanelScreen(
                         busy = loading,
                         onTopicHelp = ::showTopic,
                         onRunDoctor = {
-                            runAction("Доктор маршрутов", MonitorScripts.CMD_ROUTE_DOCTOR, readOnly = true) { out ->
+                            runAction("Доктор маршрутов", MonitorDiagScripts.CMD_ROUTE_DOCTOR, readOnly = true) { out ->
                                 runCatching { parseJsonOut(out, "Route Doctor") }.onSuccess { routeDoctor = it }
                             }
                         },
@@ -1015,7 +1015,7 @@ fun MonitorPanelScreen(
                             refreshVault()
                         },
                         onFormatUsbExt4 = { dev ->
-                            runAction("Format $dev -> ext4", MonitorScripts.usbFormatExt4Cmd(dev), MonitorPage.NDMS_LAN_SYS, 1000L) { out ->
+                            runAction("Format $dev -> ext4", MonitorDiagScripts.usbFormatExt4Cmd(dev), MonitorPage.NDMS_LAN_SYS, 1000L) { out ->
                                 ndmsCliOut = out
                             }
                         },
@@ -1151,7 +1151,7 @@ fun MonitorPanelScreen(
                         consoleOut = consoleOut,
                         onTopicHelp = ::showTopic,
                         onRefreshSummary = {
-                            runAction("Анализ Syslog", MonitorScripts.CMD_SYSLOG_SUMMARY, readOnly = true) { out ->
+                            runAction("Анализ Syslog", MonitorDiagScripts.CMD_SYSLOG_SUMMARY, readOnly = true) { out ->
                                 runCatching { parseJsonOut(out, "Syslog") }.onSuccess { syslogSummary = it }
                             }
                         },
