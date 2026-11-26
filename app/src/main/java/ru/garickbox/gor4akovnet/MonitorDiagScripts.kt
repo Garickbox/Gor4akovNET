@@ -67,7 +67,7 @@ object MonitorDiagScripts {
                 if(pt !~ /^[0-9]+§/) continue
                 hit=0
                 if(pat!="" && index(tolower(l), pat)>0) hit=1
-                else if(pat=="adguardhome" && (pt=="3000" || pt=="53")) hit=1
+                else if(pat=="adguardhome" && (pt=="3000" || pt=="3080" || pt=="53")) hit=1
                 else if((pat=="lighttpd" || pat=="z2k-webpanel") && pt=="8088") hit=1
                 else if(pat=="tg-mtproxy" && pt=="1443") hit=1
                 else if((pat=="z2k-http" || pat=="z2k-http-tunnel") && pt=="1444") hit=1
