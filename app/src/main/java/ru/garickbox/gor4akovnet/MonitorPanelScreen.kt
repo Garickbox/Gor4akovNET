@@ -122,7 +122,7 @@ private fun parseJsonOut(raw: String, tag: String): JSONObject {
             '}' -> { depth--; if (depth == 0) { end = k; break } }
         }
     }
-    if (end < 0) throw IllegalArgumentException("$tag: незакрытый JSON (${raw.take(120)})")
+    if (end < 0) throw IllegalArgumentException("$tag: незакрытый JSON (${raw.take(200)}${if (raw.length > 200) " ... ${raw.takeLast(80)}" else ""})")
     return JSONObject(raw.substring(i, end + 1))
 }
 
@@ -1519,7 +1519,9 @@ private fun OverviewPage(
         MiniBar("NAT Conntrack", "$ct / $ctMax", if (ctMax > 0) ct.toFloat() / ctMax else 0f)
         MiniBar("Память /opt", "Свободно ${disk?.optInt("avail", 0) ?: 0} из ${disk?.optInt("total", 0) ?: 0} МБ", diskPct / 100f)
 
-        MiniRow("Аптайм • Темп. Wi-Fi", "${formatUptime(sys?.optLong("up_sec", 0L) ?: 0L)} • ${sys?.optString("temp24", "—")}°/${sys?.optString("temp5", "—")}°C")
+        val t24s = sys?.optString("temp24").orEmpty().ifBlank { "—" }
+        val t5s = sys?.optString("temp5").orEmpty().ifBlank { "—" }
+        MiniRow("Аптайм • Темп. Wi-Fi", "${formatUptime(sys?.optLong("up_sec", 0L) ?: 0L)} • ${t24s}°/${t5s}°C")
         val wanDev = wan?.optString("dev").orEmpty().ifBlank { "WAN" }
         MiniRow("WAN ($wanDev) • Скорость", "${wan?.optString("ip", "—")} • ${wan?.optString("spd", "—")} Мбит/с")
     }
@@ -2393,10 +2395,18 @@ private fun WifiPage(
     val aps = wifi.optJSONArray("aps") ?: JSONArray()
 
     MiniCard("Радиомодули Wi-Fi", { onTopicHelp("wifi") }) {
-        MiniRow("${wifi.optString("g24_ssid", "Home")} (2.4 ГГц)", "${if (wifi.optBoolean("g24_up")) "ON" else "OFF"} • кан.${wifi.optString("g24_ch", "—")} • ${wifi.optString("g24_bw", "—")}M • ${wifi.optInt("g24_rate", 0)}M • ${wifi.optString("g24_temp", "—")}°C", if (wifi.optBoolean("g24_up")) Color(0xFF4ADE80) else Color(0xFFF87171))
+        val g24Ssid = wifi.optString("g24_ssid").ifBlank { "Home" }
+        val g24Ch = wifi.optString("g24_ch").ifBlank { "—" }
+        val g24Bw = wifi.optString("g24_bw").ifBlank { "—" }
+        val g24Temp = wifi.optString("g24_temp").ifBlank { "—" }
+        MiniRow("$g24Ssid (2.4 ГГц)", "${if (wifi.optBoolean("g24_up")) "ON" else "OFF"} • кан.$g24Ch • ${g24Bw}M • ${wifi.optInt("g24_rate", 0)}M • ${g24Temp}°C", if (wifi.optBoolean("g24_up")) Color(0xFF4ADE80) else Color(0xFFF87171))
         val bz24 = wifi.optString("g24_busy")
         if (bz24.isNotBlank()) Text("Занятые 2.4G: $bz24", color = Color(0xFF64748B), fontSize = 9.sp, fontFamily = FontFamily.Monospace)
-        MiniRow("${wifi.optString("g5_ssid", "Home")} (5 ГГц)", "${if (wifi.optBoolean("g5_up")) "ON" else "OFF"} • кан.${wifi.optString("g5_ch", "—")} • ${wifi.optString("g5_bw", "—")}M • ${wifi.optInt("g5_rate", 0)}M • ${wifi.optString("g5_temp", "—")}°C", if (wifi.optBoolean("g5_up")) Color(0xFF4ADE80) else Color(0xFFF87171))
+        val g5Ssid = wifi.optString("g5_ssid").ifBlank { "Home" }
+        val g5Ch = wifi.optString("g5_ch").ifBlank { "—" }
+        val g5Bw = wifi.optString("g5_bw").ifBlank { "—" }
+        val g5Temp = wifi.optString("g5_temp").ifBlank { "—" }
+        MiniRow("$g5Ssid (5 ГГц)", "${if (wifi.optBoolean("g5_up")) "ON" else "OFF"} • кан.$g5Ch • ${g5Bw}M • ${wifi.optInt("g5_rate", 0)}M • ${g5Temp}°C", if (wifi.optBoolean("g5_up")) Color(0xFF4ADE80) else Color(0xFFF87171))
         val bz5 = wifi.optString("g5_busy")
         if (bz5.isNotBlank()) Text("Занятые 5G: $bz5", color = Color(0xFF64748B), fontSize = 9.sp, fontFamily = FontFamily.Monospace)
     }
@@ -2438,7 +2448,7 @@ private fun WifiPage(
         Text("5 ГГц (без DFS: 36–48 • ширина 80 МГц):", color = Color(0xFF94A3B8), fontSize = 10.sp)
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf("auto", "36", "40", "44", "48", "52", "149").forEach { ch ->
-                OutlinedButton(onClick = { onAction("5G канал $ch", MonitorScripts.setWifiChannelCmd(1, ch, "40-above/80")) }, modifier = Modifier.height(26.dp), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Кан.$ch", fontSize = 10.sp) }
+                OutlinedButton(onClick = { onAction("5G канал $ch", MonitorScripts.setWifiChannelCmd(1, ch, if (ch == "auto") "" else "40-above/80")) }, modifier = Modifier.height(26.dp), contentPadding = PaddingValues(horizontal = 8.dp)) { Text("Кан.$ch", fontSize = 10.sp) }
             }
         }
     }

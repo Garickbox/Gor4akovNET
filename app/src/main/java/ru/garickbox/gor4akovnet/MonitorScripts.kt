@@ -75,7 +75,7 @@ object MonitorScripts {
         nfq_rules=§(iptables -t mangle -S 2>/dev/null | grep -c NFQUEUE | head -n1 | tr -dc '0-9')
         [ -n "§nfq_rules" ] || nfq_rules=0
         zst=§(curl -fsS -m 3 http://127.0.0.1:8088/cgi-bin/api/status 2>/dev/null | tr -d '\r\n' || echo '')
-        case "§zst" in '{'*) ;; *)
+        case "§zst" in '{'*'}') ;; *)
           nfq_c=§(printf '%s\n' "§ps_w" | grep -c '[n]fqws2' | head -n1 | tr -dc '0-9')
           zmode=§(awk -F= '/^(MODE|Z2K_PRESET)=/{gsub(/["'"'"']/,"",§2); print §2; exit}' /opt/zapret2/config 2>/dev/null | tr -d '\r\n"\\')
           zst="{\"ok\":true,\"running\":§([ "§{nfq_c:-0}" -gt 0 ] && echo true || echo false),\"mode\":\"§{zmode:-auto}\"}"
@@ -128,7 +128,7 @@ object MonitorScripts {
             /^interface Bridge[0-9]+/ { cur=§2; inb=1; isg=0; ip="" }
             inb && /^[ \t]+description Gor4akovNET/ { isg=1 }
             inb && /^[ \t]+ip address / { ip=§3 }
-            inb && /^!/ { if (isg && cur!="") { print cur"|"ip; exit } inb=0 }
+            inb && /^!/ { if (isg && cur!="") { print cur"|"ip; inb=0; exit } inb=0 }
             END { if (inb && isg && cur!="") print cur"|"ip }
         ')
         wifi_bridge=§(printf '%s' "§eval_br" | cut -d'|' -f1 | tr -d '\r\n"\\')
@@ -136,7 +136,7 @@ object MonitorScripts {
         printf '{"sys":{"model":"%s","ndms":"%s","up_sec":%s,"load":"%s","cpus":%s,"ct":%s,"ct_max":%s,"mem":%s,"disk":%s,"temp24":"%s","temp5":"%s","zram":%s},"wan":{"dev":"%s","ip":"%s","spd":"%s","gw":"%s","policy_ok":%s,"policy_name":"%s","policy_mode":"%s","nfq_rules":%s,"ent_ok":%s,"agh_inst":%s,"dns_ov":%s},"svc":{"nfqws2":%s,"gvsub":%s,"adguard":%s,"tg_tunnel":%s,"http_tunnel":%s,"warp":%s,"z2k_panel":%s,"scheduler":%s},"ver":{"z2k_local":"%s","agh":"%s","z2u":%s},"z2k":%s,"wifi":{"ssid":"%s","pass":"%s","bridge":"%s","subnet":"%s"}}\n' \
           "§model" "§ndms" "§up_sec" "§load" "§cpu_cnt" "§ct_cnt" "§ct_max" "§mem_json" "§disk_json" "§t24" "§t5" "§zram_on" \
           "§wan_dev" "§wan" "§wan_spd" "§wan_gw" "§pol_ok" "§pol_name" "§pol_mode" "§nfq_rules" "§ent_ok" "§agh_inst" "§dns_ov" \
-          "§(has_ps '/nfqws2')" "§(has_ps 'z2k-detect')" "§agh_up" \
+          "§(has_ps '[n]fqws2')" "§(has_ps 'z2k-detect')" "§agh_up" \
           "§(has_pt 1443)" "§(has_pt 1444)" "§(has_ps 'z2k-warpd')" "§(has_pt 8088)" \
           "§(has_ps 'z2k-scheduler')" \
           "§z2k_loc" "§agh_loc" "§z2u" "§zst" \
@@ -150,9 +150,9 @@ object MonitorScripts {
         if command -v nc >/dev/null 2>&1; then
           nc -z -w 1 127.0.0.1 8088 2>/dev/null || panel_up=false
         fi
-        cp_get() { if [ "§panel_up" = true ]; then curl -fsS "§@" 2>/dev/null | tr -d '\r\n' || echo ''; else echo ''; fi; }
+        cp_get() { if [ "§panel_up" = true ]; then curl -fsS "§@" 2>/dev/null | tr -d '\000-\037' || echo ''; else echo ''; fi; }
         zst=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/status)
-        case "§zst" in '{'*) ;; *)
+        case "§zst" in '{'*'}') ;; *)
           zrun=false
           if pgrep -f nfqws2 >/dev/null 2>&1; then zrun=true
           elif ps w 2>/dev/null | grep -q '[n]fqws2'; then zrun=true
@@ -210,7 +210,7 @@ object MonitorScripts {
         """
         panel_up=true
         if command -v nc >/dev/null 2>&1; then nc -z -w 1 127.0.0.1 8088 2>/dev/null || panel_up=false; fi
-        cp_get() { if [ "§panel_up" = true ]; then curl -fsS "§@" 2>/dev/null | tr -d '\r\n' || echo ''; else echo ''; fi; }
+        cp_get() { if [ "§panel_up" = true ]; then curl -fsS "§@" 2>/dev/null | tr -d '\000-\037' || echo ''; else echo ''; fi; }
 
         wst=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/warp/status)
         case "§wst" in '{'*'}') ;; *)
@@ -424,15 +424,25 @@ object MonitorScripts {
     val CMD_WIFI_DEVICES = sh(
         """
         PFX="/tmp/.gp_§$"
-        LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" > "§{PFX}_rc" 2>/dev/null || : > "§{PFX}_rc"
-        LD_LIBRARY_PATH= /bin/ndmc -c "show interface WifiMaster0" > "§{PFX}_w0" 2>/dev/null || : > "§{PFX}_w0"
-        LD_LIBRARY_PATH= /bin/ndmc -c "show interface WifiMaster1" > "§{PFX}_w1" 2>/dev/null || : > "§{PFX}_w1"
-        LD_LIBRARY_PATH= /bin/ndmc -c "show ip hotspot" > "§{PFX}_hs" 2>/dev/null || : > "§{PFX}_hs"
+        # ВАЖНО tr -d '\r': ndmc отдаёт CRLF. Без срезания '\r' все regex с '$'
+        # (/^interface Bridge0$/, /^interface WifiMaster0$/, /^!/ и т.д.) НЕ матчатся —
+        # awk видит "interface Bridge0\r". Из-за этого не парсились band_steering, ft,
+        # target-waketime, ap_seen, и секция AP работала наполовину.
+        { LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" 2>/dev/null || true; } | tr -d '\r' > "§{PFX}_rc"
+        { LD_LIBRARY_PATH= /bin/ndmc -c "show interface WifiMaster0" 2>/dev/null || true; } | tr -d '\r' > "§{PFX}_w0"
+        { LD_LIBRARY_PATH= /bin/ndmc -c "show interface WifiMaster1" 2>/dev/null || true; } | tr -d '\r' > "§{PFX}_w1"
+        { LD_LIBRARY_PATH= /bin/ndmc -c "show ip hotspot" 2>/dev/null || true; } | tr -d '\r' > "§{PFX}_hs"
         : > "§{PFX}_aps"
-        ap_list=§(printf 'WifiMaster0/AccessPoint0\nWifiMaster1/AccessPoint0\n' ; awk '/^interface WifiMaster[0-9]+\/AccessPoint[0-9]+/{print §2}' "§{PFX}_rc" 2>/dev/null)
+        ap_list=§(printf 'WifiMaster0/AccessPoint0\nWifiMaster1/AccessPoint0\nWifiMaster0/AccessPoint1\nWifiMaster1/AccessPoint1\n' ; awk '
+          /^interface WifiMaster[0-9]+\/AccessPoint[0-9]+/ { cur=§2; in_ap=1; keep=0; next }
+          in_ap && /^!/ { if (keep) print cur; in_ap=0; cur=""; next }
+          in_ap && /^[[:space:]]*(ssid |description |up§)/ { keep=1 }
+          /^[[:space:]]*include WifiMaster[0-9]+\/AccessPoint[0-9]+/ { print §2 }
+          END { if (in_ap && keep) print cur }
+        ' "§{PFX}_rc" 2>/dev/null)
         ap_list=§(printf '%s\n' "§ap_list" | awk 'NF && !seen[§0]++')
         for ap in §ap_list; do
-          out=§(LD_LIBRARY_PATH= /bin/ndmc -c "show interface §ap" 2>/dev/null)
+          out=§(LD_LIBRARY_PATH= /bin/ndmc -c "show interface §ap" 2>/dev/null | tr -d '\r')
           [ -n "§out" ] || continue
           printf '===AP_START %s===\n%s\n===AP_END===\n' "§ap" "§out" >> "§{PFX}_aps"
         done
@@ -465,7 +475,8 @@ object MonitorScripts {
               else if(l ~ /^interface WifiMaster1§/) cur="w1"
               else if(l ~ /^interface WifiMaster0\/AccessPoint0§/) cur="ap0"
               else if(l ~ /^mws wlan Home§/) cur="mws_home"
-              else if(l ~ /^interface /) { cur=""; ap_seen[substr(l,11)]=1 }
+              else if(l ~ /^interface WifiMaster[0-9]+\/AccessPoint[0-9]+§/) { cur=""; ap_seen[substr(l,11)]=1 }
+              else if(l ~ /^interface /) cur=""
               else if(l ~ /^!/) cur=""
               if((cur=="b0" || cur=="mws_home") && l ~ /^[[:space:]]*band-steering([[:space:]]+enable)?§/) bs=1
               if(cur=="b1" && l ~ /^[[:space:]]*traffic-shape rate /) { split(l, p, " "); gr=p[3]+0 }
@@ -481,9 +492,8 @@ object MonitorScripts {
               if(l ~ /^===AP_START /) {
                 naps++
                 cur_ap=l; sub(/^===AP_START /,"",cur_ap); sub(/===${'$'}/,"",cur_ap)
-                idn=""; desc=""; st=""; lk=""; ss=""; grp=""; next
-              }
-              if(l ~ /^===AP_END===/) {
+                idn=""; desc=""; st=""; lk=""; ss=""; grp=""
+              } else if(l ~ /^===AP_END===/) {
                 isup=(lk=="up" || st=="up")
                 dead=((ss=="" && st=="down" && desc=="") || ((cur_ap in inc_seen) && ss=="" && st=="down")) ? 1 : 0
                 if(cur_ap=="WifiMaster0/AccessPoint0") { if(isup) g24_up="true"; if(ss!="") s24=ss }
@@ -492,15 +502,15 @@ object MonitorScripts {
                 if(ss!="" || isup || (cur_ap in ap_seen)) {
                   ap_json = ap_json (ap_json==""?"":",") sprintf("{\"id\":\"%s\",\"alias\":\"%s\",\"ssid\":\"%s\",\"desc\":\"%s\",\"grp\":\"%s\",\"up\":%s,\"dead\":%s}", esc(cur_ap), idn, ss, desc, grp, (isup?"true":"false"), (dead?"true":"false"))
                 }
-                cur_ap=""; next
+                cur_ap=""
+              } else if(cur_ap!="") {
+                if(l ~ /^[[:space:]]*interface-name:/) idn=val_after_colon(l)
+                else if(l ~ /^[[:space:]]*description:/) desc=val_after_colon(l)
+                else if(l ~ /^[[:space:]]*state:/) st=val_after_colon(l)
+                else if(l ~ /^[[:space:]]*link:/) lk=val_after_colon(l)
+                else if(l ~ /^[[:space:]]*ssid:/) ss=val_after_colon(l)
+                else if(l ~ /^[[:space:]]*group:/) grp=val_after_colon(l)
               }
-              if(cur_ap=="") continue
-              if(l ~ /^[[:space:]]*interface-name:/) idn=val_after_colon(l)
-              else if(l ~ /^[[:space:]]*description:/) desc=val_after_colon(l)
-              else if(l ~ /^[[:space:]]*state:/) st=val_after_colon(l)
-              else if(l ~ /^[[:space:]]*link:/) lk=val_after_colon(l)
-              else if(l ~ /^[[:space:]]*ssid:/) ss=val_after_colon(l)
-              else if(l ~ /^[[:space:]]*group:/) grp=val_after_colon(l)
             }
             close(PFX "_aps")
             printf "{\"g24_up\":%s,\"g24_ssid\":\"%s\",\"g24_ch\":\"%s\",\"g24_bw\":\"%s\",\"g24_rate\":%d,\"g24_temp\":\"%s\",\"g24_busy\":\"%s\",\"g5_up\":%s,\"g5_ssid\":\"%s\",\"g5_ch\":\"%s\",\"g5_bw\":\"%s\",\"g5_rate\":%d,\"g5_temp\":\"%s\",\"g5_busy\":\"%s\",\"guest_up\":%s,\"guest_rate\":%d,\"band_steer\":%s,\"ft\":%s,\"twt\":%s,\"dbg\":{\"rc_lines\":%d,\"aps_lines\":%d,\"ap_count\":%d},\"aps\":[%s]}",
@@ -1238,7 +1248,7 @@ EOFINI
               /^interface / { cur=§2; inb=1; isw=0; rnm="" }
               inb && /^[ \t]+rename / { rnm=§2 }
               inb && /^[ \t]+ip global / { isw=1 }
-              inb && /^!/ { if (isw) { print (rnm!=""?rnm:cur); exit } inb=0 }
+              inb && /^!/ { if (isw) { print (rnm!=""?rnm:cur); inb=0; exit } inb=0 }
               END { if (inb && isw) print (rnm!=""?rnm:cur) }
             ')
             [ -n "§wan_if" ] || wan_if="ISP"

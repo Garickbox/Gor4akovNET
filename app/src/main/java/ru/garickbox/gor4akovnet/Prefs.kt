@@ -62,6 +62,13 @@ class Prefs(private val context: Context) {
         get() = sp.getBoolean("opt_warp", false)
         set(v) = sp.edit().putBoolean("opt_warp", v).apply()
 
+    // Делать pre-install авто-бэкап конфигурации? По умолчанию да — это
+    // страховка. Продвинутые пользователи на чистом роутере могут выключить,
+    // чтобы не засорять хранилище пустышкой (RCI-fallback станет не нужен).
+    var optAutoBackup: Boolean
+        get() = sp.getBoolean("opt_auto_backup", true)
+        set(v) = sp.edit().putBoolean("opt_auto_backup", v).apply()
+
     var wizardCompleted: Boolean
         get() = sp.getBoolean("wizard_done", false)
         set(v) = sp.edit().putBoolean("wizard_done", v).apply()

@@ -50,8 +50,11 @@ func parseCommandTimeout(cmd string, def time.Duration) (string, time.Duration) 
 	if strings.Contains(cmd, "__LONG__") {
 		return strings.ReplaceAll(cmd, "__LONG__", ""), 420 * time.Second
 	}
+	// 900с: архив /opt ~70-90 МБ идёт по Wi-Fi 2.4G. 600с не хватало —
+	// бэкап обрывался на 90%, пользователь видел "pull exit: Process" и
+	// успевал только со второго раза.
 	if strings.Contains(cmd, "__BACKUP__") {
-		return strings.ReplaceAll(cmd, "__BACKUP__", ""), 600 * time.Second
+		return strings.ReplaceAll(cmd, "__BACKUP__", ""), 900 * time.Second
 	}
 	return cmd, def
 }

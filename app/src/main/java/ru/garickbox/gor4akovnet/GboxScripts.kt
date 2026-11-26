@@ -359,7 +359,7 @@ object GboxScripts {
 
             SUB_PREFIX="192.168.77"
             if [ "${'$'}ISO_FLAG" = "1" ]; then
-                BR_NAME="${'$'}(echo "${'$'}CFG" | awk '/^interface Bridge[0-9]+/{cur=${'$'}2; inb=1; g=0} inb && /description Gor4akovNET/{g=1} inb && /^!/{if(g){print cur; exit} inb=0} END{if(inb && g) print cur}')"
+                BR_NAME="${'$'}(echo "${'$'}CFG" | awk '/^interface Bridge[0-9]+/{cur=${'$'}2; inb=1; g=0} inb && /description Gor4akovNET/{g=1} inb && /^!/{if(g){print cur; inb=0; exit} inb=0} END{if(inb && g) print cur}')"
                 if [ -z "${'$'}BR_NAME" ]; then
                     n=1
                     while [ "${'$'}n" -le 15 ]; do
@@ -402,7 +402,7 @@ object GboxScripts {
                     APS_LIST=""
                     for master in WifiMaster0 WifiMaster1; do
                         if echo "${'$'}CFG" | grep -q "^interface ${'$'}{master}${'$'}"; then
-                            ap="${'$'}(echo "${'$'}CFG" | awk -v m="^interface ${'$'}{master}/" '${'$'}0 ~ m{cur=${'$'}2; inb=1; g=0} inb && /description Gor4akovNET/{g=1} inb && /^!/{if(g){print cur; exit} inb=0} END{if(inb && g) print cur}')"
+                            ap="${'$'}(echo "${'$'}CFG" | awk -v m="^interface ${'$'}{master}/" '${'$'}0 ~ m{cur=${'$'}2; inb=1; g=0} inb && /description Gor4akovNET/{g=1} inb && /^!/{if(g){print cur; inb=0; exit} inb=0} END{if(inb && g) print cur}')"
                             if [ -z "${'$'}ap" ]; then
                                 for slot in 1 2 3 4 5 6 7; do
                                     cand="${'$'}{master}/AccessPoint${'$'}{slot}"
@@ -695,9 +695,19 @@ EOFINI
 
     fun rollbackGor4akovScript(removeZapret: Boolean): String = """__LONG__
         set +e
-        CFG=${'$'}(LD_LIBRARY_PATH= ndmc -c "show running-config" 2>/dev/null)
-        BR_NAME=${'$'}(echo "${'$'}CFG" | awk '/^interface Bridge[0-9]+/{cur=${'$'}2; inb=1; g=0} inb && /description Gor4akovNET/{g=1} inb && /^!/{if(g){print cur; exit} inb=0} END{if(inb && g) print cur}')
+        CFG=${'$'}(LD_LIBRARY_PATH= ndmc -c "show running-config" 2>/dev/null | tr -d '\r')
+        BR_NAME=${'$'}(echo "${'$'}CFG" | awk '/^interface Bridge[0-9]+/{cur=${'$'}2; inb=1; g=0} inb && /description Gor4akovNET/{g=1} inb && /^!/{if(g){print cur; inb=0; exit} inb=0} END{if(inb && g) print cur}')
         APS=${'$'}(echo "${'$'}CFG" | awk '/^interface WifiMaster[0-9]+\/[^ \t]+/{cur=${'$'}2; inb=1; g=0} inb && /description Gor4akovNET/{g=1} inb && /^!/{if(g) print cur; inb=0} END{if(inb && g) print cur}')
+        # Если нет ни Bridge, ни AP с description Gor4akovNET — нечего откатывать.
+        # Раньше функция мол создание сети заново.
+        if [ -z "${'$'}BR_NAME" ] && [ -z "${'$'}APS" ]; then
+            # проверим, есть ли хоть политика / dhcp pool (могли остаться от старой версии)
+            if ! echo "${'$'}CFG" | grep -qE '^ip policy Gor4akovNET|^ip dhcp pool Gor4akovNET'; then
+                echo "NOTHING_TO_ROLLBACK"
+                echo "Сеть Gor4akovNET не найдена — откатывать нечего."
+                exit 0
+            fi
+        fi
         for ap in ${'$'}APS; do
             LD_LIBRARY_PATH= ndmc -c "interface ${'$'}ap down" >/dev/null 2>&1
             [ -n "${'$'}BR_NAME" ] && LD_LIBRARY_PATH= ndmc -c "no interface ${'$'}BR_NAME include ${'$'}ap" >/dev/null 2>&1

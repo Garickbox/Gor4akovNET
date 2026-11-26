@@ -37,6 +37,7 @@ fun SetupsScreen(
     var isolatedMode by remember { mutableStateOf(prefs.isolatedMode) }
     var optAdguard by remember { mutableStateOf(prefs.optAdguard) }
     var optWarp by remember { mutableStateOf(prefs.optWarp) }
+    var optAutoBackup by remember { mutableStateOf(prefs.optAutoBackup) }
 
     var installing by remember { mutableStateOf(false) }
     var installLog by remember { mutableStateOf("") }
@@ -89,41 +90,49 @@ fun SetupsScreen(
             prefs.isolatedMode = isolatedMode
             prefs.optAdguard = optAdguard
             prefs.optWarp = optWarp
+            prefs.optAutoBackup = optAutoBackup
 
             val routerModel = passport?.model ?: "Keenetic / Netcraze"
             val ndmsVer = passport?.ndmsTitle ?: "-"
 
             // 1. Pre-install streaming full backup v2 (.tar.gz -> disk, fallback startup-config)
-            val tmpFile = prefs.allocateStreamBackupTempFile("Полный_до_Gor4akovNET", "tar.gz")
-            val streamedSize = withContext(Dispatchers.IO) {
-                runCatching {
-                    Gboxcore.pullFileSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, GboxScripts.FULL_BACKUP_TAR_CMD, tmpFile.absolutePath)
-                }.getOrDefault(0L)
-            }
-            var backupOk = false
-            // Полный бэкап /opt не бывает < 1 МБ. Порог 4 КБ пропускал пустой tar.
-            if (streamedSize > 1_000_000L) {
-                val b = prefs.commitStreamedBackupFile(tmpFile, "Полный перед установкой", routerModel, format = "tar_v2", isProtected = true)
-                onBackupSaved(b)
-                appendLog("[OK] Защищённый полный бэкап v2 (.tar.gz) сохранён (${b.sizeBytes / 1024} КБ)")
-                backupOk = true
-            } else {
-                tmpFile.delete()
-                RciClient.fetchRunningConfig(host, prefs.rciUser, prefs.rciPass).onSuccess { cfg ->
-                    if (cfg.isNotBlank()) {
-                        val b = prefs.saveBackup("Перед Gor4akovNET", routerModel, cfg, isProtected = true)
-                        onBackupSaved(b)
-                        appendLog("[OK] Бэкап конфигурации сохранён (${b.sizeBytes / 1024} КБ)")
-                        backupOk = true
+            // Галочка «Бэкап перед установкой»: если выключена — пропускаем полностью.
+            // Это нужно на чистом/новом роутере: засерать filesDir пустым tar-ом, а потом
+            // упираться в «нет /opt → RCI fallback → всё равно пусто» незачем.
+            if (optAutoBackup) {
+                val tmpFile = prefs.allocateStreamBackupTempFile("Полный_до_Gor4akovNET", "tar.gz")
+                val streamedSize = withContext(Dispatchers.IO) {
+                    runCatching {
+                        Gboxcore.pullFileSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, GboxScripts.FULL_BACKUP_TAR_CMD, tmpFile.absolutePath)
+                    }.getOrDefault(0L)
+                }
+                var backupOk = false
+                // Полный бэкап /opt не бывает < 1 МБ. Порог 4 КБ пропускал пустой tar.
+                if (streamedSize > 1_000_000L) {
+                    val b = prefs.commitStreamedBackupFile(tmpFile, "Полный перед установкой", routerModel, format = "tar_v2", isProtected = true)
+                    onBackupSaved(b)
+                    appendLog("[OK] Защищённый полный бэкап v2 (.tar.gz) сохранён (${b.sizeBytes / 1024} КБ)")
+                    backupOk = true
+                } else {
+                    tmpFile.delete()
+                    RciClient.fetchRunningConfig(host, prefs.rciUser, prefs.rciPass).onSuccess { cfg ->
+                        if (cfg.isNotBlank()) {
+                            val b = prefs.saveBackup("Перед Gor4akovNET", routerModel, cfg, isProtected = true)
+                            onBackupSaved(b)
+                            appendLog("[OK] Бэкап конфигурации сохранён (${b.sizeBytes / 1024} КБ)")
+                            backupOk = true
+                        }
                     }
                 }
-            }
-            if (!backupOk) {
-                val em = "Не удалось создать резервную копию (ни .tar.gz по SSH, ни конфиг по RCI). Установка отменена — без бэкапа откат невозможен."
-                appendLog("[ERR] $em")
-                Telemetry.recordError(prefs, "setup_backup", em, routerModel, ndmsVer)
-                installing = false
-                return@launch
+                if (!backupOk) {
+                    val em = "Не удалось создать резервную копию (ни .tar.gz по SSH, ни конфиг по RCI). Установка отменена — без бэкапа откат невозможен."
+                    appendLog("[ERR] $em")
+                    Telemetry.recordError(prefs, "setup_backup", em, routerModel, ndmsVer)
+                    installing = false
+                    return@launch
+                }
+            } else {
+                appendLog("[INFO] Бэкап перед установкой отключён пользователем — пропускаю.")
             }
 
             // 2. Push offline payloads (+ AdGuard Home v1.0.0 if selected) -> /opt/gor4akov-offline/
@@ -318,6 +327,18 @@ fun SetupsScreen(
                         Text("Дополнительный туннель z2k для игр и CDN", color = DeckColors.Muted, fontSize = 11.5.sp)
                     }
                     Checkbox(checked = optWarp, onCheckedChange = { optWarp = it })
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Бэкап перед установкой", color = DeckColors.Text, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        Text(if (optAutoBackup) "Снимок /opt и конфига NDMS перед изменениями (рекомендуется)" else "Не делать: установка начнётся сразу. Откат будет невозможен!", color = if (optAutoBackup) DeckColors.Muted else DeckColors.Rose, fontSize = 11.5.sp)
+                    }
+                    Checkbox(checked = optAutoBackup, onCheckedChange = { optAutoBackup = it })
                 }
 
                 Button(
