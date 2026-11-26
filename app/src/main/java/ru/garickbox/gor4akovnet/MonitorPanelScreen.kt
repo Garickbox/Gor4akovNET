@@ -2429,10 +2429,19 @@ private fun BypassListsPage(
             if (extractedStrategy.isNotBlank()) {
                 Surface(color = Color(0xFF052E16), shape = RoundedCornerShape(7.dp), border = BorderStroke(1.dp, Color(0xFF16A34A)), modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                        Text("Найдена рабочая стратегия:", color = Color(0xFF86EFAC), fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
+                        val pickVerd = parsedPick?.optString("verdict").orEmpty()
+                        val pickReason = parsedPick?.optString("reason").orEmpty()
+                        val pickOK = pickVerd == "poisonable" || pickVerd.isBlank()
+                        Text(
+                            text = if (pickOK) "Найдена рабочая стратегия:" else "Подобрано, но не работает ($pickVerd):",
+                            color = if (pickOK) Color(0xFF86EFAC) else Color(0xFFFCA5A5),
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                         Text(extractedStrategy, color = Color.White, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                        if (pickReason.isNotBlank()) Text(pickReason, color = Color(0xFF94A3B8), fontSize = 9.sp)
                         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            listOf("rkn_tcp", "yt_tcp", "gv_tcp", "yt_quic", "discord_udp").forEach { p ->
+                            listOf("rkn_tcp", "yt_tcp", "gv_tcp", "quic", "discord_udp").forEach { p ->
                                 FilterChip(selected = targetPool == p, onClick = { targetPool = p }, label = { Text(p, fontSize = 9.sp) })
                             }
                         }

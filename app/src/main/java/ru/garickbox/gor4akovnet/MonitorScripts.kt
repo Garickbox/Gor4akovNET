@@ -3,7 +3,17 @@ package ru.garickbox.gor4akovnet
 import java.net.URLEncoder
 
 object MonitorScripts {
-    private const val PATH_HDR = "export PATH=/opt/sbin:/opt/bin:/sbin:/usr/sbin:/bin:/usr/bin"
+    private const val PATH_HDR = """export PATH=/opt/sbin:/opt/bin:/sbin:/usr/sbin:/bin:/usr/bin
+ZB=""
+LPC=/opt/zapret2/webpanel/lighttpd.conf
+if [ -f "${'$'}LPC" ]; then
+  PB=${'$'}(sed -n 's/^[[:space:]]*server\.bind[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "${'$'}LPC" 2>/dev/null | head -n1)
+  [ -n "${'$'}PB" ] && [ "${'$'}PB" != "0.0.0.0" ] && [ "${'$'}PB" != "::" ] && ZB="http://${'$'}PB:8088"
+fi
+[ -n "${'$'}ZB" ] || ZB="http://127.0.0.1:8088"
+PH=${'$'}{ZB#http://}; PH=${'$'}{PH%%:*}
+ZH='X-Z2K-Panel: 1'
+"""
     private const val AWK_ESC =
         "function esc(s, i,c,o,b,n){gsub(/[\\r\\t]+/,\" \",s);gsub(/\\n/,\" \",s);o=\"\";b=sprintf(\"%c\",92);n=length(s);for(i=1;i<=n;i++){c=substr(s,i,1);if(c==b)o=o b b;else if(c==\"\\\"\")o=o b \"\\\"\";else if(c<\" \")o=o \" \";else o=o c}return o}"
 
@@ -16,7 +26,7 @@ object MonitorScripts {
 
     val Z2K_UPDATE_CMD = sh(
         """__LONG__
-        if curl -fsS -m 15 -X POST -H 'Referer: http://127.0.0.1:8088/' 'http://127.0.0.1:8088/cgi-bin/api/update/apply' 2>/dev/null | grep -q '"ok":true'; then
+        if curl -fsS -m 15 -X POST -H "§ZH" "§ZB/cgi-bin/api/update/apply" 2>/dev/null | grep -q '"ok":true'; then
           echo "OK: Обновление z2k запущено через панель :8088"
         else
           echo "=== Обновление списков и z2k-enhanced напрямую ==="
@@ -74,7 +84,7 @@ object MonitorScripts {
         [ -n "§agh_loc" ] || agh_loc=§(/opt/sbin/AdGuardHome --version 2>/dev/null | awk '{for(i=1;i<=NF;i++)if(§i~/^v?[0-9]+\./){print §i;exit}}' | tr -d '\r\n"\\')
         nfq_rules=§(iptables -t mangle -S 2>/dev/null | grep -c NFQUEUE | head -n1 | tr -dc '0-9')
         [ -n "§nfq_rules" ] || nfq_rules=0
-        zst=§(curl -fsS -m 3 http://127.0.0.1:8088/cgi-bin/api/status 2>/dev/null | tr -d '\r\n' || echo '')
+        zst=§(curl -fsS -m 3 §ZB/cgi-bin/api/status 2>/dev/null | tr -d '\r\n' || echo '')
         case "§zst" in '{'*'}') ;; *)
           nfq_c=§(printf '%s\n' "§ps_w" | grep -c '[n]fqws2' | head -n1 | tr -dc '0-9')
           zmode=§(awk -F= '/^(MODE|Z2K_PRESET)=/{gsub(/["'"'"']/,"",§2); print §2; exit}' /opt/zapret2/config 2>/dev/null | tr -d '\r\n"\\')
@@ -82,9 +92,9 @@ object MonitorScripts {
           ;;
         esac
         if [ "${if (forceUpdates) "1" else "0"}" = "1" ]; then
-          z2u=§(curl -fsS -m 8 -X POST -H 'Referer: http://127.0.0.1:8088/' 'http://127.0.0.1:8088/cgi-bin/api/update/check' 2>/dev/null | tr -d '\r\n' || echo '{"ok":false}')
+          z2u=§(curl -fsS -m 8 -X POST -H "§ZH" "§ZB/cgi-bin/api/update/check" 2>/dev/null | tr -d '\r\n' || echo '{"ok":false}')
         else
-          z2u=§(curl -fsS -m 3 'http://127.0.0.1:8088/cgi-bin/api/update/status' 2>/dev/null | tr -d '\r\n' || echo '{"ok":false}')
+          z2u=§(curl -fsS -m 3 "§ZB/cgi-bin/api/update/status" 2>/dev/null | tr -d '\r\n' || echo '{"ok":false}')
         fi
         case "§z2u" in '{'*'}') ;; *) z2u='{"ok":false}' ;; esac
         rc=§(LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" 2>/dev/null | tr -d '\r')
@@ -148,10 +158,10 @@ object MonitorScripts {
         """
         panel_up=true
         if command -v nc >/dev/null 2>&1; then
-          nc -z -w 1 127.0.0.1 8088 2>/dev/null || panel_up=false
+          nc -z -w 1 "$PH" 8088 2>/dev/null || panel_up=false
         fi
         cp_get() { if [ "§panel_up" = true ]; then curl -fsS "§@" 2>/dev/null | tr -d '\000-\037' || echo ''; else echo ''; fi; }
-        zst=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/status)
+        zst=§(cp_get -m 4 §ZB/cgi-bin/api/status)
         case "§zst" in '{'*'}') ;; *)
           zrun=false
           if pgrep -f nfqws2 >/dev/null 2>&1; then zrun=true
@@ -162,7 +172,7 @@ object MonitorScripts {
           zst="§{zcfg_json:-{\"ok\":true,\"direct\":true}}"
           ;;
         esac
-        wst=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/warp/status)
+        wst=§(cp_get -m 4 §ZB/cgi-bin/api/warp/status)
         case "§wst" in '{'*) ;; *)
           winst=false
           if [ -x /opt/sbin/z2k-warpd ] || [ -f /opt/sbin/z2k-warpd ] || [ -x /opt/zapret2/z2k-warp.sh ] || [ -f /opt/zapret2/z2k-warp.sh ]; then winst=true; fi
@@ -174,14 +184,14 @@ object MonitorScripts {
           wst="{\"ok\":true,\"installed\":§winst,\"running\":§wrun}"
           ;;
         esac
-        pst=§(cp_get -m 3 http://127.0.0.1:8088/cgi-bin/api/policy/status)
+        pst=§(cp_get -m 3 §ZB/cgi-bin/api/policy/status)
         case "§pst" in '{'*) ;; *)
           pol_nm=§(awk -F= '/^POLICY_NAME=/{gsub(/["'"'"'\r\n]/,"",§2); print §2; exit}' /opt/zapret2/config 2>/dev/null)
           pol_ex=§(awk -F= '/^POLICY_EXCLUDE=/{print §2+0; exit}' /opt/zapret2/config 2>/dev/null | head -n1 | tr -dc '0-9')
           pst="{\"ok\":true,\"name\":\"§{pol_nm:-Gor4akovNET}\",\"exclude\":§{pol_ex:-0}}"
           ;;
         esac
-        ahl=§(cp_get -m 3 http://127.0.0.1:8088/cgi-bin/api/autohostlist-domains)
+        ahl=§(cp_get -m 3 §ZB/cgi-bin/api/autohostlist-domains)
         case "§ahl" in '{'*) ;; *) ahl='{"ok":false,"domains":[]}' ;; esac
         list_to_json() {
           if [ -r "§1" ]; then
@@ -209,10 +219,10 @@ object MonitorScripts {
     val CMD_WARP_FULL = sh(
         """
         panel_up=true
-        if command -v nc >/dev/null 2>&1; then nc -z -w 1 127.0.0.1 8088 2>/dev/null || panel_up=false; fi
+        if command -v nc >/dev/null 2>&1; then nc -z -w 1 "$PH" 8088 2>/dev/null || panel_up=false; fi
         cp_get() { if [ "§panel_up" = true ]; then curl -fsS "§@" 2>/dev/null | tr -d '\000-\037' || echo ''; else echo ''; fi; }
 
-        wst=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/warp/status)
+        wst=§(cp_get -m 4 §ZB/cgi-bin/api/warp/status)
         case "§wst" in '{'*'}') ;; *)
           if [ -x /opt/zapret2/z2k-warp.sh ]; then
             wst=§(sh /opt/zapret2/z2k-warp.sh status --json 2>/dev/null | tr -d '\r\n' || echo '')
@@ -227,10 +237,10 @@ object MonitorScripts {
           ;;
         esac
 
-        wgames=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/warp/games)
+        wgames=§(cp_get -m 4 §ZB/cgi-bin/api/warp/games)
         case "§wgames" in '{'*'}') ;; *) wgames='{"ok":false,"games":[]}' ;; esac
 
-        wlists=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/warp/lists)
+        wlists=§(cp_get -m 4 §ZB/cgi-bin/api/warp/lists)
         case "§wlists" in '{'*'}') ;; *)
           if [ -r /opt/zapret2/lists/warp-domains.txt ]; then
             wlists=§(awk '$AWK_ESC BEGIN{printf "{\"ok\":true,\"domains\":["} {gsub(/\r/,"");sub(/#.*/,"");gsub(/^[[:space:]]+|[[:space:]]+§/,""); if(§0!="") printf "%s\"%s\"", (n++?",":""), esc(§0)} END{printf "]}"}' /opt/zapret2/lists/warp-domains.txt 2>/dev/null)
@@ -239,7 +249,7 @@ object MonitorScripts {
           ;;
         esac
 
-        wexcl=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/warp/exclude)
+        wexcl=§(cp_get -m 4 §ZB/cgi-bin/api/warp/exclude)
         case "§wexcl" in '{'*'}') ;; *)
           if [ -r /opt/zapret2/lists/warp-exclude.txt ]; then
             wexcl=§(awk '$AWK_ESC BEGIN{printf "{\"ok\":true,\"domains\":["} {gsub(/\r/,"");sub(/#.*/,"");gsub(/^[[:space:]]+|[[:space:]]+§/,""); if(§0!="") printf "%s\"%s\"", (n++?",":""), esc(§0)} END{printf "]}"}' /opt/zapret2/lists/warp-exclude.txt 2>/dev/null)
@@ -248,7 +258,7 @@ object MonitorScripts {
           ;;
         esac
 
-        wdevs=§(cp_get -m 4 http://127.0.0.1:8088/cgi-bin/api/warp/devices)
+        wdevs=§(cp_get -m 4 §ZB/cgi-bin/api/warp/devices)
         case "§wdevs" in '{'*'}') ;; *) wdevs='{"ok":false,"devices":[]}' ;; esac
 
         tun_ip=§(ip -4 addr show z2ktun0 2>/dev/null | awk '/inet /{print §2; exit}' | tr -d '\r\n"\\')
@@ -273,7 +283,7 @@ object MonitorScripts {
     fun warpTransportCmd(mode: String): String = sh(
         """
         m='${sq(mode)}'
-        resp=§(curl -sS -m 10 -X POST -H 'Referer: http://127.0.0.1:8088/' -d "transport=${ue(mode)}" 'http://127.0.0.1:8088/cgi-bin/api/warp/transport' 2>/dev/null || true)
+        resp=§(curl -sS -m 10 -X POST -H "§ZH" -d "transport=${ue(mode)}" "§ZB/cgi-bin/api/warp/transport" 2>/dev/null || true)
         if printf '%s' "§resp" | grep -q '"ok":true'; then
           echo "§resp"
         else
@@ -287,7 +297,7 @@ object MonitorScripts {
 
     fun warpReregisterCmd(): String = sh(
         """__LONG__
-        resp=§(curl -sS -m 20 -X POST -H 'Referer: http://127.0.0.1:8088/' 'http://127.0.0.1:8088/cgi-bin/api/warp/reregister' 2>/dev/null || true)
+        resp=§(curl -sS -m 20 -X POST -H "§ZH" "§ZB/cgi-bin/api/warp/reregister" 2>/dev/null || true)
         if printf '%s' "§resp" | grep -q '"ok":true'; then
           echo "§resp"
         elif [ -x /opt/zapret2/z2k-warp.sh ]; then
@@ -310,7 +320,7 @@ object MonitorScripts {
         return sh(
             """
             d='${sq(clean)}'; f='${sq(file)}'
-            resp=§(curl -sS -m 8 -X POST -H 'Referer: http://127.0.0.1:8088/' -d "domain=${ue(clean)}" "http://127.0.0.1:8088/cgi-bin/api/$ep" 2>/dev/null || true)
+            resp=§(curl -sS -m 8 -X POST -H "§ZH" -d "domain=${ue(clean)}" "§ZB/cgi-bin/api/$ep" 2>/dev/null || true)
             mkdir -p /opt/zapret2/lists && touch "§f"
             if [ "${if (add) 1 else 0}" = "1" ]; then
               grep -qxF "§d" "§f" || printf '%s\n' "§d" >> "§f"
@@ -841,11 +851,11 @@ object MonitorScripts {
     )
 
     fun z2kApiJob(ep: String, postData: String, waitSec: Int = 25): String {
-        val url = "http://127.0.0.1:8088/cgi-bin/api/${sq(ep)}"
+        val url = "§ZB/cgi-bin/api/${sq(ep)}"
         val cmd = if (postData.isEmpty()) {
-            "curl -sS -m 10 -X POST -H 'Referer: http://127.0.0.1:8088/' '$url'"
+            "curl -sS -m 10 -X POST -H "§ZH" '$url'"
         } else {
-            "curl -sS -m 12 -X POST -H 'Referer: http://127.0.0.1:8088/' -d '${sq(postData)}' '$url'"
+            "curl -sS -m 12 -X POST -H "§ZH" -d '${sq(postData)}' '$url'"
         }
         return sh(
             """__LONG__
@@ -857,7 +867,7 @@ object MonitorScripts {
               i=0
               while [ §i -lt $waitSec ]; do
                 sleep 1
-                jr=§(curl -sS -m 5 "http://127.0.0.1:8088/cgi-bin/api/job?id=§jid" 2>/dev/null || break)
+                jr=§(curl -sS -m 5 "§ZB/cgi-bin/api/job?id=§jid" 2>/dev/null || break)
                 printf '%s\n' "§jr"
                 case "§jr" in *'"done":true'*|*'"status":"done"'*|*'"status":"error"'*) break ;; esac
                 i=§((i+1))
@@ -882,7 +892,7 @@ object MonitorScripts {
 
     fun toggleZ2k(feature: String, value: Int): String = sh(
         """
-        resp=§(curl -sS -m 10 -X POST -H 'Referer: http://127.0.0.1:8088/' -d 'feature=${ue(feature)}&value=$value' 'http://127.0.0.1:8088/cgi-bin/api/toggle' 2>/dev/null || true)
+        resp=§(curl -sS -m 10 -X POST -H "§ZH" -d 'feature=${ue(feature)}&value=$value' "§ZB/cgi-bin/api/toggle" 2>/dev/null || true)
         if printf '%s' "§resp" | grep -q '"ok":true'; then
           echo "§resp"
         else
@@ -907,7 +917,7 @@ object MonitorScripts {
 
     fun setZ2kModeCmd(mode: String): String = sh(
         """
-        resp=§(curl -sS -m 10 -X POST -H 'Referer: http://127.0.0.1:8088/' -d 'mode=${ue(mode)}' 'http://127.0.0.1:8088/cgi-bin/api/mode' 2>/dev/null || true)
+        resp=§(curl -sS -m 10 -X POST -H "§ZH" -d 'mode=${ue(mode)}' "§ZB/cgi-bin/api/mode" 2>/dev/null || true)
         if printf '%s' "§resp" | grep -q '"ok":true'; then
           echo "§resp"
         else
@@ -928,7 +938,7 @@ object MonitorScripts {
         if [ -x /opt/zapret2/z2k-warp.sh ]; then
           sh /opt/zapret2/z2k-warp.sh install 2>&1 || sh /opt/zapret2/z2k-warp.sh enable 2>&1
         else
-          curl -sS -m 15 -X POST -H 'Referer: http://127.0.0.1:8088/' 'http://127.0.0.1:8088/cgi-bin/api/warp/install' 2>&1
+          curl -sS -m 15 -X POST -H "§ZH" "§ZB/cgi-bin/api/warp/install" 2>&1
         fi
         """
     )
@@ -950,50 +960,58 @@ object MonitorScripts {
         return sh(
             """__LONG__
             d='${sq(cleanDomain)}'; m='${sq(mappedMode)}'
-            resp=§(curl -sS -m 10 -X POST -H 'Referer: http://127.0.0.1:8088/' -d "domain=${ue(cleanDomain)}&mode=${ue(mappedMode)}" 'http://127.0.0.1:8088/cgi-bin/api/strategy/pick' 2>/dev/null || true)
+            resp=§(curl -sS -m 10 -X POST -H "§ZH" -d "domain=${ue(cleanDomain)}&mode=${ue(mappedMode)}" "§ZB/cgi-bin/api/strategy/pick" 2>/dev/null || true)
             jid=§(printf '%s' "§resp" | sed -n 's/.*"job":"\([^"]*\)".*/\1/p')
             [ -n "§jid" ] || jid=§(printf '%s' "§resp" | sed -n 's/.*"job_id":"\([^"]*\)".*/\1/p')
-            if [ -n "§jid" ]; then
-              i=0
-              last=""
-              while [ §i -lt 90 ]; do
-                sleep 1
-                jr=§(curl -sS -m 5 "http://127.0.0.1:8088/cgi-bin/api/job?id=§jid" 2>/dev/null || break)
-                last="§jr"
-                case "§jr" in *'"done":true'*|*'"status":"done"'*|*'"status":"error"'*) break ;; esac
-                i=§((i+1))
-              done
-              printf '%s\n' "§last"
-            elif [ -r /opt/zapret2/webpanel/cgi/actions.sh ]; then
-              echo "[INFO] Веб-панель :8088 недоступна — запускаю подбор напрямую через actions.sh..."
-              . /opt/zapret2/webpanel/cgi/actions.sh 2>/dev/null || true
-              if command -v strategy_pick_run >/dev/null 2>&1; then
-                strategy_pick_run "§d" "§m" 2>&1
-                command -v strategy_pick_last >/dev/null 2>&1 && strategy_pick_last 2>&1 || true
-              else
-                echo "ERR: strategy_pick_run не найден в actions.sh"
-              fi
-            else
-              echo "ERR: Панель :8088 не запущена и actions.sh не найден. Включите S96z2k-webpanel в разделе Службы."
+            if [ -z "§jid" ]; then
+              re=§(printf '%s' "§resp" | awk '$AWK_ESC {print esc(§0)}')
+              printf '{"ok":false,"error":"панель не приняла запрос: %s"}\n' "§{re:-пустой ответ}"
+              exit 0
             fi
+            i=0; last=""
+            while [ §i -lt 120 ]; do
+              sleep 1
+              jr=§(curl -sS -m 5 -H "§ZH" "§ZB/cgi-bin/api/job?id=§jid" 2>/dev/null || true)
+              [ -n "§jr" ] && last="§jr"
+              case "§jr" in *'"done":true'*) break ;; esac
+              case "§jr" in *'"status":"error"'*) break ;; esac
+              i=§((i+1))
+            done
+            pick=§(curl -sS -m 8 -H "§ZH" "§ZB/cgi-bin/api/strategy/pick" 2>/dev/null || true)
+            str=§(printf '%s' "§pick" | sed -n 's/.*"strategy"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
+            verdict=§(printf '%s' "§pick" | sed -n 's/.*"verdict"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
+            reason=§(printf '%s' "§pick" | sed -n 's/.*"reason"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
+            target=§(printf '%s' "§pick" | sed -n 's/.*"target"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
+            st=§(printf '%s' "§last" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
+            logb=§(printf '%s' "§last" | sed -n 's/.*"log"[[:space:]]*:[[:space:]]*"\(.*\)".*/\1/p' | head -n1)
+            str_e=§(printf '%s' "§str" | awk '$AWK_ESC {print esc(§0)}')
+            verdict_e=§(printf '%s' "§verdict" | awk '$AWK_ESC {print esc(§0)}')
+            reason_e=§(printf '%s' "§reason" | awk '$AWK_ESC {print esc(§0)}')
+            target_e=§(printf '%s' "§target" | awk '$AWK_ESC {print esc(§0)}')
+            log_e=§(printf '%s' "§logb" | awk '$AWK_ESC {print esc(§0)}')
+            printf '{"ok":true,"status":"%s","mode":"%s","target":"%s","strategy":"%s","verdict":"%s","reason":"%s","log":"%s"}\n' \
+              "§{st:-unknown}" "§m" "§target_e" "§str_e" "§verdict_e" "§reason_e" "§log_e"
             """
         )
     }
 
     fun strategyApplyPoolCmd(pool: String, domain: String, strategy: String): String = sh(
         """
-        resp=§(curl -sS -m 12 -X POST -H 'Referer: http://127.0.0.1:8088/' -d "pool=${ue(pool)}&domain=${ue(domain)}&strategy=${ue(strategy)}" 'http://127.0.0.1:8088/cgi-bin/api/strategy/pool/save' 2>/dev/null || true)
+        pool='${sq(pool)}'
+        pe=§(printf '%s' "§pool" | awk '$AWK_ESC {print esc(§0)}')
+        tf="/tmp/z2k-strat-§§.txt"
+        printf '%s' '${sq(strategy)}' > "§tf" 2>/dev/null || true
+        if [ ! -s "§tf" ]; then
+          printf '{"ok":false,"pool":"%s","error":"пустая стратегия — нечего сохранять"}\n' "§pe"
+          exit 0
+        fi
+        resp=§(curl -sS -m 20 -X POST -H "§ZH" --data-binary "@§tf" "§ZB/cgi-bin/api/strategy/pool/save?pool=${ue(pool)}" 2>/dev/null || true)
+        rm -f "§tf"
         if printf '%s' "§resp" | grep -q '"ok":true'; then
-          echo "§resp"
-        elif [ -r /opt/zapret2/webpanel/cgi/actions.sh ]; then
-          . /opt/zapret2/webpanel/cgi/actions.sh 2>/dev/null || true
-          if command -v strategy_pool_save >/dev/null 2>&1; then
-            strategy_pool_save '${sq(pool)}' '${sq(domain)}' '${sq(strategy)}' 2>&1
-          else
-            echo "ERR: strategy_pool_save недоступен"
-          fi
+          printf '{"ok":true,"pool":"%s","saved":true}\n' "§pe"
         else
-          echo "§{resp:-ERR: не удалось сохранить стратегию в пул}"
+          re=§(printf '%s' "§resp" | awk '$AWK_ESC {print esc(§0)}')
+          printf '{"ok":false,"pool":"%s","error":"%s"}\n' "§pe" "§{re:-пустой ответ}"
         fi
         """
     )
@@ -1031,7 +1049,7 @@ object MonitorScripts {
             mkdir -p /opt/zapret2/lists
             touch /opt/zapret2/lists/extra-domains.txt
             grep -qxF '${sq(clean)}' /opt/zapret2/lists/extra-domains.txt || printf '%s\n' '${sq(clean)}' >> /opt/zapret2/lists/extra-domains.txt
-            curl -sS -m 5 -X POST -H 'Referer: http://127.0.0.1:8088/' -d 'domain=${ue(clean)}' 'http://127.0.0.1:8088/cgi-bin/api/extra-domains/add' >/dev/null 2>&1 || true
+            curl -sS -m 5 -X POST -H "§ZH" -d 'domain=${ue(clean)}' "§ZB/cgi-bin/api/extra-domains/add" >/dev/null 2>&1 || true
             [ -x /opt/etc/init.d/S99zapret2 ] && (/opt/etc/init.d/S99zapret2 reload >/dev/null 2>&1 || /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true)
             echo "OK: Добавлен ${sq(clean)}"
             """
@@ -1066,7 +1084,7 @@ object MonitorScripts {
             [ -n "§wp" ] || wp="/opt/zapret2/lists/whitelist.txt"
             touch "§wp"
             grep -qxF '${sq(clean)}' "§wp" || printf '%s\n' '${sq(clean)}' >> "§wp"
-            curl -sS -m 5 -X POST -H 'Referer: http://127.0.0.1:8088/' -d 'domain=${ue(clean)}' 'http://127.0.0.1:8088/cgi-bin/api/whitelist/add' >/dev/null 2>&1 || true
+            curl -sS -m 5 -X POST -H "§ZH" -d 'domain=${ue(clean)}' "§ZB/cgi-bin/api/whitelist/add" >/dev/null 2>&1 || true
             [ -x /opt/etc/init.d/S99zapret2 ] && (/opt/etc/init.d/S99zapret2 reload >/dev/null 2>&1 || /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true)
             echo "OK: ${sq(clean)} добавлен в исключения"
             """
