@@ -357,28 +357,8 @@ fun MonitorPanelScreen(
         }
     }
 
-    fun applyNdmsWithVault(reason: String, cmds: List<String>, reloadTarget: MonitorPage = page) {
-        scope.launch {
-            loading = true
-            actionErrMsg = ""
-            statusMsg = "$reason..."
-            val res = RouterControlClient.executeNdmsWithVault(ctx, prefs, reason, cmds, saveConfig = true)
-            refreshVault()
-            res.onSuccess { msg ->
-                statusMsg = msg
-                ndmsState = RouterControlClient.loadState(ctx, prefs).getOrNull() ?: ndmsState
-                if (reloadTarget != MonitorPage.NDMS_IFACES && reloadTarget != MonitorPage.NDMS_POLICIES && reloadTarget != MonitorPage.NDMS_LAN_SYS) {
-                    loading = false
-                    loadPage(reloadTarget, force = true)
-                    return@launch
-                }
-            }.onFailure { err ->
-                actionErrMsg = "$reason: ${err.message}"
-                statusMsg = ""
-            }
-            loading = false
-        }
-    }
+    // applyNdmsWithVault объявлена ПОСЛЕ loadPage — в Kotlin локальная функция
+    // не может вызывать функцию, объявленную ниже (Unresolved reference).
 
     fun loadPage(target: MonitorPage, force: Boolean = false) {
         pageErrMsg = ""
@@ -475,6 +455,29 @@ fun MonitorPanelScreen(
             } finally {
                 if (gen == loadGen) loading = false
             }
+        }
+    }
+
+    fun applyNdmsWithVault(reason: String, cmds: List<String>, reloadTarget: MonitorPage = page) {
+        scope.launch {
+            loading = true
+            actionErrMsg = ""
+            statusMsg = "$reason..."
+            val res = RouterControlClient.executeNdmsWithVault(ctx, prefs, reason, cmds, saveConfig = true)
+            refreshVault()
+            res.onSuccess { msg ->
+                statusMsg = msg
+                ndmsState = RouterControlClient.loadState(ctx, prefs).getOrNull() ?: ndmsState
+                if (reloadTarget != MonitorPage.NDMS_IFACES && reloadTarget != MonitorPage.NDMS_POLICIES && reloadTarget != MonitorPage.NDMS_LAN_SYS) {
+                    loading = false
+                    loadPage(reloadTarget, force = true)
+                    return@launch
+                }
+            }.onFailure { err ->
+                actionErrMsg = "$reason: ${err.message}"
+                statusMsg = ""
+            }
+            loading = false
         }
     }
 
