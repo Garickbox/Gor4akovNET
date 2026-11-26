@@ -33,7 +33,7 @@ object MonitorDiagScripts {
               *mihomo*|*xkeen*) pat="mihomo" ;;
               *awg*) pat="awg" ;;
             esac
-            pkg=§(opkg search "§ini" 2>/dev/null | head -n1 | awk -F' - ' '{print §1}')
+            pkg=§(grep -lF "§ini" /opt/lib/opkg/info/*.list 2>/dev/null | head -n1 | sed 's#.*/##; s#\.list§##')
             ps w 2>/dev/null > "§{PFX}_ps"
             (netstat -lntp 2>/dev/null || netstat -lnt 2>/dev/null) > "§{PFX}_ns"
             awk -v PAT="§pat" -v PFX="§PFX" '$AWK_ESC BEGIN{
@@ -165,7 +165,7 @@ object MonitorDiagScripts {
         ipv6_glob=§(ip -6 addr show scope global 2>/dev/null | awk '$AWK_ESC /inet6/{printf "%s\"%s\"", (n++?",":""), esc(§2)}' | sed 's/^/[/;s/$/]/')
         [ -n "§ipv6_glob" ] || ipv6_glob='[]'
         egress_json=""
-        for ifc in §(ip -o -4 addr show up 2>/dev/null | awk '{print §2}' | grep -vE '^(lo|br|ra|rai|wlan|eth|nwg)' | head -n 6); do
+        for ifc in §(ip -o -4 addr show up 2>/dev/null | awk '{print §2}' | grep -E '^(eth[0-9]+(\.[0-9]+)?|ppp[0-9]+|tun[0-9]+|nwg[0-9]+)' | head -n 6); do
           ip_out=§(curl -fsS --interface "§ifc" --max-time 3 https://api.ipify.org 2>/dev/null || true)
           ifc_e=§(printf '%s' "§ifc" | awk '$AWK_ESC {print esc(§0)}')
           ip_e=§(printf '%s' "§ip_out" | awk '$AWK_ESC {print esc(§0)}')

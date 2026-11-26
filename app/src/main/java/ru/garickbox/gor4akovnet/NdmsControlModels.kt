@@ -93,7 +93,7 @@ object ConfigVault {
                     timestamp = obj.optString("timestamp"),
                     host = obj.optString("host"),
                     reason = obj.optString("reason"),
-                    sizeBytes = obj.optString("config").toByteArray(Charsets.UTF_8).size.toLong(),
+                    sizeBytes = f.length(),
                     filePath = f.absolutePath
                 )
             }.getOrNull()
