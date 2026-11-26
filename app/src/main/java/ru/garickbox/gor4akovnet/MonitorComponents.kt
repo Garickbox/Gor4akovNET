@@ -255,11 +255,11 @@ internal fun MonoBox(text: String, onCopy: (() -> Unit)? = null) {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun WrapRow(
-    modifier: Modifier = Modifier,
+    modifier: Modifier = Modifier.fillMaxWidth(),
     content: @Composable FlowRowScope.() -> Unit
 ) {
     FlowRow(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(5.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
         content = content

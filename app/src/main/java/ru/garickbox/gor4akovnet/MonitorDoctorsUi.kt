@@ -92,8 +92,7 @@ internal fun StorageDoctorCard(
             val dmesg = doctor.optJSONArray("dmesg") ?: JSONArray()
             if (dmesg.length() > 0) {
                 Text("Предупреждения ядра USB / ext4 (${dmesg.length()}):", color = Color(0xFFFBBF24), fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                MonoBox((0 until dmesg.length()).joinToString("
-") { dmesg.optString(it) })
+                MonoBox((0 until dmesg.length()).joinToString("\n") { dmesg.optString(it) })
             } else {
                 MiniRow("Ошибки ядра USB / ext4", "Не найдены", Color(0xFF4ADE80))
             }
@@ -137,8 +136,7 @@ internal fun SyslogSummaryCard(
             }
             val hi = summary.optJSONArray("highlights") ?: JSONArray()
             if (hi.length() > 0) {
-                val txt = (0 until hi.length()).joinToString("
-") { hi.optString(it) }
+                val txt = (0 until hi.length()).joinToString("\n") { hi.optString(it) }
                 MonoBox(txt, onCopy = { onCopy(txt) })
             } else {
                 Text("Критических событий в последнем журнале не обнаружено.", color = Color(0xFF4ADE80), fontSize = 10.sp)
@@ -191,8 +189,7 @@ internal fun ServiceInspectorDialog(
 
                     if (procs.length() > 0) {
                         Text("Процессы:", color = Color(0xFF93C5FD), fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
-                        MonoBox((0 until procs.length()).joinToString("
-") { procs.optString(it) })
+                        MonoBox((0 until procs.length()).joinToString("\n") { procs.optString(it) })
                     }
                     if (logTail.isNotBlank()) {
                         Text("Хвост журнала (35 строк):", color = Color(0xFF93C5FD), fontSize = 10.5.sp, fontWeight = FontWeight.Bold)

@@ -30,7 +30,9 @@ object RouterControlClient {
                 ifaceRaw = runCatching { s.request("/rci/show/interface", readTimeoutMs = 20000) }.getOrDefault("")
                 mediaRaw = runCatching { s.request("/rci/show/media", readTimeoutMs = 15000) }.getOrDefault("")
                 val verJson = runCatching { JSONObject(s.request("/rci/show/version", readTimeoutMs = 10000)) }.getOrNull()
-                model = verJson?.optString("model", verJson.optString("device", model)).orEmpty().ifBlank { model }
+                if (verJson != null) {
+                    model = verJson.optString("model", verJson.optString("device", model)).orEmpty().ifBlank { model }
+                }
             }.isSuccess
 
             if (!rciOk || runCfg.isBlank()) {

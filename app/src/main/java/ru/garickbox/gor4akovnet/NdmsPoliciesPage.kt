@@ -69,8 +69,7 @@ internal fun NdmsPoliciesPage(
             val rules = routeDoctor.optJSONArray("rules") ?: JSONArray()
             if (rules.length() > 0) {
                 Text("Linux ip rule (${rules.length()}):", color = Color(0xFF93C5FD), fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                MonoBox((0 until rules.length()).joinToString("
-") { rules.optString(it) })
+                MonoBox((0 until rules.length()).joinToString("\n") { rules.optString(it) })
             }
             val tbls = routeDoctor.optJSONArray("tables") ?: JSONArray()
             if (tbls.length() > 0) {
@@ -78,11 +77,9 @@ internal fun NdmsPoliciesPage(
                 val txt = buildString {
                     for (i in 0 until tbls.length()) {
                         val t = tbls.optJSONObject(i) ?: continue
-                        append("[table ${t.optString("table")}]
-")
+                        append("[table ${t.optString("table")}]\n")
                         val rs = t.optJSONArray("routes") ?: JSONArray()
-                        for (j in 0 until rs.length()) append("  ").append(rs.optString(j)).append('
-')
+                        for (j in 0 until rs.length()) append("  ").append(rs.optString(j)).append('\n')
                     }
                 }.trim()
                 if (txt.isNotBlank()) MonoBox(txt)
@@ -90,8 +87,7 @@ internal fun NdmsPoliciesPage(
             val mainRt = routeDoctor.optJSONArray("main_routes") ?: JSONArray()
             if (mainRt.length() > 0) {
                 Text("Основная таблица маршрутов:", color = Color(0xFF93C5FD), fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                MonoBox((0 until mainRt.length()).joinToString("
-") { mainRt.optString(it) })
+                MonoBox((0 until mainRt.length()).joinToString("\n") { mainRt.optString(it) })
             }
         }
     }
