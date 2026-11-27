@@ -884,7 +884,27 @@ fun MonitorPanelScreen(
                         onApplyOptimize = { zram, ppeHw, ppeSw, cOpt, ct ->
                             runAction("Автооптимизация роутера", MonitorScripts.applyOptimizerBundleCmd(zram, ppeHw, ppeSw, cOpt, ct), MonitorPage.OVERVIEW, delayMs = 800L)
                         },
-                        onReboot = { confirmReboot = true }
+                        onReboot = { confirmReboot = true },
+                        onSvcToggle = { svc, on ->
+                            scope.launch {
+                                loading = true
+                                actionErrMsg = ""
+                                statusMsg = if (on) "Включаю ${svc.uppercase()}..." else "Отключаю ${svc.uppercase()}..."
+                                val r = withContext(Dispatchers.IO) {
+                                    RciClient.toggleService(prefs.routerHost, prefs.rciUser, prefs.rciPass, svc, on)
+                                }
+                                r.fold(
+                                    onSuccess = { statusMsg = "$svc: $it" },
+                                    onFailure = {
+                                        actionErrMsg = "$svc: ${it.message}"
+                                        statusMsg = ""
+                                    }
+                                )
+                                loading = false
+                                delay(500)
+                                loadPage(MonitorPage.OVERVIEW, force = true)
+                            }
+                        }
                     )
                     MonitorPage.SERVICES -> ServicesPage(
                         data = services,
@@ -1542,7 +1562,8 @@ private fun OverviewPage(
     onBenchBefore: () -> Unit,
     onBenchAfter: () -> Unit,
     onApplyOptimize: (Boolean, Boolean, Boolean, Boolean, Boolean) -> Unit,
-    onReboot: () -> Unit
+    onReboot: () -> Unit,
+    onSvcToggle: (String, Boolean) -> Unit = { _, _ -> }
 ) {
     val sys = data?.optJSONObject("sys")
     val mem = sys?.optJSONObject("mem")
@@ -1782,6 +1803,12 @@ private fun OverviewPage(
             dnsRaw = srv.optString("dns").orEmpty()
         )
     }
+
+    NdmsServicesTogglesCard(
+        toggles = data?.optJSONObject("tog"),
+        busy = busy,
+        onToggle = onSvcToggle
+    )
 
     DonateCard(compact = true)
 }
