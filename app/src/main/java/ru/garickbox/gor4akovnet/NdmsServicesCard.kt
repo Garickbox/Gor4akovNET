@@ -81,7 +81,24 @@ fun parseNdmsDns(raw: String): String {
             if (v.isNotBlank()) return v
         }
     }
-    return Regex("""\b\d{1,3}(?:\.\d{1,3}){3}\b"").find(raw)?.value ?: ""
+    val parts = mutableListOf<String>()
+    val sb = StringBuilder()
+    for (ch in raw) {
+        if (ch.isDigit() || ch == '.') sb.append(ch)
+        else if (sb.isNotEmpty()) { parts.add(sb.toString()); sb.clear() }
+    }
+    if (sb.isNotEmpty()) parts.add(sb.toString())
+    for (v in parts) {
+        val p = v.split('.')
+        if (p.size != 4) continue
+        var ok = true
+        for (seg in p) {
+            val n = seg.toIntOrNull() ?: -1
+            if (n < 0 || n > 255) { ok = false; break }
+        }
+        if (ok) return v
+    }
+    return ""
 }
 
 @Composable
