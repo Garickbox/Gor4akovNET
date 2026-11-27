@@ -1108,16 +1108,26 @@ EOFINI
         fi
 
         echo "=== Запуск служб ==="
-        for ini in /opt/etc/init.d/S99zapret2 /opt/etc/init.d/S99AdGuardHome /opt/etc/init.d/S99adguardhome /opt/etc/init.d/S10cron; do
-            [ -x "${'$'}ini" ] && "${'$'}ini" start >/dev/null 2>&1 || true
+        # Симметрично stop-блоку (выше): стартуем ВСЕ S*, иначе lighttpd (панель z2k),
+        # dropbear (:222 SSH), z2k-scheduler, tg-mtproxy остаются выключенными до
+        # перезагрузки роутера. Это был бы отказ класса «restore убил панель».
+        for ini in /opt/etc/init.d/S*; do
+            [ -x "${'$'}ini" ] && [ -f "${'$'}ini" ] && "${'$'}ini" start >/dev/null 2>&1 || true
         done
         [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true
         sleep 2
+        # Раньше проверяли только nfqws2 — lighttpd/dropbear/scheduler могли не
+        # стартовать незаметно. Теперь проверяем все ключевые службы.
         NFQ=${'$'}(ps w 2>/dev/null | grep -c "[n]fqws2")
-        if [ "${'$'}NFQ" -gt 0 ]; then
-            echo "=== Готово: nfqws2 OK (${'$'}NFQ) ==="
-        else
-            echo "=== ВНИМАНИЕ: nfqws2 НЕ стартовал ==="
+        AGH=${'$'}(ps w 2>/dev/null | grep -c "[A]dGuardHome")
+        LTP=${'$'}(ps w 2>/dev/null | grep -c "[l]ighttpd")
+        DBR=${'$'}(ps w 2>/dev/null | grep -c "[d]ropbear")
+        echo "=== Готово: nfqws2=${'$'}NFQ AdGuard=${'$'}AGH lighttpd=${'$'}LTP dropbear=${'$'}DBR ==="
+        if [ "${'$'}NFQ" -eq 0 ]; then
+            echo "[WARN] nfqws2 НЕ стартовал — обход не работает. Проверьте: /opt/etc/init.d/S99zapret2 restart"
+        fi
+        if [ "${'$'}LTP" -eq 0 ]; then
+            echo "[WARN] lighttpd НЕ стартовал — веб-панель z2k (:8088) недоступна. Проверьте: /opt/etc/init.d/S99lighttpd start"
         fi
 
         rm -f "${'$'}ARCH"
