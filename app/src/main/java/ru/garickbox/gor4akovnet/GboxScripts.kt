@@ -960,7 +960,7 @@ EOFINI
         "${'$'}TAR" --exclude="opt/.gbox_prerestore.*" --exclude="opt/.gbox_restore.tar.gz" --exclude="opt/.gbox_rst_*" --exclude="opt/gor4akov-offline" --exclude="opt/z2k-work" --exclude="opt/tmp" --exclude="opt/var/log" --exclude="*.log" -czf "${'$'}PRE" -C / opt 2>/dev/null
         PRE_RC=${'$'}?
         if [ "${'$'}PRE_RC" -ne 0 ] || [ ! -s "${'$'}PRE" ]; then
-            # Раньше: продолжали БЕЗ отката. Опасно: rm -rf /opt/$d + cp -a может
+            # Раньше: продолжали БЕЗ отката. Опасно: rm -rf /opt/<d> + cp -a может
             # упасть на полном диске → потеря /opt без возможности вернуть.
             # Теперь: если свободного < 2× размера архива (запас на распаковку+старт) — стоп.
             PRE=""
