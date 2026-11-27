@@ -896,20 +896,42 @@ EOFINI
         # Пишем архив на флешку (/opt), а НЕ в /tmp (tmpfs = RAM, OOM) и НЕ в SSH-стрим.
         # После проверки целостности отдаём содержимое в stdout через cat.
         rm -f "${'$'}STAGE"
-        if [ -n "${'$'}opt_excl" ]; then
-            ${'$'}{TAR} ${'$'}_tar_opts --exclude='opt/.gbox_backup_stage*' --exclude='opt/.gbox_prerestore.*' --exclude='opt/.gbox_rst_*' --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/z2k-rollback' --exclude='opt/tmp' --exclude='opt/var/log' --exclude='*.log' --exclude='*.swap' --exclude='swapfile' --exclude='*.db-wal' --exclude='*.db-shm' --exclude="${'$'}opt_excl" \
-                -czf "${'$'}STAGE" "${'$'}@"
-        else
-            ${'$'}{TAR} ${'$'}_tar_opts --exclude='opt/.gbox_backup_stage*' --exclude='opt/.gbox_prerestore.*' --exclude='opt/.gbox_rst_*' --exclude='opt/gor4akov-offline' --exclude='opt/z2k-work' --exclude='opt/z2k-rollback' --exclude='opt/tmp' --exclude='opt/var/log' --exclude='*.log' --exclude='*.swap' --exclude='swapfile' --exclude='*.db-wal' --exclude='*.db-shm' \
-                -czf "${'$'}STAGE" "${'$'}@"
-        fi
+        # ВАЖНО (2026-11-27): на этом роутере /opt/bin/tar — симлинк на busybox.
+        # busybox tar не понимает --exclude / --warning / --ignore-failed-read →
+        # rc=1 → «битый архив» на первом шаге (после [INFO] media_mnts).
+        # Штатный комментарий обещал GNU tar в /opt/bin/tar, но `opkg install tar`
+        # не был выполнен — симлинк на busybox.
+        # Решение: писать все паттерны в файл и использовать -X FILE — этот флаг
+        # работаёт и в GNU tar (-X = --exclude-from=FILE), и в busybox tar (-X FILE
+        # с glob-паттернами). Один код-путь, без if.
+        EXCLF="${'$'}TMPB/.excludes"
+        {
+          printf '%s\n' 'opt/.gbox_backup_stage*'
+          printf '%s\n' 'opt/.gbox_prerestore.*'
+          printf '%s\n' 'opt/.gbox_rst_*'
+          printf '%s\n' 'opt/gor4akov-offline' 'opt/gor4akov-offline/*'
+          printf '%s\n' 'opt/z2k-work' 'opt/z2k-work/*'
+          printf '%s\n' 'opt/z2k-rollback' 'opt/z2k-rollback/*'
+          printf '%s\n' 'opt/tmp' 'opt/tmp/*'
+          printf '%s\n' 'opt/var/log' 'opt/var/log/*'
+          printf '%s\n' '*.log' '*.swap' 'swapfile' '*.db-wal' '*.db-shm'
+          [ -n "${'$'}opt_excl" ] && printf '%s\n' "${'$'}opt_excl" "${'$'}opt_excl/*"
+        } > "${'$'}EXCLF"
+        "${'$'}{TAR}" ${'$'}_tar_opts -czf "${'$'}STAGE" -X "${'$'}EXCLF" "${'$'}@"
         tar_rc=${'$'}?
+        rm -f "${'$'}EXCLF"
         rm -rf "${'$'}TMPB"
         if { [ "${'$'}_is_gnu" = "1" ] && [ "${'$'}tar_rc" -ge 2 ]; } || { [ "${'$'}_is_gnu" != "1" ] && [ "${'$'}tar_rc" -ne 0 ]; } || [ ! -s "${'$'}STAGE" ]; then
             _sz=${'$'}(wc -c < "${'$'}STAGE" 2>/dev/null || echo 0)
+            _is_busy=0
+            case "${'$'}(readlink -f "${'$'}TAR" 2>/dev/null):${'$'}TAR" in *busybox*) _is_busy=1 ;; esac
             rm -f "${'$'}STAGE"
-            echo "FATAL: tar не смог создать архив (rc=${'$'}tar_rc, size=${'$'}{_sz:-0} B, TAR=${'$'}TAR ${'$'}{_tar_ver:-})" >&2
-            echo "FATAL: проверьте /opt/bin/tar (GNU) и свободное место: df -h /opt" >&2
+            if [ "${'$'}_is_busy" = "1" ]; then
+                echo "FATAL: ${'$'}TAR — это busybox tar (не GNU). busybox не умеет --warning/--ignore-failed-read. Установите GNU tar: opkg install tar" >&2
+            else
+                echo "FATAL: tar не смог создать архив (rc=${'$'}tar_rc, size=${'$'}{_sz:-0} B, TAR=${'$'}TAR)" >&2
+            fi
+            echo "FATAL: проверьте свободное место: df -h /opt" >&2
             exit 1
         fi
         if ! ${'$'}{TAR} -tzf "${'$'}STAGE" >/dev/null 2>&1; then
