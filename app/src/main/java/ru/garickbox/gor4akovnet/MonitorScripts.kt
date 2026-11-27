@@ -435,8 +435,19 @@ ZH='X-Z2K-Panel: 1'
         [ -n "§ndms_json" ] || ndms_json='{"ppe_hw":false,"ppe_sw":false,"upnp":false,"dns_ov":false,"igmp":false,"ct_max":32768}'
         ip_static=§(printf '%s\n' "§rc" | awk '$AWK_ESC /^ip static /{a[++n]=esc(§0)} END{printf "["; for(i=1;i<=n;i++)printf "%s\"%s\"", (i>1?",":""), a[i]; printf "]"}')
         [ -n "§ip_static" ] || ip_static='[]'
-        upnp_raw=§(LD_LIBRARY_PATH= /bin/ndmc -c "show ip upnp" 2>/dev/null)
-        upnp_list=§(printf '%s\n' "§upnp_raw" | awk '$AWK_ESC /->/{gsub(/^[[:space:]]+/,""); if(n<15) a[++n]=esc(§0)} END{printf "["; for(i=1;i<=n;i++)printf "%s\"%s\"", (i>1?",":""), a[i]; printf "]"}')
+        # Мануал 3.178.126 (стр. 751): show upnp redirect — блоки "entry:" с полями
+        # index/protocol/port/to-address/to-port/description/policy/packets/bytes.
+        upnp_raw=§(LD_LIBRARY_PATH= /bin/ndmc -c "show upnp redirect" 2>/dev/null | tr -d '\r')
+        upnp_list=§(printf '%s\n' "§upnp_raw" | awk '
+          /^[[:space:]]*entry:/ { if(d!=""){emit()} p="";t="";tp="";d="";i2="" }
+          /^[[:space:]]*protocol:/{p=§2}
+          /^[[:space:]]*port:/{t=§2}
+          /^[[:space:]]*to-address:/{a=§2}
+          /^[[:space:]]*to-port:/{tp=§2}
+          /^[[:space:]]*description:/{sub(/^[[:space:]]*description:[[:space:]]*/,"");d=§0}
+          function emit(){ if(d!=""||a!=""){ s=sprintf("%s → %s:%s (%s/%s)", d, a, tp, p, t); if(n<20) a2[++n]=esc(s) }; p="";t="";tp="";d="";a="" }
+          END{ if(d!=""||a!=""){ s=sprintf("%s → %s:%s (%s/%s)", d, a, tp, p, t); if(n<20) a2[++n]=esc(s) }; printf "["; for(i2=1;i2<=n;i2++)printf "%s\"%s\"", (i2>1?",":""), a2[i2]; printf "]" }
+        ')
         [ -n "§upnp_list" ] || upnp_list='[]'
         printf '{"agh_up":%s,"agh_port":%s,"agh":%s,"qcnt":%s,"qlog":%s,"errs":%s,"ndms":%s,"ip_static":%s,"upnp_list":%s}\n' \
           "§agh_up" "§agh_port" "§agh_meta" "§qcnt" "§qlog" "§errs" "§ndms_json" "§ip_static" "§upnp_list"

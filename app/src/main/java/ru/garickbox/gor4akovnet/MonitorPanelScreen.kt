@@ -1550,6 +1550,10 @@ private fun OverviewPage(
     val wan = data?.optJSONObject("wan")
     val svc = data?.optJSONObject("svc")
     val ver = data?.optJSONObject("ver")
+    // Справочник NDMS 5.1: 3.178.71 show ip service, 3.178.9 show cifs,
+    // 3.178.65 show ip http webdav, 3.178.66 show ip name-server.
+    // raw-текст от NDMS (экранированный `~` вместо \n).
+    val srv = data?.optJSONObject("srv")
 
     // Health traffic light
     if (data != null) {
