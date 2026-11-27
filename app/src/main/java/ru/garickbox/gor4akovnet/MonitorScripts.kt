@@ -114,8 +114,11 @@ ZH='X-Z2K-Panel: 1'
         svc_toggles=§(printf '%s\n' "§rc" | awk '
           /^service ssh$/ {s="1"} /^service ftp$/ {f="1"} /^service cifs$/ {c="1"}
           /^service dlna$/ {d="1"} /^service upnp$/ {u="1"} /^service torrent$/ {t="1"}
-          /^ip http webdav enable$/ {w="1"}
-          END{printf "{\"ssh\":%s,\"ftp\":%s,\"cifs\":%s,\"dlna\":%s,\"upnp\":%s,\"torrent\":%s,\"webdav\":%s}", (s=="1"?"true":"false"), (f=="1"?"true":"false"), (c=="1"?"true":"false"), (d=="1"?"true":"false"), (u=="1"?"true":"false"), (t=="1"?"true":"false"), (w=="1"?"true":"false")}
+          /^service telnet$/ {tn="1"} /^service igmp-proxy$/ {ig="1"}
+          /^ip http webdav$/ {inweb=1; next}
+          inweb && /^[[:space:]]+enable$/ {w="1"; inweb=0; next}
+          inweb && /^[^[:space:]]/ {inweb=0}
+          END{printf "{\"ssh\":%s,\"ftp\":%s,\"cifs\":%s,\"dlna\":%s,\"upnp\":%s,\"torrent\":%s,\"telnet\":%s,\"igmp\":%s,\"webdav\":%s}", (s=="1"?"true":"false"), (f=="1"?"true":"false"), (c=="1"?"true":"false"), (d=="1"?"true":"false"), (u=="1"?"true":"false"), (t=="1"?"true":"false"), (tn=="1"?"true":"false"), (ig=="1"?"true":"false"), (w=="1"?"true":"false")}
         ')
         pol_name=§(awk -F= '/^POLICY_NAME=/{gsub(/["'"'"'\r\n]/,"",§2); print §2; exit}' /opt/zapret2/config 2>/dev/null | tr -d '"\\')
         pol_mode="policy"
