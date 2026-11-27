@@ -106,9 +106,29 @@ fun SetupsScreen(
                         Gboxcore.pullFileSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, GboxScripts.FULL_BACKUP_TAR_CMD, tmpFile.absolutePath)
                     }.getOrDefault(0L)
                 }
+                // CRC-верификация ДО коммита: если SSH оборвался, файл < streamedSize,
+                // но всё равно > 1 МБ. GZIPInputStream бросит IOException при CRC fail.
+                val crcOk = if (streamedSize > 1_000_000L) withContext(Dispatchers.IO) {
+                    runCatching {
+                        java.util.zip.GZIPInputStream(tmpFile.inputStream()).use { ins ->
+                            val buf = ByteArray(64 * 1024)
+                            var total = 0L
+                            while (true) {
+                                val n = ins.read(buf)
+                                if (n < 0) break
+                                total += n
+                                if (total > 1_500_000_000L) error("backup > 1.5GB")
+                            }
+                        }
+                        true
+                    }.getOrDefault(false)
+                } else false
                 var backupOk = false
-                // Полный бэкап /opt не бывает < 1 МБ. Порог 4 КБ пропускал пустой tar.
-                if (streamedSize > 1_000_000L) {
+                if (streamedSize > 1_000_000L && !crcOk) {
+                    tmpFile.delete()
+                    appendLog("[ERR] Архив обрезан (gzip CRC fail — SSH оборвался). Fallback на конфиг.")
+                }
+                if (streamedSize > 1_000_000L && crcOk) {
                     val b = prefs.commitStreamedBackupFile(tmpFile, "Полный перед установкой", routerModel, format = "tar_v2", isProtected = true)
                     onBackupSaved(b)
                     appendLog("[OK] Защищённый полный бэкап v2 (.tar.gz) сохранён (${b.sizeBytes / 1024} КБ)")
