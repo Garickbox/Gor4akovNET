@@ -752,6 +752,19 @@ object RciClient {
         }
     }
 
+    // Универсальный toggle любой службы NDMS (Справочник 3.15x-3.17x):
+    // ssh/ftp/cifs/dlna/torrent/upnp/telnet/afp/snmp/mdns/igmp-proxy/oc-server/vpn-server.
+    suspend fun toggleService(host: String, user: String, pass: String, svc: String, on: Boolean): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val s = RciSession(host, user, pass); s.ensureAuth()
+            val cmd = if (on) "service $svc" else "no service $svc"
+            val (ok, errs) = s.parseCliChecked(listOf(cmd, "system configuration save"), 20000)
+            if (errs.isNotEmpty()) error("$svc: ${errs.joinToString("; ")}")
+            if (ok == 0) error("Роутер отклонил: $cmd")
+            "$cmd → OK"
+        }
+    }
+
     // ЭТАП 4 установки (Справочник NDMS 5.1, п. 3.143, стр. 554):
     //   opkg disk <disk> [<url>]
     // При наличии <url> NDMS САМ скачивает installer по URL, распаковывает в /opt,

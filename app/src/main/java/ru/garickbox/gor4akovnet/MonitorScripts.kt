@@ -109,6 +109,14 @@ ZH='X-Z2K-Panel: 1'
         svc_webdav_j=§(esc_json "§svc_webdav")
         svc_dns_j=§(esc_json "§svc_dns")
         rc=§(LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" 2>/dev/null | tr -d '\r')
+        # Тумблеры служб из running-config (мануал 3.15x-3.17x): service ssh/ftp/cifs/
+        # dlna/upnp/torrent + ip http webdav enable. ВАЖНО: читает §rc ПОСЛЕ его объявления.
+        svc_toggles=§(printf '%s\n' "§rc" | awk '
+          /^service ssh$/ {s="1"} /^service ftp$/ {f="1"} /^service cifs$/ {c="1"}
+          /^service dlna$/ {d="1"} /^service upnp$/ {u="1"} /^service torrent$/ {t="1"}
+          /^ip http webdav enable$/ {w="1"}
+          END{printf "{\"ssh\":%s,\"ftp\":%s,\"cifs\":%s,\"dlna\":%s,\"upnp\":%s,\"torrent\":%s,\"webdav\":%s}", (s=="1"?"true":"false"), (f=="1"?"true":"false"), (c=="1"?"true":"false"), (d=="1"?"true":"false"), (u=="1"?"true":"false"), (t=="1"?"true":"false"), (w=="1"?"true":"false")}
+        ')
         pol_name=§(awk -F= '/^POLICY_NAME=/{gsub(/["'"'"'\r\n]/,"",§2); print §2; exit}' /opt/zapret2/config 2>/dev/null | tr -d '"\\')
         pol_mode="policy"
         pol_ok=false
@@ -154,7 +162,7 @@ ZH='X-Z2K-Panel: 1'
         ')
         wifi_bridge=§(printf '%s' "§eval_br" | cut -d'|' -f1 | tr -d '\r\n"\\')
         wifi_subnet=§(printf '%s' "§eval_br" | cut -d'|' -f2 | tr -d '\r\n"\\')
-        printf '{"sys":{"model":"%s","ndms":"%s","up_sec":%s,"load":"%s","cpus":%s,"ct":%s,"ct_max":%s,"mem":%s,"disk":%s,"temp24":"%s","temp5":"%s","zram":%s},"wan":{"dev":"%s","ip":"%s","spd":"%s","gw":"%s","policy_ok":%s,"policy_name":"%s","policy_mode":"%s","nfq_rules":%s,"ent_ok":%s,"agh_inst":%s,"dns_ov":%s},"svc":{"nfqws2":%s,"gvsub":%s,"adguard":%s,"tg_tunnel":%s,"http_tunnel":%s,"warp":%s,"z2k_panel":%s,"scheduler":%s},"ver":{"z2k_local":"%s","agh":"%s","z2u":%s},"z2k":%s,"wifi":{"ssid":"%s","pass":"%s","bridge":"%s","subnet":"%s"},"srv":{"ip_service":"%s","cifs":"%s","webdav":"%s","dns":"%s"}}\n' \
+        printf '{"sys":{"model":"%s","ndms":"%s","up_sec":%s,"load":"%s","cpus":%s,"ct":%s,"ct_max":%s,"mem":%s,"disk":%s,"temp24":"%s","temp5":"%s","zram":%s},"wan":{"dev":"%s","ip":"%s","spd":"%s","gw":"%s","policy_ok":%s,"policy_name":"%s","policy_mode":"%s","nfq_rules":%s,"ent_ok":%s,"agh_inst":%s,"dns_ov":%s},"svc":{"nfqws2":%s,"gvsub":%s,"adguard":%s,"tg_tunnel":%s,"http_tunnel":%s,"warp":%s,"z2k_panel":%s,"scheduler":%s},"ver":{"z2k_local":"%s","agh":"%s","z2u":%s},"z2k":%s,"wifi":{"ssid":"%s","pass":"%s","bridge":"%s","subnet":"%s"},"srv":{"ip_service":"%s","cifs":"%s","webdav":"%s","dns":"%s"},"tog":%s}\n' \
           "§model" "§ndms" "§up_sec" "§load" "§cpu_cnt" "§ct_cnt" "§ct_max" "§mem_json" "§disk_json" "§t24" "§t5" "§zram_on" \
           "§wan_dev" "§wan" "§wan_spd" "§wan_gw" "§pol_ok" "§pol_name" "§pol_mode" "§nfq_rules" "§ent_ok" "§agh_inst" "§dns_ov" \
           "§(has_ps '[n]fqws2')" "§(has_ps 'z2k-detect')" "§agh_up" \
@@ -162,7 +170,7 @@ ZH='X-Z2K-Panel: 1'
           "§(has_ps 'z2k-scheduler')" \
           "§z2k_loc" "§agh_loc" "§z2u" "§zst" \
           "§wifi_ssid" "§wifi_pass" "§wifi_bridge" "§wifi_subnet" \
-          "§svc_srv_j" "§svc_cifs_j" "§svc_webdav_j" "§svc_dns_j"
+          "§svc_srv_j" "§svc_cifs_j" "§svc_webdav_j" "§svc_dns_j" "§svc_toggles"
         """
     )
 
