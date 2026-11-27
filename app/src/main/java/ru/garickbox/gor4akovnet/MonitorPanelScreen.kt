@@ -1772,6 +1772,17 @@ private fun OverviewPage(
         WiFiQrCard(ssid = liveWifiSsid, pass = activePass, subnetInfo = activeSubnet)
     }
 
+    // Мануал 3.178: службы NDMS (ip service/cifs/webdav/name-server). Сворачивается
+    // внутрь, чтобы не загромождать при пустом. Показывается только если есть данные.
+    if (srv != null) {
+        NdmsServicesCard(
+            ipServiceRaw = srv.optString("ip_service").orEmpty(),
+            cifsRaw = srv.optString("cifs").orEmpty(),
+            webdavRaw = srv.optString("webdav").orEmpty(),
+            dnsRaw = srv.optString("dns").orEmpty()
+        )
+    }
+
     DonateCard(compact = true)
 }
 

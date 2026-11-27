@@ -1,5 +1,16 @@
 package ru.garickbox.gor4akovnet
 
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+
 data class NdmsServiceEntry(
     val name: String,
     val family: String,
@@ -70,5 +81,39 @@ fun parseNdmsDns(raw: String): String {
             if (v.isNotBlank()) return v
         }
     }
-    return Regex("""\b\d{1,3}(?:\.\d{1,3}){3}\b""").find(raw)?.value ?: ""
+    return Regex("""\b\d{1,3}(?:\.\d{1,3}){3}\b"").find(raw)?.value ?: ""
+}
+
+@Composable
+fun NdmsServicesCard(
+    ipServiceRaw: String,
+    cifsRaw: String,
+    webdavRaw: String,
+    dnsRaw: String
+) {
+    val services = parseNdmsIpService(ipServiceRaw)
+    val (cifsEnabled, cifsShares) = parseNdmsCifs(cifsRaw)
+    val webdavEnabled = parseNdmsWebdav(webdavRaw)
+    val dns = parseNdmsDns(dnsRaw)
+    if (services.isEmpty() && !cifsEnabled && !webdavEnabled && dns.isBlank()) return
+    MiniCard("Открытые порты служб NDMS (3.178.71)") {
+        for ((name, list) in services.groupBy { it.name }.toSortedMap()) {
+            val ports = list.joinToString(", ") { "${it.proto}/${it.port}" }
+            val sec = list.firstOrNull()?.security.orEmpty()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 2.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(name.ifBlank { "?" }, color = DeckColors.Text, fontSize = 11.5.sp)
+                Text(ports, color = DeckColors.Sky, fontSize = 11.sp)
+                if (sec.isNotBlank()) {
+                    StatusTag(sec, if (sec == "private") DeckColors.Emerald
+                        else if (sec == "protected") DeckColors.Amber else DeckColors.Rose)
+                }
+            }
+        }
+    }
 }
