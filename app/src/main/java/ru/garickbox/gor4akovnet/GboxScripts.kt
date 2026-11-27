@@ -960,16 +960,29 @@ EOFINI
         "${'$'}TAR" --exclude="opt/.gbox_prerestore.*" --exclude="opt/.gbox_restore.tar.gz" --exclude="opt/.gbox_rst_*" --exclude="opt/gor4akov-offline" --exclude="opt/z2k-work" --exclude="opt/tmp" --exclude="opt/var/log" --exclude="*.log" -czf "${'$'}PRE" -C / opt 2>/dev/null
         PRE_RC=${'$'}?
         if [ "${'$'}PRE_RC" -ne 0 ] || [ ! -s "${'$'}PRE" ]; then
-            echo "[WARN] Pre-snapshot не создан (нет места?). Работаем БЕЗ отката."
+            # Раньше: продолжали БЕЗ отката. Опасно: rm -rf /opt/$d + cp -a может
+            # упасть на полном диске → потеря /opt без возможности вернуть.
+            # Теперь: если свободного < 2× размера архива (запас на распаковку+старт) — стоп.
             PRE=""
+            _free_kb=${'$'}(df -Pk /opt 2>/dev/null | awk 'NR==2{print ${'$'}4}')
+            _arch_kb=${'$'}(du -sk "${'$'}ARCH" 2>/dev/null | awk '{print ${'$'}1}')
+            if [ -n "${'$'}_free_kb" ] && [ -n "${'$'}_arch_kb" ] && [ "${'$'}_free_kb" -lt ${'$'}(( _arch_kb * 2 )) ]; then
+                echo "[FATAL] Pre-snapshot не создан (нет места) и свободного меньше 2× размера архива: ${'$'}_free_kb КБ vs ${'$'}_arch_kb КБ. Восстановление запрещено, чтобы не потерять /opt."
+                echo "PREFLIGHT_FAIL"
+                exit 1
+            fi
+            echo "[WARN] Pre-snapshot не создан. Откат недоступен, но места хватает (${'$'}_free_kb vs ${'$'}_arch_kb КБ)."
         else
             PRE_KB=${'$'}(du -sk "${'$'}PRE" 2>/dev/null | awk '{print ${'$'}1}')
             echo "[OK] Снимок: ${'$'}PRE (${'$'}PRE_KB КБ)"
         fi
 
         echo "=== Остановка служб ==="
-        for ini in /opt/etc/init.d/S99zapret2 /opt/etc/init.d/S99AdGuardHome /opt/etc/init.d/S99adguardhome /opt/etc/init.d/S10cron; do
-            [ -x "${'$'}ini" ] && "${'$'}ini" stop >/dev/null 2>&1 || true
+        # Раньше останавливали только 4 сервиса. lighttpd (панель z2k), dropbear (:222),
+        # z2k-scheduler, tg-mtproxy пишут в /opt во время cp -a → битые файлы.
+        # Теперь останавливаем ВСЕ S*-скрипты, как это делает rc.unslung при shutdown.
+        for ini in /opt/etc/init.d/S*; do
+            [ -x "${'$'}ini" ] && [ -f "${'$'}ini" ] && "${'$'}ini" stop >/dev/null 2>&1 || true
         done
         killall nfqws2 2>/dev/null || true
         killall AdGuardHome 2>/dev/null || true
@@ -1039,6 +1052,12 @@ EOFINI
                     if (cmd ~ /^(user|no user|system mode|opkg disk|no opkg disk) /) return 1
                     if (cmd ~ /^interface Bridge0 ip address /) return 1
                     if (cmd ~ /^interface Bridge0 mac address /) return 1
+                    # Сервисы НЕ восстанавливаем: если пользователь выключил telnet/webdav
+                    # (безопасность), старый бэкап молча включит их обратно. Состояние
+                    # сервисов — отдельное решение, не часть конфигурации сети.
+                    if (cmd ~ /^(no )?service (telnet|ssh|ftp|cifs|upnp|dlna|torrent|afp|snmp|mdns|igmp-proxy|vpn-server|oc-server)/) return 1
+                    if (cmd ~ /^ip http webdav/) return 1
+                    if (cmd ~ /^no ip http webdav/) return 1
                     return 0
                   }
                   /^[[:space:]]*${'$'}/ {next}
