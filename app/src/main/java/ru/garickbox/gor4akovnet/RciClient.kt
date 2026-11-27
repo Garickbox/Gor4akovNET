@@ -371,10 +371,14 @@ object RciClient {
             val comps = mutableSetOf<String>()
             val compMap = compJson?.optJSONObject("component") ?: compJson
             compMap?.keys()?.forEach { key ->
-                val item = compMap.optJSONObject(key)
-                if (item == null || item.optBoolean("installed", true)) {
-                    comps.add(key.lowercase())
-                }
+                val item = compMap.optJSONObject(key) ?: return@forEach
+                // С п. 3.10.7: поле "installed:" — это СТРОКА ВЕРСИИ
+                // (например "2.13.B.1.0-1"), а не boolean. optBoolean("installed", true)
+                // ошибочно возвращал true и для отсутствующего поля, и для непустой строки,
+                // из-за чего на роутере после factory reset "OPKG" показывался установленным,
+                // хотя /opt пуст. Разбираем строку буквально: пусто/нет = не установлен.
+                val installedVer = item.optString("installed", "").trim()
+                if (installedVer.isNotBlank()) comps.add(key.lowercase())
             }
             fun addCompTokens(raw: String?) {
                 raw?.split(',', ' ', ';', '\n')?.forEach { tok ->
@@ -412,11 +416,10 @@ object RciClient {
             }
 
             val ssh222 = Gboxcore.probeTCP(host, 222, 1200)
-            if (comps.none { it.contains("opkg") } || comps.none { it.contains("netfilter") }) {
-                val compListRaw = runCatching { session.request("/rci/components/list") }.getOrDefault("")
-                if (compListRaw.contains("opkg", ignoreCase = true)) comps.add("opkg")
-                if (compListRaw.contains("netfilter", ignoreCase = true)) comps.add("opkg-kmod-netfilter")
-            }
+            // Справочник NDMS 5.1, п. 3.10.7: "/rci/components/list" возвращает весь каталог песочницы,
+            // включая НЕустановленные компоненты. contains("opkg") как признак установки даёт ложное
+            // "OPKG установлен" после factory reset и ломает сценарий восстановления. Реальность модуля
+            // OPKG видна из running-config (opkg disk / opkg initrc, пп. 3.143/3.145) и по SSH :222.
             if (ssh222) {
                 if (comps.none { it.contains("opkg") }) comps.add("opkg")
                 if (comps.none { it.contains("netfilter") }) comps.add("opkg-kmod-netfilter")
@@ -574,6 +577,162 @@ object RciClient {
             val s = RciSession(host, user, pass)
             s.ensureAuth()
             s.restoreRunningConfigChunked(cfgText)
+        }
+    }
+
+    // Справочник NDMS 5.1, пп. 3.10.5 (components commit) и 3.10.6 (components install):
+    // "components install X" только ОТМЕЧАЕТ компонент как queued — окончательная установка
+    // выполняется отдельной командой "components commit". Без commit компонент не ставится.
+    // После успешного commit NDMS обычно перезагружается — вызывающий код должен это учесть.
+    suspend fun installComponents(
+        host: String,
+        user: String,
+        pass: String,
+        components: List<String>
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val clean = components.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+            if (clean.isEmpty()) error("Список компонентов пуст")
+            val s = RciSession(host, user, pass)
+            s.ensureAuth()
+            val cmds = clean.map { "components install $it" } + listOf("components commit")
+            val (ok, errs) = s.parseCliChecked(cmds, readTimeoutMs = 60000)
+            if (errs.isNotEmpty()) {
+                error("components install/commit: " + errs.joinToString("; "))
+            }
+            if (ok == 0) {
+                error("Роутер отклонил components install/commit (нет подключения к серверу обновлений или компонент недоступен в песочнице)")
+            }
+            "Компоненты (${clean.joinToString(", ")}) отмечены и зафиксированы (components commit). Роутер может перезагрузиться — подождите 60-90 сек."
+        }
+    }
+
+    // Справочник NDMS 5.1, п. 3.105: "media <name> initialize <preset>" УДАЛЯЕТ старую таблицу
+    // разделов и создаёт заново swap+ext4/ntfs. Это деструктивная операция — вызывающий код
+    // обязан предупредить пользователя. Возвращает сразу, т.к. NDMS выполняет разметку в фоне;
+    // прогресс виден через "show media" (п. 3.104).
+    suspend fun initializeMediaExt4(
+        host: String,
+        user: String,
+        pass: String,
+        mediaName: String
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val clean = mediaName.trim()
+            if (clean.isBlank()) error("Не указано имя накопителя (например Media0)")
+            val s = RciSession(host, user, pass)
+            s.ensureAuth()
+            val (ok, errs) = s.parseCliChecked(
+                listOf("media $clean initialize ext4", "system configuration save"),
+                readTimeoutMs = 30000
+            )
+            if (errs.isNotEmpty() || ok == 0) {
+                error(errs.firstOrNull() ?: "Роутер отклонил media $clean initialize ext4")
+            }
+            "media $clean инициализирована в ext4 (swap+ext4). NDMS размечает в фоне — show media покажет прогресс через 10-20 сек."
+        }
+    }
+
+    // ЭТАП 2 установки (Справочник NDMS 5.1):
+    //  - п. 3.171 (стр. 582): service ssh — тумблер SSH-сервера :22
+    //  - п. 3.71/3.71.1 (стр. 413): ip http webdav enable — тумблер WebDAV на :80/install
+    //  - п. 3.71.3 (стр. 414): ip http webdav security-level private
+    //  - п. 3.159 (стр. 576): service ftp — тумблер FTP :21 (опционально)
+    //  - п. 3.188.10 (стр. 785): system configuration save
+    // Всё через RCI :80 — БЕЗ :22 и :222. Именно эти же команды шлёт веб-UI при клике тумблера.
+    suspend fun enableServicesViaRci(
+        host: String,
+        user: String,
+        pass: String,
+        enableSsh: Boolean = true,
+        enableWebdav: Boolean = true,
+        enableFtp: Boolean = false
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val s = RciSession(host, user, pass)
+            s.ensureAuth()
+            val cmds = mutableListOf<String>()
+            if (enableSsh) cmds.add("service ssh")
+            if (enableWebdav) {
+                cmds.add("ip http webdav")
+                cmds.add("ip http webdav enable")
+                cmds.add("ip http webdav security-level private")
+            }
+            if (enableFtp) {
+                cmds.add("service ftp")
+                cmds.add("ip ftp security-level private")
+            }
+            cmds.add("system configuration save")
+            val (ok, errs) = s.parseCliChecked(cmds, readTimeoutMs = 30000)
+            if (errs.isNotEmpty()) error("Сервисы: " + errs.joinToString("; "))
+            if (ok == 0) error("Роутер отклонил включение сервисов")
+            buildString {
+                append("Включено через RCI: ")
+                val on = mutableListOf<String>()
+                if (enableSsh) on.add("SSH :22")
+                if (enableWebdav) on.add("WebDAV :80/install")
+                if (enableFtp) on.add("FTP :21")
+                append(on.joinToString(", "))
+                append(". Конфигурация сохранена (system configuration save).")
+            }
+        }
+    }
+
+    // ЭТАП 4 установки (Справочник NDMS 5.1, п. 3.143, стр. 554):
+    //   opkg disk <disk> [<url>]
+    // При наличии <url> NDMS САМ скачивает installer по URL, распаковывает в /opt,
+    // монтирует раздел и запускает initrc — БЕЗ WebDAV, БЕЗ SSH, БЕЗ :222 на этом шаге.
+    // П. 3.145 (стр. 555): opkg initrc /opt/etc/init.d/rc.unslung
+    // П. 3.188.10 (стр. 785): system configuration save
+    // ВАЖНО: не включаем здесь "opkg dns-override" — это про AdGuard (п. 3.144), не про Entware.
+    //        Включение dns-override при живом AdGuard на :3053 сломает DNS.
+    suspend fun installEntwareViaUrl(
+        host: String,
+        user: String,
+        pass: String,
+        diskRef: String,
+        installerUrls: List<String> = listOf(
+            "http://85.192.60.175/entware/aarch64-k3.10/installer/aarch64-installer.tar.gz",
+            "https://bin.entware.net/aarch64-k3.10/installer/aarch64-installer.tar.gz"
+        )
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val disk = diskRef.trim()
+            if (disk.isBlank()) error("Не указан diskRef (UUID:/ или LABEL:/)")
+            if (installerUrls.isEmpty()) error("Список URL installer пуст")
+            val s = RciSession(host, user, pass)
+            s.ensureAuth()
+            var lastErr = ""
+            for (url in installerUrls) {
+                val cmds = listOf(
+                    "no opkg disk",
+                    "opkg disk $disk $url",
+                    "opkg initrc /opt/etc/init.d/rc.unslung",
+                    "system configuration save"
+                )
+                val (ok, errs) = s.parseCliChecked(cmds, readTimeoutMs = 45000)
+                if (errs.isEmpty() && ok > 0) {
+                    return@runCatching "opkg disk $disk <- ${url.substringAfterLast('/')}. " +
+                        "NDMS скачивает installer и разворачивает в /opt. Ждите 60-90 сек, затем проверьте SSH :222."
+                }
+                lastErr = errs.joinToString("; ").ifBlank { "ok=$ok" }
+            }
+            error("Все URL installer отклонены NDMS: $lastErr")
+        }
+    }
+
+    // Определение диска для opkg: берём первый смонтированный ext4/ntfs раздел USB
+    // (media с bus=usb) и возвращаем его UUID:/ (или LABEL:/, если UUID нет).
+    suspend fun detectOpkgDiskRef(host: String, user: String, pass: String): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val s = RciSession(host, user, pass)
+            s.ensureAuth()
+            val mediaRaw = s.request("/rci/show/media")
+            val list = parseMedia(mediaRaw).filter { it.isUsb && it.fsType.isNotBlank() && it.fsType != "swap" }
+            val target = list.firstOrNull { it.isExt4 } ?: list.firstOrNull()
+                ?: error("Не найден USB-раздел с файловой системой — вставьте флешку и отформатируйте")
+            val ref = if (target.uuid.isNotBlank()) "${target.uuid}:/" else "${target.label}:/"
+            "diskRef=$ref (${target.name}/${target.label}, ${target.fsType}, ${target.freeMb}/${target.totalMb} МБ)"
         }
     }
 }

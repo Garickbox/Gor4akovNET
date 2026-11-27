@@ -73,6 +73,31 @@ class Prefs(private val context: Context) {
         get() = sp.getBoolean("wizard_done", false)
         set(v) = sp.edit().putBoolean("wizard_done", v).apply()
 
+    // ==== Флаги пошагового мастера (Login → Master 2.1 → Master 2.2 → Main) ====
+    // entwareInstalled — Успешно завершён Этап 4 мастера (opkg disk + initrc + save + :222 живой).
+    // adguardInstalled — Пользователь выбрал установку AdGuardHome на Этапе 1 и она поставлена.
+    // wizardHost       — Хост, для которого мастер уже пройден. Если пользователь сменил роутер
+    //                    (host изменился) — мастер запускается заново, чтобы не тащить старые
+    //                    флаги на новый роутер. Пустая строка = мастер для этого роутера ещё не
+    //                    проходил.
+    // lastInstallTs    — Время последней успешной установки (System.currentTimeMillis()). Используется
+    //                    в StatsScreen и для напоминания «мастер проходил N дней назад».
+    var entwareInstalled: Boolean
+        get() = sp.getBoolean("entware_installed", false)
+        set(v) = sp.edit().putBoolean("entware_installed", v).apply()
+
+    var adguardInstalled: Boolean
+        get() = sp.getBoolean("adguard_installed", false)
+        set(v) = sp.edit().putBoolean("adguard_installed", v).apply()
+
+    var wizardHost: String
+        get() = sp.getString("wizard_host", "") ?: ""
+        set(v) = sp.edit().putString("wizard_host", v.trim()).apply()
+
+    var lastInstallTs: Long
+        get() = sp.getLong("last_install_ts", 0L)
+        set(v) = sp.edit().putLong("last_install_ts", v).apply()
+
     var initialBackupDoneHost: String
         get() = sp.getString("initial_bkp_host", "") ?: ""
         set(v) = sp.edit().putString("initial_bkp_host", v.trim()).apply()

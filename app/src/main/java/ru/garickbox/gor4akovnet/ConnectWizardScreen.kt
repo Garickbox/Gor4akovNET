@@ -368,6 +368,40 @@ fun ConnectWizardScreen(
                     if (p?.ssh222Open == true) {
                         StatusTag("DROPBEAR SSH :222 ДОСТУПЕН", DeckColors.Emerald)
                     } else {
+                        // Fake OPKG после factory reset (Справочник NDMS 5.1 пп. 3.143/3.145):
+                        // компонент "opkg" в каталоге есть, но реальной привязки к диску нет
+                        // (opkg disk / opkg initrc отсутствуют в running-config) и SSH :222 мёртв.
+                        // Без этого APK уходит в бесконечный цикл "проверь компоненты -> установи".
+                        val fakeOpkg = p?.hasOpkgComp == true &&
+                            p.opkgDisk.isBlank() && p.opkgInitrc.isBlank() &&
+                            p.ssh222Open.not()
+                        if (fakeOpkg) {
+                            StatusTag("⚠️ OPKG ЗАЯВЛЕН, НО ENTWARE НЕ РАЗВЁРНУТ", DeckColors.Amber)
+                            Surface(color = DeckColors.CardAlt, shape = RoundedCornerShape(8.dp)) {
+                                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text("После сброса прошивки компонент OPKG помечен установленным, но файлы на флешке стёрты — SSH :222 мёртв, в running-config нет opkg disk/initrc.", color = DeckColors.Amber, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    Text("Что делать:", color = DeckColors.Text, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                                    Text("1. Зайдите на роутер: Приложения -> Накопители -> отформатируйте USB в ext4.", color = DeckColors.Text, fontSize = 12.sp)
+                                    Text("2. Вернитесь сюда и нажмите «Проверить компоненты».", color = DeckColors.Text, fontSize = 12.sp)
+                                    Text("3. Установка Entware запустится заново.", color = DeckColors.Text, fontSize = 12.sp)
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp)) {
+                                        Button(
+                                            onClick = {
+                                                runCatching {
+                                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("http://$host/#controlPanel/storage")))
+                                                }
+                                            },
+                                            shape = RoundedCornerShape(6.dp)
+                                        ) { Text("Открыть накопители", fontSize = 12.sp) }
+                                        OutlinedButton(
+                                            onClick = { refreshPassport() },
+                                            enabled = !busy,
+                                            shape = RoundedCornerShape(6.dp)
+                                        ) { Text("Проверить снова", fontSize = 12.sp) }
+                                    }
+                                }
+                            }
+                        } else {
                         StatusTag("SSH :222 ЕЩЁ НЕ ЗАПУЩЕН", DeckColors.Amber)
                         if (targetMedia != null && p?.hasWebdavComp == true) {
                             Button(
@@ -420,6 +454,7 @@ fun ConnectWizardScreen(
                                     Text("2. В настройках OPKG роутера выберите накопитель и путь /opt/etc/init.d/rc.unslung.", color = DeckColors.Text, fontSize = 12.sp)
                                 }
                             }
+                        }
                         }
                     }
 

@@ -346,6 +346,38 @@ EOF
             if [ -n "§mnt" ]; then
               umount "§mnt" 2>&1 || umount -l "§mnt" 2>&1 || true
             fi
+            # По Справочнику NDMS 5.1 п. 3.105: media <name> initialize ext4 удаляет таблицу
+            # разделов и создаёт заново (swap+ext4). Если /opt живёт на этой media — отказ,
+            # иначе initialize снесёт Entware вместе со всей флешкой.
+            MY_UUID=""
+            if command -v blkid >/dev/null 2>&1; then
+              MY_UUID=§(blkid -s UUID -o value "§dev" 2>/dev/null | head -n1)
+            elif [ -x /opt/bin/blkid ]; then
+              MY_UUID=§(/opt/bin/blkid -s UUID -o value "§dev" 2>/dev/null | head -n1)
+            fi
+            MEDIA_NAME=""
+            if [ -n "§MY_UUID" ] && [ -x /bin/ndmc ]; then
+              U_UP=§(printf '%s' "§MY_UUID" | tr 'a-f' 'A-F')
+              MEDIA_NAME=§(LD_LIBRARY_PATH= /bin/ndmc -c "show media" 2>/dev/null | awk -v U="§U_UP" '
+                /name:/ && cur=="" { cur=§2; gsub(/[ \t\r]/,"",cur) }
+                { u=toupper(§0); if (index(u, U) > 0 && cur != "") { print cur; exit } }
+              ')
+            fi
+            if [ -n "§MEDIA_NAME" ]; then
+              base=§(printf '%s' "§dev" | sed 's/[0-9]*§//')
+              if awk -v B="§base" '§1 ~ ("^"B"[0-9]+§") && §2 == "/opt" { f=1 } END { exit (f?0:1) }' /proc/mounts 2>/dev/null; then
+                echo "ERR: /opt держит раздел media §MEDIA_NAME — initialize снесёт Entware. Отказ."
+                exit 1
+              fi
+              echo "[i] Раздел §dev принадлежит media §MEDIA_NAME (UUID=§MY_UUID)"
+              echo "[i] По мануалу 3.105: media §MEDIA_NAME initialize ext4 (swap+ext4 заново)"
+              LD_LIBRARY_PATH= /bin/ndmc -c "media §MEDIA_NAME initialize ext4" 2>&1
+              LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1 || true
+              echo "OK: media §MEDIA_NAME инициализирована в ext4 (swap+ext4)."
+              echo "    NDMS размечает в фоне — show media через 10-20 сек."
+              exit 0
+            fi
+            echo "[i] UUID раздела не определён — fallback на mkfs.ext4"
             if ! command -v mkfs.ext4 >/dev/null 2>&1 && ! command -v mke2fs >/dev/null 2>&1; then
               opkg update >/dev/null 2>&1 && opkg install e2fsprogs >/dev/null 2>&1 || true
             fi
@@ -354,10 +386,10 @@ EOF
             elif command -v mke2fs >/dev/null 2>&1; then
               mke2fs -t ext4 -F -L OPKG "§dev" 2>&1
             else
-              echo "ERR: mkfs.ext4 не найден (установите пакет e2fsprogs)"
+              echo "ERR: ни media initialize, ни mkfs.ext4 недоступны"
               exit 1
             fi
-            echo "OK: Раздел §dev отформатирован в ext4 (метка OPKG)"
+            echo "OK: Раздел §dev отформатирован в ext4 через mkfs.ext4 (метка OPKG, FALLBACK)"
             """
         )
     }

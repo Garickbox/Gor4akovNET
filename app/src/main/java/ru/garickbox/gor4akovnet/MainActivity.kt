@@ -54,6 +54,25 @@ fun Gor4akovRootApp(prefs: Prefs) {
         return
     }
 
+    // ==== РОУТИНГ: Login → Master → Bypass → Main ====
+    //   0 = LoginScreen (нет сохранённого пароля RCI)
+    //   1 = SetupMasterScreen (шаг 1/2: сервисы + флешка + Entware)
+    //   2 = SetupBypassScreen (шаг 2/2: SSID + обход)
+    //   3 = Main (главный экран: Монитор / Сервис / Статистика)
+    //
+    // Если host изменился (prefs.wizardHost != prefs.routerHost) — мастер повторяется,
+    // чтобы не тащить флаги от старого роутера на новый.
+    val stageInitial = when {
+        prefs.rciPass.isBlank() -> 0
+        !prefs.wizardCompleted -> 1
+        prefs.wizardHost.isNotBlank() && prefs.wizardHost != prefs.routerHost -> 1
+        else -> 3
+    }
+    var appStage by remember { mutableIntStateOf(stageInitial) }
+    var curHost by remember { mutableStateOf(prefs.routerHost) }
+    var curUser by remember { mutableStateOf(prefs.rciUser) }
+    var curPass by remember { mutableStateOf(prefs.rciPass) }
+
     var tab by remember { mutableIntStateOf(if (prefs.wizardCompleted) 1 else 0) }
     var passport by remember { mutableStateOf<RouterPassport?>(null) }
     var services by remember { mutableStateOf<ServiceStatus?>(null) }
@@ -133,6 +152,76 @@ fun Gor4akovRootApp(prefs: Prefs) {
 
     LaunchedEffect(tab) {
         if (tab == 1 || tab == 2) refreshAllTelemetry()
+    }
+
+    // ── Роутинг: Login → Master → Main ──
+    if (appStage == 0) {
+        LoginScreen(
+            initialHost = curHost,
+            initialUser = curUser.ifBlank { "admin" },
+            initialPass = curPass,
+            onSuccess = { p, h, u, pw ->
+                curHost = h; curUser = u; curPass = pw
+                prefs.routerHost = h
+                prefs.rciUser = u
+                prefs.rciPass = pw
+                passport = p
+                appStage = if (prefs.wizardCompleted && prefs.wizardHost == h) 3 else 1
+            },
+            onSkip = { appStage = 3 }
+        )
+        return
+    }
+    if (appStage == 1) {
+        val p = passport
+        if (p == null) {
+            // Мастер требует passport — если его нет, значит был пропуск с Login (onSkip).
+            // ВОЗВРАЩАЕМСЯ на логин через LaunchedEffect (нельзя менять state в композиции).
+            LaunchedEffect(Unit) { appStage = 0 }
+            return
+        }
+        SetupMasterScreen(
+            passport = p,
+            host = curHost,
+            user = curUser,
+            pass = curPass,
+            prefs = prefs,
+            onFinished = { _, _ ->
+                // Шаг 1/2 завершён → идём на Шаг 2/2 (SSID + обход).
+                // wizardCompleted ставим ТОЛЬКО после Шага 2/2 (или его пропуска).
+                appStage = 2
+            },
+            onCancel = {
+                // Отмена мастера: полностью пропускаем оба шага.
+                prefs.wizardCompleted = true
+                prefs.wizardHost = curHost
+                appStage = 3
+                tab = 1
+            }
+        )
+        return
+    }
+    if (appStage == 2) {
+        SetupBypassScreen(
+            host = curHost,
+            sshPort = prefs.sshPort,
+            sshUser = prefs.sshUser,
+            sshPass = prefs.sshPass,
+            prefs = prefs,
+            onFinished = {
+                prefs.wizardCompleted = true
+                prefs.wizardHost = curHost
+                appStage = 3
+                tab = 1
+            },
+            onSkip = {
+                prefs.wizardCompleted = true
+                prefs.wizardHost = curHost
+                appStage = 3
+                tab = 1
+            }
+        )
+        return
     }
 
     Scaffold(
