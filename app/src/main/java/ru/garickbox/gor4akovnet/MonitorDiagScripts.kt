@@ -369,15 +369,21 @@ EOF
                 echo "ERR: /opt держит раздел media §MEDIA_NAME — initialize снесёт Entware. Отказ."
                 exit 1
               fi
-              echo "[i] Раздел §dev принадлежит media §MEDIA_NAME (UUID=§MY_UUID)"
-              echo "[i] По мануалу 3.105: media §MEDIA_NAME initialize ext4 (swap+ext4 заново)"
-              LD_LIBRARY_PATH= /bin/ndmc -c "media §MEDIA_NAME initialize ext4" 2>&1
-              LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1 || true
-              echo "OK: media §MEDIA_NAME инициализирована в ext4 (swap+ext4)."
-              echo "    NDMS размечает в фоне — show media через 10-20 сек."
-              exit 0
+              echo "[i] media §MEDIA_NAME (UUID=§MY_UUID)"
+              # Мануал 3.178.83 (стр. 693): initialize-supported — ПОВТОРЯЮЩИЕСЯ
+              # строки «initialize-supported: <fs>», по одной на тип. Пусто = не поддерживает.
+              INIT_SUP=§(LD_LIBRARY_PATH= /bin/ndmc -c "show media §MEDIA_NAME" 2>/dev/null | awk '/^[[:space:]]*initialize-supported:/{sub(/^[^:]*:[[:space:]]*/,"");gsub(/[ \t\r]/,"");if(§0!="")print §0}')
+              if echo "§INIT_SUP" | grep -qix 'ext4'; then
+                echo "[i] initialize-supported=«§INIT_SUP» → media §MEDIA_NAME initialize ext4"
+                LD_LIBRARY_PATH= /bin/ndmc -c "media §MEDIA_NAME initialize ext4" 2>&1
+                LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1 || true
+                echo "OK: media §MEDIA_NAME инициализирована. NDMS размечает в фоне 10-20 сек."
+                exit 0
+              fi
+              echo "[i] initialize-supported=«§{INIT_SUP:-пусто}» без ext4 → fallback mkfs.ext4"
+            else
+              echo "[i] UUID раздела не определён — fallback на mkfs.ext4"
             fi
-            echo "[i] UUID раздела не определён — fallback на mkfs.ext4"
             if ! command -v mkfs.ext4 >/dev/null 2>&1 && ! command -v mke2fs >/dev/null 2>&1; then
               opkg update >/dev/null 2>&1 && opkg install e2fsprogs >/dev/null 2>&1 || true
             fi
