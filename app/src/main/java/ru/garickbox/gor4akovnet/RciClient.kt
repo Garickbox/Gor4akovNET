@@ -487,10 +487,31 @@ object RciClient {
         val trimmed = raw.trim()
         if (trimmed.isBlank()) return result
 
+        // Разбор поля "supported" — может быть JSON-массив или строка через запятую
+        fun parseListField(obj: JSONObject, key: String): List<String> {
+            val arr = obj.optJSONArray(key)
+            if (arr != null) {
+                val out = mutableListOf<String>()
+                for (i in 0 until arr.length()) {
+                    val s = arr.optString(i, "").trim()
+                    if (s.isNotBlank()) out.add(s.lowercase())
+                }
+                return out
+            }
+            val s = obj.optString(key, "").trim()
+            if (s.isBlank()) return emptyList()
+            return s.split(',', ' ', ';').map { it.trim().lowercase() }.filter { it.isNotBlank() }
+        }
+
         fun addDevice(devName: String, dev: JSONObject) {
             val isStorage = devName.equals("STORAGE", ignoreCase = true) ||
                 devName.equals("INTERNAL", ignoreCase = true) ||
                 devName.contains("STORAGE", ignoreCase = true)
+
+            // Справочник NDMS 5.1, п. 3.105: initialize-supported живёт на уровне media
+            // (а не partition). Для Asolid USB_0114 часто пусто — тогда initialize не работает.
+            val initSupportedMedia = parseListField(dev, "initialize-supported")
+                .ifEmpty { parseListField(dev, "initialize_supported") }
 
             fun addPart(uuidKey: String, p: JSONObject) {
                 val fs = p.optString("fstype", p.optString("fs", p.optString("filesystem", "")))
@@ -498,6 +519,13 @@ object RciClient {
                 val total = rawTotal / 1024L / 1024L
                 val free = p.optLong("free", 0L) / 1024L / 1024L
                 val label = p.optString("label", p.optString("name", uuidKey)).ifBlank { devName }
+                // П. 3.107: format-supported — на уровне partition (не media).
+                val fmtSupported = parseListField(p, "format-supported")
+                    .ifEmpty { parseListField(p, "format_supported") }
+                // used-by: cifs/opkg/dlna — на уровне partition. Если содержит "opkg",
+                // этот раздел держит Entware (/opt), форматировать НЕЛЬЗЯ.
+                val usedByList = parseListField(p, "used-by")
+                    .ifEmpty { parseListField(p, "used_by") }
                 result.add(
                     StorageMedia(
                         name = devName,
@@ -508,7 +536,10 @@ object RciClient {
                         freeMb = free,
                         isUsb = !isStorage,
                         isExt4 = fs.equals("ext4", ignoreCase = true) || (isStorage && fs.isBlank()),
-                        isInternalStorage = isStorage
+                        isInternalStorage = isStorage,
+                        initializeSupported = initSupportedMedia,
+                        formatSupported = fmtSupported,
+                        usedBy = usedByList
                     )
                 )
             }
@@ -622,14 +653,57 @@ object RciClient {
             if (clean.isBlank()) error("Не указано имя накопителя (например Media0)")
             val s = RciSession(host, user, pass)
             s.ensureAuth()
+
+            // --- ЗАЩИТА 1: читаем show media и проверяем раздел ---
+            // Справочник NDMS 5.1, п. 3.105: initialize УДАЛЯЕТ старую таблицу разделов,
+            // создаёт заново swap+ext4/ntfs. Если раздел держит Entware (used-by: opkg)
+            // или CIFS (used-by: cifs) — initialize снесёт их начисто.
+            val mediaRaw = runCatching { s.request("/rci/show/media") }.getOrDefault("")
+            val parts = parseMedia(mediaRaw).filter { it.name == clean }
+            if (parts.isEmpty()) error("Накопитель $clean не найден в show media")
+            val usedByList = parts.flatMap { it.usedBy }.distinct()
+            if (usedByList.contains("opkg")) {
+                error(
+                    "Раздел $clean используется для Entware (/opt). " +
+                        "Форматирование УДАЛИТ ВСЕ пакеты (/opt/*). Отказ. " +
+                        "Сначала отвяжите opkg: no opkg disk."
+                )
+            }
+            if (usedByList.contains("cifs")) {
+                error("Раздел $clean используется для CIFS (общая папка). Отвяжите CIFS перед форматированием.")
+            }
+
+            // --- ЗАЩИТА 2: проверяем, что media поддерживает initialize ---
+            // П. 3.105 (стр. 475): "Поддерживаемые файловые системы можно проверить
+            // в строке initialize-supported". Пусто = initialize НЕ работает на этой флешке
+            // (например Asolid USB_0114 — только NTFS, без ext4).
+            val initSupported = parts.flatMap { it.initializeSupported }.distinct()
+            if (initSupported.isEmpty()) {
+                error(
+                    "Накопитель $clean не поддерживает initialize (initialize-supported пусто). " +
+                        "Это флешка или контроллер, где NDMS не умеет пересобирать разделы. " +
+                        "Варианты: другая флешка ИЛИ форматирование в ext4 вручную через SSH+mkfs.ext4."
+                )
+            }
+            val preset = if (initSupported.contains("ext4")) "ext4"
+                else if (initSupported.contains("ntfs")) "ntfs"
+                else initSupported.first()
+            if (preset != "ext4") {
+                error(
+                    "Накопитель $clean не поддерживает ext4 (доступно только: ${initSupported.joinToString(", ")}). " +
+                        "Entware требует ext4 для /opt. Используйте другую флешку."
+                )
+            }
+
+            // --- Собственно initialize ---
             val (ok, errs) = s.parseCliChecked(
-                listOf("media $clean initialize ext4", "system configuration save"),
-                readTimeoutMs = 30000
+                listOf("media $clean initialize $preset", "system configuration save"),
+                readTimeoutMs = 120000
             )
             if (errs.isNotEmpty() || ok == 0) {
-                error(errs.firstOrNull() ?: "Роутер отклонил media $clean initialize ext4")
+                error(errs.firstOrNull() ?: "Роутер отклонил media $clean initialize $preset")
             }
-            "media $clean инициализирована в ext4 (swap+ext4). NDMS размечает в фоне — show media покажет прогресс через 10-20 сек."
+            "media $clean инициализирована в $preset (swap+ext4). NDMS размечает в фоне — show media покажет прогресс через 10-30 сек."
         }
     }
 
@@ -702,6 +776,25 @@ object RciClient {
             if (installerUrls.isEmpty()) error("Список URL installer пуст")
             val s = RciSession(host, user, pass)
             s.ensureAuth()
+
+            // --- ЗАЩИТА ОТ ПЕРЕУСТАНОВКИ ---
+            // Если opkg disk уже настроен И :222 живой — Entware уже работает.
+            // Переустановка снесла бы пакеты (opkg update + install заново = 20-60 мин).
+            // Если :222 мёртв, но opkg disk есть — только перезапускаем initrc (быстро).
+            val preCfg = runCatching { s.getRunningConfigText() }.getOrDefault("")
+            val existingDisk = preCfg.lines().firstOrNull { it.trim().startsWith("opkg disk ") }?.trim() ?: ""
+            val ssh222Pre = Gboxcore.probeTCP(host, 222, 2500)
+            if (existingDisk.isNotBlank() && ssh222Pre) {
+                return@runCatching "Entware уже установлен и работает ($existingDisk, SSH :222 открыт). Переустановка не нужна."
+            }
+            if (existingDisk.isNotBlank() && !ssh222Pre) {
+                s.parseCliChecked(
+                    listOf("opkg initrc /opt/etc/init.d/rc.unslung", "system configuration save"),
+                    readTimeoutMs = 20000
+                )
+                return@runCatching "opkg disk уже настроен ($existingDisk). Перезапустил initrc. Ждите 30-60 сек, затем проверьте SSH :222."
+            }
+
             var lastErr = ""
             for (url in installerUrls) {
                 val cmds = listOf(

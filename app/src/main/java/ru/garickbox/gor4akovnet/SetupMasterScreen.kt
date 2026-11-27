@@ -60,8 +60,14 @@ fun SetupMasterScreen(
                 ?: usbMedia.firstOrNull()
         )
     }
-    // Текущее состояние флешки (может измениться после инициализации)
-    var mediaReady by remember { mutableStateOf(selectedMedia?.isExt4 == true) }
+    // Готово если: ext4 ЛИБО used-by: opkg (раздел УЖЕ держит Entware,
+    // NDMS сам блокирует initialize для него — мануал 3.105).
+    var mediaReady by remember {
+        mutableStateOf(
+            selectedMedia?.isExt4 == true ||
+            selectedMedia?.usedBy?.contains("opkg") == true
+        )
+    }
     // Прогресс
     var busy by remember { mutableStateOf(false) }
     var stage by remember { mutableStateOf(0) }              // 0=ожидание, 1-5=этапы
@@ -289,6 +295,39 @@ fun SetupMasterScreen(
                     }
                     if (!mediaReady) {
                         errMsg = "Сначала подготовьте флешку (ext4)"
+                        return@Button
+                    }
+                    if (ssh222State) {
+                        // Entware уже жив → только добить WebDAV если надо, и на Шаг 2/2.
+                        scope.launch {
+                            busy = true; errMsg = ""; log = emptyList()
+                            try {
+                                if (!webdavState) {
+                                    stage = 1
+                                    addLog("=== Этап 1/4: Включаю обязательные сервисы (WebDAV) ===")
+                                    val r = withContext(Dispatchers.IO) {
+                                        RciClient.enableServicesViaRci(host, user, pass, true, true)
+                                    }
+                                    r.fold(
+                                        onSuccess = { addLog("✓ $it") },
+                                        onFailure = {
+                                            errMsg = "Не удалось включить сервисы: ${it.message}"
+                                            addLog("✗ ${it.message}"); busy = false; stage = 0; return@launch
+                                        }
+                                    )
+                                } else {
+                                    addLog("=== Всё уже включено: WebDAV + SSH :22 + Entware :222 ===")
+                                }
+                                addLog("✓ Entware уже установлен — пропускаю Этапы 2-4")
+                                prefs.entwareInstalled = true
+                                prefs.lastInstallTs = System.currentTimeMillis()
+                                busy = false
+                                onFinished(true, prefs.adguardInstalled)
+                            } catch (e: Exception) {
+                                errMsg = e.message ?: "Ошибка: ${e.javaClass.simpleName}"
+                                addLog("✗ ИСКЛЮЧЕНИЕ: ${e.message}"); busy = false; stage = 0
+                            }
+                        }
                         return@Button
                     }
                     scope.launch {

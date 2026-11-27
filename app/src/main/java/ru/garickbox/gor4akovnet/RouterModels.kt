@@ -16,7 +16,17 @@ data class StorageMedia(
     val freeMb: Long,
     val isUsb: Boolean,
     val isExt4: Boolean,
-    val isInternalStorage: Boolean
+    val isInternalStorage: Boolean,
+    // Справочник NDMS 5.1, п. 3.105 (стр. 475): initialize-supported — список ФС,
+    // которые поддерживает "media <name> initialize <preset>". Пусто = команда НЕ работает
+    // на этой флешке (например Asolid USB_0114 — только NTFS без ext4).
+    val initializeSupported: List<String> = emptyList(),
+    // П. 3.107 (стр. 477): format-supported — список ФС для "media <name> partition
+    // <partition> format <type>". Часто это только swap, даже если initialize-supported пусто.
+    val formatSupported: List<String> = emptyList(),
+    // used-by: cifs / opkg / dlna / ... — что СЕЙЧАС использует раздел. Если содержит
+    // "opkg" — раздел держит Entware (/opt), форматирование УБЬЁТ все пакеты.
+    val usedBy: List<String> = emptyList()
 )
 
 data class RouterPassport(
