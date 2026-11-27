@@ -931,6 +931,14 @@ EOFINI
         [ -x "${'$'}TAR" ] || TAR=tar
         ARCH="/opt/.gbox_restore.tar.gz"
         [ -s "${'$'}ARCH" ] || { echo "ERR: Архив не найден на /opt/.gbox_restore.tar.gz"; exit 1; }
+        # Проверка CRC gzip ДО распаковки: tar -xzf на битом архиве частично
+        # разворачивает файлы, но возвращает rc != 0 — далее pre-snapshot и весь
+        # restore идут по грязному /opt. Лучше явный отказ сразу.
+        if command -v gzip >/dev/null 2>&1 && ! gzip -t "${'$'}ARCH" >/dev/null 2>&1; then
+            echo "FATAL: архив повреждён (gzip CRC fail). Файл оставлен на /opt/.gbox_restore.tar.gz для повторной передачи." >&2
+            echo "PREFLIGHT_FAIL"
+            exit 1
+        fi
         if [ "$mode" = "opt_full" ] || [ "$mode" = "system_full" ]; then
             if [ ! -d /opt/etc ] || [ ! -x /opt/bin/opkg ]; then
                 echo "[FATAL] Entware /opt не смонтирован. Сначала установи Entware на флешку."
