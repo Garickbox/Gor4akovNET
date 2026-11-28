@@ -362,3 +362,147 @@ internal fun RestoreModeDialog(
         confirmButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
     )
 }
+
+internal data class BareRestorePrepState(
+    val entry: BackupEntry,
+    val mode: String,
+    val passport: RouterPassport,
+    val media: StorageMedia
+)
+
+internal suspend fun prepareBareRouterForRestore(
+    ctx: android.content.Context,
+    host: String,
+    prefs: Prefs,
+    initialPassport: RouterPassport,
+    initialMedia: StorageMedia,
+    formatToExt4First: Boolean,
+    onStatus: (String) -> Unit
+) {
+    var curPassport = initialPassport
+    var targetMedia = initialMedia
+
+    if (formatToExt4First) {
+        onStatus("Форматирую ${targetMedia.name} (${targetMedia.label}) в ext4...")
+        val fmtRes = RciClient.initializeMediaExt4(host, prefs.rciUser, prefs.rciPass, targetMedia.name)
+        fmtRes.getOrElse { error("Не удалось отформатировать ${targetMedia.name} в ext4: ${it.message}") }
+        var ready = false
+        for (attempt in 1..20) {
+            kotlinx.coroutines.delay(3000)
+            onStatus("Разметка ext4 на ${targetMedia.name} ($attempt/20)...")
+            val check = RciClient.probePassport(host, prefs.rciUser, prefs.rciPass).getOrNull()
+            if (check != null) {
+                curPassport = check
+                val found = check.mediaList.firstOrNull { it.name == targetMedia.name }
+                if (found?.isExt4 == true) {
+                    targetMedia = found
+                    ready = true
+                    break
+                }
+            }
+        }
+        if (!ready) error("Флешка ${targetMedia.name} не перешла в ext4 за 60 сек.")
+    }
+
+    onStatus("Включаю SSH :22 и WebDAV :80 на роутере...")
+    RciClient.enableServicesViaRci(
+        host, prefs.rciUser, prefs.rciPass,
+        enableSsh = true,
+        enableWebdav = curPassport.hasWebdavComp,
+        enableFtp = false
+    ).getOrElse { error("Не удалось включить SSH/WebDAV через RCI: ${it.message}") }
+
+    curPassport = RciClient.probePassport(host, prefs.rciUser, prefs.rciPass).getOrDefault(curPassport)
+    targetMedia = curPassport.mediaList.firstOrNull { it.name == targetMedia.name } ?: targetMedia
+
+    onStatus("Разворачиваю стартовый Entware на ${targetMedia.label.ifBlank { targetMedia.name }}...")
+    val offRes = OfflineAssets.uploadEntwareViaWebdavAndConfigure(
+        context = ctx,
+        passport = curPassport,
+        user = prefs.rciUser,
+        pass = prefs.rciPass,
+        targetMedia = targetMedia
+    ) { msg -> onStatus(msg) }
+
+    if (offRes.isFailure) {
+        val diskRef = if (targetMedia.uuid.isNotBlank()) "${targetMedia.uuid}:/" else "${targetMedia.label}:/"
+        val urls = listOf(
+            "http://85.192.60.175/entware/${curPassport.entwareArch}/installer/${curPassport.entwareInstaller}",
+            "https://bin.entware.net/${curPassport.entwareArch}/installer/${curPassport.entwareInstaller}"
+        )
+        onStatus("WebDAV недоступен — ставлю базовый Entware по URL на $diskRef...")
+        RciClient.installEntwareViaUrl(host, prefs.rciUser, prefs.rciPass, diskRef, urls)
+            .getOrElse { error("Не удалось поставить стартовый Entware: ${it.message}") }
+    }
+
+    var sshUp = false
+    for (attempt in 1..40) {
+        kotlinx.coroutines.delay(3000)
+        onStatus("Жду запуска SSH :222 ($attempt/40)...")
+        if (kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { gboxcore.Gboxcore.probeTCP(host, 222, 2500) }) {
+            sshUp = true
+            break
+        }
+    }
+    if (!sshUp) error("SSH :222 не поднялся за 120 сек после установки Entware.")
+
+    prefs.sshPort = 222
+    if (prefs.sshUser.isBlank()) prefs.sshUser = "root"
+    val sshCheck = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        runCatching { gboxcore.Gboxcore.runRouterSSH(host, 222, prefs.sshUser, prefs.sshPass, "echo OK") }.getOrDefault("")
+    }
+    if (!sshCheck.contains("OK") && prefs.sshPass != "keenetic") {
+        val defCheck = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching { gboxcore.Gboxcore.runRouterSSH(host, 222, "root", "keenetic", "echo OK") }.getOrDefault("")
+        }
+        if (defCheck.contains("OK")) {
+            prefs.sshUser = "root"
+            prefs.sshPass = "keenetic"
+        }
+    }
+}
+
+@Composable
+internal fun BareRestoreFormatDialog(
+    state: BareRestorePrepState,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onConfirmFormatAndRestore: (BareRestorePrepState) -> Unit
+) {
+    var confirmWord by remember(state) { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("Роутер пустой — нужна подготовка флешки", fontSize = 15.sp, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "На роутере не запущен Entware (SSH :222), а USB-накопитель ${state.media.name} (${state.media.label.ifBlank { state.media.fsType }}, ${state.media.fsType}) не в ext4.",
+                    color = Color(0xFFCBD5E1), fontSize = 12.sp
+                )
+                Text(
+                    "Чтобы откатить бэкап с нуля, программа отформатирует ${state.media.name} в swap + ext4 (ВСЕ ФАЙЛЫ на флешке будут удалены), сама включит SSH/WebDAV, поднимет Entware и сразу раскатает архив.",
+                    color = Color(0xFFFCA5A5), fontSize = 11.5.sp
+                )
+                Text("Введите EXT4 для подтверждения:", color = Color(0xFFE2E8F0), fontSize = 12.sp)
+                OutlinedTextField(
+                    value = confirmWord,
+                    onValueChange = { confirmWord = it },
+                    placeholder = { Text("EXT4") },
+                    singleLine = true,
+                    enabled = !busy,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = !busy && confirmWord.trim().equals("EXT4", true),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                onClick = { onConfirmFormatAndRestore(state) }
+            ) { Text("Подготовить ext4 и откатить", fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) { Text("Отмена") }
+        }
+    )
+}

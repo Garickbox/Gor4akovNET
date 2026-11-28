@@ -208,6 +208,7 @@ fun MonitorPanelScreen(
     var restoreEntry by remember { mutableStateOf<BackupEntry?>(null) }
     var backupPreviewText by remember { mutableStateOf<Pair<String, String>?>(null) }
     var confirmSystemRestore by remember { mutableStateOf<BackupEntry?>(null) }
+    var bareRestorePrep by remember { mutableStateOf<BareRestorePrepState?>(null) }
 
     // SSH dialog
     var showCreds by remember { mutableStateOf(false) }
@@ -639,7 +640,7 @@ fun MonitorPanelScreen(
         }
     }
 
-    fun executeBackupRestore(entry: BackupEntry, mode: String) {
+    fun executeBackupRestore(entry: BackupEntry, mode: String, skipBareCheck: Boolean = false) {
         scope.launch {
             loading = true
             actionErrMsg = ""
@@ -647,6 +648,38 @@ fun MonitorPanelScreen(
             try {
                 val host = prefs.routerHost.ifBlank { "192.168.1.1" }
                 if (entry.filePath.endsWith(".tar.gz", true)) {
+                    if (!skipBareCheck) {
+                        val sshAlive = withContext(Dispatchers.IO) { Gboxcore.probeTCP(host, prefs.sshPort, 1200) }
+                        var optOkNow = false
+                        if (sshAlive) {
+                            val preProbe = runCatching { runSshCmd(prefs, BackupRestoreScripts.OPT_PREFLIGHT_CMD, readOnly = true) }.getOrDefault("")
+                            val pp = preProbe.lines().firstOrNull { it.startsWith("PREFLIGHT|") }?.split("|").orEmpty()
+                            optOkNow = pp.size >= 2 && pp[1] == "1"
+                        }
+                        if (!sshAlive || !optOkNow) {
+                            statusMsg = "Проверяю готовность роутера (RCI)..."
+                            val p = RciClient.probePassport(host, prefs.rciUser, prefs.rciPass).getOrElse {
+                                error("SSH :${prefs.sshPort} недоступен (или /opt не смонтирован), а RCI (:80) не отвечает: ${it.message}")
+                            }
+                            if (!p.hasOpkgComp) {
+                                error("В прошивке роутера отсутствует компонент «opkg». Установите его в настройках роутера и повторите откат.")
+                            }
+                            val usbMedia = p.mediaList.filter { it.isUsb }
+                            if (usbMedia.isEmpty()) {
+                                error("На роутере не запущен Entware (/opt) и не найден USB-накопитель. Подключите флешку и повторите откат.")
+                            }
+                            val target = usbMedia.firstOrNull { it.isExt4 || it.usedBy.contains("opkg") } ?: usbMedia.first()
+                            if (target.isExt4 || target.usedBy.contains("opkg")) {
+                                prepareBareRouterForRestore(ctx, host, prefs, p, target, formatToExt4First = false) { msg ->
+                                    statusMsg = msg
+                                }
+                            } else {
+                                bareRestorePrep = BareRestorePrepState(entry, mode, p, target)
+                                statusMsg = "Требуется подтверждение подготовки флешки (${target.name})"
+                                return@launch
+                            }
+                        }
+                    }
                     // Защита ОЗУ роутера: ДО заливки проверяем что /opt примонтирован на USB (но РАЗРЕШАЕМ откат даже если opkg удалён/сломан!)
                     val preRaw = runSshCmd(prefs, BackupRestoreScripts.OPT_PREFLIGHT_CMD, readOnly = true)
                     val preParts = preRaw.lines().firstOrNull { it.startsWith("PREFLIGHT|") }?.split("|").orEmpty()
@@ -1349,6 +1382,32 @@ fun MonitorPanelScreen(
             onDismiss = { restoreEntry = null },
             onExecuteRestore = { e, mode -> restoreEntry = null; executeBackupRestore(e, mode) },
             onRequestSystemConfirm = { e -> restoreEntry = null; confirmSystemRestore = e }
+        )
+    }
+
+    bareRestorePrep?.let { prep ->
+        BareRestoreFormatDialog(
+            state = prep,
+            busy = loading,
+            onDismiss = { bareRestorePrep = null },
+            onConfirmFormatAndRestore = { confirmed ->
+                bareRestorePrep = null
+                scope.launch {
+                    loading = true
+                    actionErrMsg = ""
+                    try {
+                        val host = prefs.routerHost.ifBlank { "192.168.1.1" }
+                        prepareBareRouterForRestore(ctx, host, prefs, confirmed.passport, confirmed.media, formatToExt4First = true) { msg ->
+                            statusMsg = msg
+                        }
+                        executeBackupRestore(confirmed.entry, confirmed.mode, skipBareCheck = true)
+                    } catch (e: Throwable) {
+                        actionErrMsg = "Ошибка подготовки к откату: ${e.message}"
+                    } finally {
+                        loading = false
+                    }
+                }
+            }
         )
     }
 
