@@ -198,7 +198,6 @@ fun MonitorPanelScreen(
     var fileModalTrunc by remember { mutableStateOf(false) }
     var fileModalOpen by remember { mutableStateOf(false) }
     var newEntryMode by remember { mutableStateOf<String?>(null) }
-    var newEntryName by remember { mutableStateOf("") }
 
     // Backups
     var backupsList by remember { mutableStateOf(prefs.listBackups()) }
@@ -213,12 +212,6 @@ fun MonitorPanelScreen(
     // SSH dialog
     var showCreds by remember { mutableStateOf(false) }
     var confirmReboot by remember { mutableStateOf(false) }
-    var sshHost by remember { mutableStateOf(prefs.routerHost.ifBlank { "192.168.1.1" }) }
-    var sshUser by remember { mutableStateOf(prefs.sshUser) }
-    var sshPort by remember { mutableStateOf(prefs.sshPort.toString()) }
-    var sshPass by remember { mutableStateOf(prefs.sshPass) }
-    var showPass by remember { mutableStateOf(false) }
-    var bruteBusy by remember { mutableStateOf(false) }
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) {
@@ -1189,8 +1182,8 @@ fun MonitorPanelScreen(
                         onOpenDir = ::openDir,
                         onOpenFile = ::openFile,
                         onRestoreBak = { full -> runAction("Откат .bak", MonitorScripts.restoreBakFileCmd(full.removeSuffix(".bak"))) { openDir(dirPath) } },
-                        onNewDir = { newEntryName = ""; newEntryMode = "dir" },
-                        onNewFile = { newEntryName = ""; newEntryMode = "file" },
+                        onNewDir = { newEntryMode = "dir" },
+                        onNewFile = { newEntryMode = "file" },
                         onDeleteEntry = { full -> runAction("Удалить ${full.substringAfterLast('/')}", MonitorScripts.rmPathCmd(full)) { openDir(dirPath) } }
                     )
                     MonitorPage.TORCH -> TorchPage(
@@ -1234,24 +1227,10 @@ fun MonitorPanelScreen(
         }
     }
 
-    // Help Modal
     helpTopic?.let { tp ->
-        AlertDialog(
-            onDismissRequest = { helpTopic = null },
-            title = { Text(tp.title, fontSize = 15.sp, fontWeight = FontWeight.Bold) },
-            text = {
-                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    HelpSection("Что это", tp.what, Color(0xFF93C5FD))
-                    HelpSection("Зачем нужно", tp.why, Color(0xFF86EFAC))
-                    HelpSection("Рекомендация", tp.recommend, Color(0xFFE2E8F0))
-                    if (tp.caution.isNotBlank()) HelpSection("Важно", tp.caution, Color(0xFFFCD34D))
-                }
-            },
-            confirmButton = { TextButton(onClick = { helpTopic = null }) { Text("Понятно") } }
-        )
+        MonitorHelpTopicDialog(tp) { helpTopic = null }
     }
 
-    // Service Inspector Modal
     inspectInitId?.let { id ->
         ServiceInspectorDialog(
             initId = id,
@@ -1275,26 +1254,18 @@ fun MonitorPanelScreen(
         )
     }
 
-    // Dropbear danger confirmation
     confirmStopDropbear?.let { (id, act) ->
-        AlertDialog(
-            onDismissRequest = { confirmStopDropbear = null },
-            title = { Text("Осторожно: SSH Dropbear", fontSize = 15.sp, fontWeight = FontWeight.Bold) },
-            text = { Text("Остановка $id отключит доступ по SSH (:222) — приложение потеряет связь до ручного перезапуска через веб-интерфейс роутера. Рестарт обычно безопасен (1–2 сек). Продолжить?", fontSize = 12.5.sp) },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        confirmStopDropbear = null
-                        runAction("$act $id", MonitorScripts.svcCmd(id, act), MonitorPage.SERVICES, 700L)
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
-                ) { Text("Да, выполнить $act") }
-            },
-            dismissButton = { TextButton(onClick = { confirmStopDropbear = null }) { Text("Отмена") } }
+        MonitorStopDropbearDialog(
+            id = id,
+            act = act,
+            onDismiss = { confirmStopDropbear = null },
+            onConfirm = {
+                confirmStopDropbear = null
+                runAction("$act $id", MonitorScripts.svcCmd(id, act), MonitorPage.SERVICES, 700L)
+            }
         )
     }
 
-    // Client Rich Management Dialog
     selectedDevice?.let { dev ->
         DeviceManageDialog(
             dev = dev,
@@ -1313,66 +1284,16 @@ fun MonitorPanelScreen(
         )
     }
 
-    // Overview Service Pill Modal
     svcModalKey?.let { key ->
-        val guide = MonitorHelp.services[key]
-        val svcObj = overview?.optJSONObject("svc")
-        val isUp = svcObj?.optBoolean(key, false) == true
-        val warpInstalled = svcObj?.optBoolean("warp", false) == true || warpFull?.optJSONObject("status")?.optBoolean("installed") == true
-        val initMap = mapOf(
-            "nfqws2" to "S99zapret2", "adguard" to "S99AdGuardHome",
-            "tg_tunnel" to "S98tg-tunnel", "http_tunnel" to "S97z2k-http-tunnel", "warp" to "S51z2k-warp",
-            "z2k_panel" to "S96z2k-webpanel", "scheduler" to "S99z2k-scheduler"
-        )
-        AlertDialog(
-            onDismissRequest = { svcModalKey = null },
-            title = { Text(guide?.title ?: key, fontSize = 15.sp, fontWeight = FontWeight.Bold) },
-            text = {
-                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        MiniPill(if (isUp) "Активна" else "Остановлена", isUp)
-                        if (!guide?.port.isNullOrBlank()) Text("Порт: ${guide?.port}", color = Color(0xFF94A3B8), fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                    }
-                    if (guide != null) {
-                        HelpSection("Назначение", guide.summary, Color(0xFF93C5FD))
-                        HelpSection("Подробно", guide.details, Color(0xFFE2E8F0))
-                        HelpSection("Совет", guide.tips, Color(0xFFFCD34D))
-                        if (guide.configPath.isNotBlank()) Text("Конфиг: ${guide.configPath}", color = Color(0xFF64748B), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
-                    }
-                    HorizontalDivider(color = Color(0xFF1E293B))
-                    when (key) {
-                        "warp" -> {
-                            if (!warpInstalled) {
-                                Button(onClick = { svcModalKey = null; runAction("Установка WARP", MonitorScripts.warpInstallCmd(), MonitorPage.WARP) }, modifier = Modifier.fillMaxWidth()) {
-                                    Text("Установить Cloudflare WARP", fontSize = 12.sp)
-                                }
-                            } else {
-                                Button(onClick = { svcModalKey = null; runAction(if (isUp) "Стоп WARP" else "Старт WARP", MonitorScripts.toggleZ2k("game-warp", if (isUp) 0 else 1), MonitorPage.WARP) }, modifier = Modifier.fillMaxWidth()) {
-                                    Text(if (isUp) "Выключить WARP" else "Включить WARP", fontSize = 12.sp)
-                                }
-                            }
-                            OutlinedButton(onClick = { svcModalKey = null; page = MonitorPage.WARP; loadPage(MonitorPage.WARP, true) }, modifier = Modifier.fillMaxWidth()) {
-                                Text("Открыть раздел WARP & Игры", fontSize = 11.sp)
-                            }
-                        }
-                        "tg_tunnel" -> {
-                            Button(onClick = { svcModalKey = null; runAction(if (isUp) "Стоп TG туннеля" else "Старт TG туннеля", MonitorScripts.tunnelSetCmd(!isUp), MonitorPage.OVERVIEW) }, modifier = Modifier.fillMaxWidth()) {
-                                Text(if (isUp) "Выключить TG :1443" else "Включить TG :1443", fontSize = 12.sp)
-                            }
-                        }
-                        else -> {
-                            val initId = initMap[key]
-                            if (initId != null) {
-                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    Button(onClick = { svcModalKey = null; runAction("Рестарт $initId", MonitorScripts.svcCmd(initId, "restart"), MonitorPage.OVERVIEW, delayMs = 700L) }, modifier = Modifier.weight(1f)) { Text("Рестарт", fontSize = 11.sp) }
-                                    OutlinedButton(onClick = { svcModalKey = null; runAction("${if (isUp) "Стоп" else "Старт"} $initId", MonitorScripts.svcCmd(initId, if (isUp) "stop" else "start"), MonitorPage.OVERVIEW, delayMs = 700L) }, modifier = Modifier.weight(1f)) { Text(if (isUp) "Стоп" else "Старт", fontSize = 11.sp) }
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = { TextButton(onClick = { svcModalKey = null }) { Text("Закрыть") } }
+        MonitorSvcModalDialog(
+            key = key,
+            overview = overview,
+            warpFull = warpFull,
+            onDismiss = { svcModalKey = null },
+            onWarpAction = { lbl, cmd -> svcModalKey = null; runAction(lbl, cmd, MonitorPage.WARP) },
+            onOpenWarp = { svcModalKey = null; page = MonitorPage.WARP; loadPage(MonitorPage.WARP, true) },
+            onTgTunnelAction = { lbl, cmd -> svcModalKey = null; runAction(lbl, cmd, MonitorPage.OVERVIEW) },
+            onInitSvcAction = { lbl, cmd -> svcModalKey = null; runAction(lbl, cmd, MonitorPage.OVERVIEW, delayMs = 700L) }
         )
     }
 
@@ -1412,185 +1333,78 @@ fun MonitorPanelScreen(
     }
 
     if (expandedErrDialog.isNotBlank()) {
-        AlertDialog(
-            onDismissRequest = { expandedErrDialog = "" },
-            title = { Text("Полный текст ошибки", fontSize = 15.sp, fontWeight = FontWeight.Bold) },
-            text = { MonoBox(expandedErrDialog) },
-            confirmButton = {
-                TextButton(onClick = { clipboard.setText(AnnotatedString(expandedErrDialog)); expandedErrDialog = "" }) { Text("Копировать") }
-            },
-            dismissButton = { TextButton(onClick = { expandedErrDialog = "" }) { Text("Закрыть") } }
+        MonitorExpandedErrDialog(
+            errorText = expandedErrDialog,
+            onCopy = { txt -> clipboard.setText(AnnotatedString(txt)); expandedErrDialog = "" },
+            onDismiss = { expandedErrDialog = "" }
         )
     }
 
     confirmSystemRestore?.let { entry ->
-        AlertDialog(
-            onDismissRequest = { confirmSystemRestore = null },
-            title = { Text("Подтвердите 100% откат", fontSize = 15.sp, fontWeight = FontWeight.Bold) },
-            text = { Text("Будут перезаписаны /opt, пользовательские файлы носителя (если есть в архиве) и конфигурация NDMS (Wi-Fi, политики, порты). Во время применения Wi-Fi может кратковременно переподключиться.", fontSize = 12.sp) },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        confirmSystemRestore = null
-                        executeBackupRestore(entry, "system_full")
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706))
-                ) { Text("Откатить систему полностью") }
-            },
-            dismissButton = { TextButton(onClick = { confirmSystemRestore = null }) { Text("Отмена") } }
+        MonitorConfirmSystemRestoreDialog(
+            entry = entry,
+            onDismiss = { confirmSystemRestore = null },
+            onConfirm = { confirmed ->
+                confirmSystemRestore = null
+                executeBackupRestore(confirmed, "system_full")
+            }
         )
     }
 
     backupPreviewText?.let { (lbl, txt) ->
-        AlertDialog(
-            onDismissRequest = { backupPreviewText = null },
-            title = { Text(lbl, fontSize = 14.sp, fontWeight = FontWeight.Bold) },
-            text = {
-                Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
-                    Text(txt.take(14000), color = Color(0xFFCBD5E1), fontFamily = FontFamily.Monospace, fontSize = 9.5.sp)
-                }
-            },
-            confirmButton = { TextButton(onClick = { backupPreviewText = null }) { Text("Закрыть") } }
-        )
+        MonitorBackupPreviewDialog(lbl, txt) { backupPreviewText = null }
     }
 
     if (fileModalOpen) {
-        AlertDialog(
-            onDismissRequest = { fileModalOpen = false },
-            title = { Text(fileModalPath.substringAfterLast('/'), fontSize = 14.sp, fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(fileModalPath, color = Color(0xFF93C5FD), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
-                    if (fileModalTrunc) Text("Файл > 32 КБ: показана только первая часть (сохранение отключено).", color = Color(0xFFFBBF24), fontSize = 11.sp)
-                    OutlinedTextField(
-                        value = fileModalText,
-                        onValueChange = { if (!fileModalTrunc) fileModalText = it },
-                        readOnly = fileModalTrunc,
-                        textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace, fontSize = 10.sp),
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp, max = 340.dp)
-                    )
-                }
+        MonitorFileEditorDialog(
+            path = fileModalPath,
+            initialText = fileModalText,
+            truncated = fileModalTrunc,
+            onDismiss = { fileModalOpen = false },
+            onRestoreBak = {
+                fileModalOpen = false
+                runAction("Откат .bak", MonitorScripts.restoreBakFileCmd(fileModalPath.removeSuffix(".bak")))
             },
-            confirmButton = {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = {
-                        fileModalOpen = false
-                        runAction("Откат .bak", MonitorScripts.restoreBakFileCmd(fileModalPath.removeSuffix(".bak")))
-                    }) { Text("Откатить .bak", color = Color(0xFFFBBF24), fontSize = 11.sp) }
-                    if (!fileModalTrunc) {
-                        TextButton(onClick = {
-                            val b64 = Base64.encodeToString(fileModalText.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-                            fileModalOpen = false
-                            runAction("Сохранение файла", MonitorScripts.writeFileCmd(fileModalPath, b64))
-                        }) { Text("Сохранить (.bak)") }
-                    }
-                }
-            },
-            dismissButton = { TextButton(onClick = { fileModalOpen = false }) { Text("Закрыть") } }
+            onSave = { b64 ->
+                fileModalOpen = false
+                runAction("Сохранение файла", MonitorScripts.writeFileCmd(fileModalPath, b64))
+            }
         )
     }
 
     newEntryMode?.let { mode ->
-        AlertDialog(
-            onDismissRequest = { newEntryMode = null },
-            title = { Text(if (mode == "dir") "Новая папка" else "Новый файл") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("В папке: $dirPath", fontSize = 11.sp, color = Color(0xFF94A3B8))
-                    OutlinedTextField(value = newEntryName, onValueChange = { newEntryName = it }, singleLine = true, label = { Text("Имя") })
+        MonitorNewEntryDialog(
+            mode = mode,
+            dirPath = dirPath,
+            onDismiss = { newEntryMode = null },
+            onCreate = { nm ->
+                newEntryMode = null
+                if (nm.isNotBlank()) {
+                    val full = if (dirPath == "/") "/$nm" else "$dirPath/$nm"
+                    val cmd = if (mode == "dir") MonitorScripts.mkdirCmd(full) else MonitorScripts.touchFileCmd(full)
+                    runAction(if (mode == "dir") "Создать папку" else "Создать файл", cmd) { openDir(dirPath) }
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val nm = newEntryName.trim().replace("/", "")
-                    newEntryMode = null
-                    if (nm.isNotBlank()) {
-                        val full = if (dirPath == "/") "/$nm" else "$dirPath/$nm"
-                        val cmd = if (mode == "dir") MonitorScripts.mkdirCmd(full) else MonitorScripts.touchFileCmd(full)
-                        runAction(if (mode == "dir") "Создать папку" else "Создать файл", cmd) { openDir(dirPath) }
-                    }
-                }) { Text("Создать") }
-            },
-            dismissButton = { TextButton(onClick = { newEntryMode = null }) { Text("Отмена") } }
+            }
         )
     }
 
     if (showCreds) {
-        AlertDialog(
-            onDismissRequest = { showCreds = false },
-            title = { Text("SSH подключение к роутеру") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(value = sshHost, onValueChange = { sshHost = it }, label = { Text("LAN Host / IP") }, singleLine = true)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(value = sshUser, onValueChange = { sshUser = it }, label = { Text("Логин") }, singleLine = true, modifier = Modifier.weight(1f))
-                        OutlinedTextField(value = sshPort, onValueChange = { sshPort = it }, label = { Text("Порт") }, singleLine = true, modifier = Modifier.width(88.dp))
-                    }
-                    OutlinedTextField(
-                        value = sshPass,
-                        onValueChange = { sshPass = it },
-                        label = { Text("Пароль SSH (Dropbear)") },
-                        singleLine = true,
-                        visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
-                        trailingIcon = {
-                            IconButton(onClick = { showPass = !showPass }) {
-                                Icon(if (showPass) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility, null)
-                            }
-                        }
-                    )
-                    OutlinedButton(
-                        enabled = !bruteBusy,
-                        onClick = {
-                            scope.launch {
-                                bruteBusy = true
-                                val p = sshPort.toIntOrNull() ?: 222
-                                val found = withContext(Dispatchers.IO) {
-                                    runCatching { Gboxcore.tryPasswordsSSH(sshHost.ifBlank { "192.168.1.1" }, p, sshUser, prefs.rciPass) }.getOrNull()
-                                }
-                                if (found != null) {
-                                    sshPass = found
-                                    statusMsg = "Пароль SSH подобран!"
-                                } else {
-                                    actionErrMsg = "Стандартный пароль SSH не подошёл — введите вручную"
-                                }
-                                bruteBusy = false
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        if (bruteBusy) CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
-                        else Icon(Icons.Rounded.Tune, null, Modifier.size(15.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(if (bruteBusy) "Подбор..." else "Автоподбор пароля SSH", fontSize = 11.5.sp)
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    Prefs.setSshHost(ctx, sshHost)
-                    Prefs.setSshUser(ctx, sshUser)
-                    Prefs.setSshPort(ctx, sshPort.toIntOrNull() ?: 222)
-                    Prefs.setSshPass(ctx, sshPass)
-                    showCreds = false
-                    loadPage(page, true)
-                }) { Text("Сохранить") }
-            },
-            dismissButton = { TextButton(onClick = { showCreds = false }) { Text("Отмена") } }
+        MonitorSshCredsDialog(
+            prefs = prefs,
+            onDismiss = { showCreds = false },
+            onStatus = { statusMsg = it },
+            onError = { actionErrMsg = it },
+            onSaved = { showCreds = false; loadPage(page, true) }
         )
     }
 
     if (confirmReboot) {
-        AlertDialog(
-            onDismissRequest = { confirmReboot = false },
-            title = { Text("Перезагрузить роутер?") },
-            text = { Text("Интернет и Wi-Fi пропадут примерно на 1–2 минуты.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmReboot = false
-                    runAction("Перезагрузка роутера", "LD_LIBRARY_PATH= /bin/ndmc -c 'system reboot'")
-                }) { Text("Перезагрузить", color = Color(0xFFFCA5A5)) }
-            },
-            dismissButton = { TextButton(onClick = { confirmReboot = false }) { Text("Отмена") } }
+        MonitorConfirmRebootDialog(
+            onDismiss = { confirmReboot = false },
+            onConfirm = {
+                confirmReboot = false
+                runAction("Перезагрузка роутера", "LD_LIBRARY_PATH= /bin/ndmc -c 'system reboot'")
+            }
         )
     }
 }

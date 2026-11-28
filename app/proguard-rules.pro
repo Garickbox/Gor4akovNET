@@ -33,3 +33,6 @@
 -dontwarn org.jetbrains.annotations.**
 -dontwarn javax.annotation.**
 -dontwarn **.R$*
+
+# Обход бага R8 8.7.x (Google Issue #446814391: VerifyError copy-reference PositiveByteConstant на Compose)
+-dontoptimize
