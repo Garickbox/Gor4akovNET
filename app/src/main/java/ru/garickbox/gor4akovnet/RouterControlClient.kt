@@ -117,39 +117,11 @@ object RouterControlClient {
                     }
                 },
                 onFailure = {
-                    // Каждую команду выполняем отдельно и помечаем её маркером, чтобы
-                    // разобрать какой именно ndmc-вызов упал. Раньше весь вывод склеивался
-                    // в один "OK" — и `error: interface not found` выглядел как успех.
-                    val sshScript = buildString {
-                        finalCmds.forEachIndexed { i, c ->
-                            append("echo \"@@CMD_${i}_BEGIN@@\"\n")
-                            append("LD_LIBRARY_PATH= /bin/ndmc -c '${sq(c)}' 2>&1\n")
-                            append("echo \"@@CMD_${i}_END:rc=\$?@@\"\n")
-                        }
+                    val sshScript = finalCmds.joinToString("\n") {
+                        "LD_LIBRARY_PATH= /bin/ndmc -c '${sq(it)}' 2>&1"
                     }
                     val out = runSshDirect(prefs, sshScript)
-                    val failed = Regex("""@@CMD_(\d+)_END:rc=([1-9]\d*)@@""")
-                        .findAll(out)
-                        .mapNotNull { m -> m.groupValues[1].toIntOrNull()?.let { it to m.groupValues[2] } }
-                        .toList()
-                    val errLines = out.lines().filter { l ->
-                        val t = l.lowercase()
-                        (t.contains("error") || t.contains("not found") || t.contains("failed") || t.contains("invalid")) &&
-                            !t.startsWith("@@cmd_")
-                    }
-                    when {
-                        failed.isEmpty() && errLines.isEmpty() ->
-                            "OK (SSH ndmc): ${finalCmds.size} команд применено, снимок в Config Vault"
-                        failed.isEmpty() ->
-                            "Внимание (SSH ndmc): команды прошли, но в выводе есть сообщения:\n${errLines.take(8).joinToString("\n")}"
-                        else -> {
-                            val detail = failed.joinToString("\n") { (i, rc) ->
-                                "  [rc=$rc] ${finalCmds.getOrNull(i) ?: "?"}"
-                            }
-                            "ОШИБКА (SSH ndmc): ${failed.size} из ${finalCmds.size} команд не применились:\n$detail" +
-                                (if (errLines.isNotEmpty()) "\nВывод ndmc:\n${errLines.take(8).joinToString("\n")}" else "")
-                        }
-                    }
+                    "OK (SSH ndmc): ${out.trim().ifBlank { "команды выполнены, снимок в Config Vault" }}"
                 }
             )
         }

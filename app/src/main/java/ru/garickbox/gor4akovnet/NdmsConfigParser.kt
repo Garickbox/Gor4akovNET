@@ -18,16 +18,7 @@ internal object NdmsConfigParser {
             val indented = cleanEnd.firstOrNull()?.let { it == ' ' || it == '\t' } == true
             val fullCmd = if (indented && block.isNotBlank()) "$block $trimmed" else trimmed
             if (!indented) block = trimmed
-            // Исключения при восстановлении снимка (как в restoreArchiveCmd):
-            //  - user / no user / system mode — не блокируем себя же;
-            //  - opkg disk — привязка флешки делается отдельно по UUID, чужой UUID
-            //    на другом роутере оставит Entware неактивным;
-            //  - interface Bridge0 ip address / mac address — MGMT-LAN, применение
-            //    чужого IP = потеря доступа к роутеру (лечится только сбросом).
-            // Остальные BridgeN и их IP восстанавливаем — это пользовательские сети.
             if (fullCmd.startsWith("user ") || fullCmd.startsWith("no user ") || fullCmd.startsWith("system mode")) continue
-            if (fullCmd.startsWith("opkg disk ") || fullCmd.startsWith("no opkg disk")) continue
-            if (fullCmd.startsWith("interface Bridge0 ip address") || fullCmd.startsWith("interface Bridge0 mac address")) continue
             out.add(fullCmd)
         }
         return out

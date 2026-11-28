@@ -33,7 +33,7 @@ object MonitorDiagScripts {
               *mihomo*|*xkeen*) pat="mihomo" ;;
               *awg*) pat="awg" ;;
             esac
-            pkg=§(grep -lF "§ini" /opt/lib/opkg/info/*.list 2>/dev/null | head -n1 | sed 's#.*/##; s#\.list§##')
+            pkg=§(opkg search "§ini" 2>/dev/null | head -n1 | awk -F' - ' '{print §1}')
             ps w 2>/dev/null > "§{PFX}_ps"
             (netstat -lntp 2>/dev/null || netstat -lnt 2>/dev/null) > "§{PFX}_ns"
             awk -v PAT="§pat" -v PFX="§PFX" '$AWK_ESC BEGIN{
@@ -42,12 +42,13 @@ object MonitorDiagScripts {
                 split(l, a, " ")
                 pid=a[1]
                 if(pid !~ /^[0-9]+§/) continue
-                # /proc/PID/cmdline НЕ читаем: файл разделён NUL-байтами, а busybox awk
-                # падает на них ("Unexpected token") и весь блок молча умирает -> все
-                # службы выглядят остановленными. Имя программы и так есть в полях 5..NF
-                # строки `ps w`, а PAT — это имя (AdGuardHome/nfqws2/dropbear/…), не argv.
                 cmd=""
-                for(i=5;i<=length(a);i++) cmd=(cmd==""?a[i]:cmd" "a[i])
+                cf="/proc/" pid "/cmdline"
+                if((getline cmd < cf) > 0) gsub(/\0/," ",cmd)
+                close(cf)
+                if(cmd==""){
+                  for(i=5;i<=length(a);i++) cmd=(cmd==""?a[i]:cmd" "a[i])
+                }
                 if(pat!="" && index(tolower(cmd), pat)>0){
                   rss=0
                   stf="/proc/" pid "/status"
@@ -67,7 +68,7 @@ object MonitorDiagScripts {
                 if(pt !~ /^[0-9]+§/) continue
                 hit=0
                 if(pat!="" && index(tolower(l), pat)>0) hit=1
-                else if(pat=="adguardhome" && (pt=="3000" || pt=="3080" || pt=="53")) hit=1
+                else if(pat=="adguardhome" && (pt=="3000" || pt=="53")) hit=1
                 else if((pat=="lighttpd" || pat=="z2k-webpanel") && pt=="8088") hit=1
                 else if(pat=="tg-mtproxy" && pt=="1443") hit=1
                 else if((pat=="z2k-http" || pat=="z2k-http-tunnel") && pt=="1444") hit=1
@@ -164,7 +165,7 @@ object MonitorDiagScripts {
         ipv6_glob=§(ip -6 addr show scope global 2>/dev/null | awk '$AWK_ESC /inet6/{printf "%s\"%s\"", (n++?",":""), esc(§2)}' | sed 's/^/[/;s/$/]/')
         [ -n "§ipv6_glob" ] || ipv6_glob='[]'
         egress_json=""
-        for ifc in §(ip -o -4 addr show up 2>/dev/null | awk '{print §2}' | grep -E '^(eth[0-9]+(\.[0-9]+)?|ppp[0-9]+|tun[0-9]+|nwg[0-9]+)' | head -n 6); do
+        for ifc in §(ip -o -4 addr show up 2>/dev/null | awk '{print §2}' | grep -vE '^(lo|br|ra|rai|wlan|eth|nwg)' | head -n 6); do
           ip_out=§(curl -fsS --interface "§ifc" --max-time 3 https://api.ipify.org 2>/dev/null || true)
           ifc_e=§(printf '%s' "§ifc" | awk '$AWK_ESC {print esc(§0)}')
           ip_e=§(printf '%s' "§ip_out" | awk '$AWK_ESC {print esc(§0)}')
@@ -346,44 +347,6 @@ EOF
             if [ -n "§mnt" ]; then
               umount "§mnt" 2>&1 || umount -l "§mnt" 2>&1 || true
             fi
-            # По Справочнику NDMS 5.1 п. 3.105: media <name> initialize ext4 удаляет таблицу
-            # разделов и создаёт заново (swap+ext4). Если /opt живёт на этой media — отказ,
-            # иначе initialize снесёт Entware вместе со всей флешкой.
-            MY_UUID=""
-            if command -v blkid >/dev/null 2>&1; then
-              MY_UUID=§(blkid -s UUID -o value "§dev" 2>/dev/null | head -n1)
-            elif [ -x /opt/bin/blkid ]; then
-              MY_UUID=§(/opt/bin/blkid -s UUID -o value "§dev" 2>/dev/null | head -n1)
-            fi
-            MEDIA_NAME=""
-            if [ -n "§MY_UUID" ] && [ -x /bin/ndmc ]; then
-              U_UP=§(printf '%s' "§MY_UUID" | tr 'a-f' 'A-F')
-              MEDIA_NAME=§(LD_LIBRARY_PATH= /bin/ndmc -c "show media" 2>/dev/null | awk -v U="§U_UP" '
-                /name:/ && cur=="" { cur=§2; gsub(/[ \t\r]/,"",cur) }
-                { u=toupper(§0); if (index(u, U) > 0 && cur != "") { print cur; exit } }
-              ')
-            fi
-            if [ -n "§MEDIA_NAME" ]; then
-              base=§(printf '%s' "§dev" | sed 's/[0-9]*§//')
-              if awk -v B="§base" '§1 ~ ("^"B"[0-9]+§") && §2 == "/opt" { f=1 } END { exit (f?0:1) }' /proc/mounts 2>/dev/null; then
-                echo "ERR: /opt держит раздел media §MEDIA_NAME — initialize снесёт Entware. Отказ."
-                exit 1
-              fi
-              echo "[i] media §MEDIA_NAME (UUID=§MY_UUID)"
-              # Мануал 3.178.83 (стр. 693): initialize-supported — ПОВТОРЯЮЩИЕСЯ
-              # строки «initialize-supported: <fs>», по одной на тип. Пусто = не поддерживает.
-              INIT_SUP=§(LD_LIBRARY_PATH= /bin/ndmc -c "show media §MEDIA_NAME" 2>/dev/null | awk '/^[[:space:]]*initialize-supported:/{sub(/^[^:]*:[[:space:]]*/,"");gsub(/[ \t\r]/,"");if(§0!="")print §0}')
-              if echo "§INIT_SUP" | grep -qix 'ext4'; then
-                echo "[i] initialize-supported=«§INIT_SUP» → media §MEDIA_NAME initialize ext4"
-                LD_LIBRARY_PATH= /bin/ndmc -c "media §MEDIA_NAME initialize ext4" 2>&1
-                LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1 || true
-                echo "OK: media §MEDIA_NAME инициализирована. NDMS размечает в фоне 10-20 сек."
-                exit 0
-              fi
-              echo "[i] initialize-supported=«§{INIT_SUP:-пусто}» без ext4 → fallback mkfs.ext4"
-            else
-              echo "[i] UUID раздела не определён — fallback на mkfs.ext4"
-            fi
             if ! command -v mkfs.ext4 >/dev/null 2>&1 && ! command -v mke2fs >/dev/null 2>&1; then
               opkg update >/dev/null 2>&1 && opkg install e2fsprogs >/dev/null 2>&1 || true
             fi
@@ -392,10 +355,10 @@ EOF
             elif command -v mke2fs >/dev/null 2>&1; then
               mke2fs -t ext4 -F -L OPKG "§dev" 2>&1
             else
-              echo "ERR: ни media initialize, ни mkfs.ext4 недоступны"
+              echo "ERR: mkfs.ext4 не найден (установите пакет e2fsprogs)"
               exit 1
             fi
-            echo "OK: Раздел §dev отформатирован в ext4 через mkfs.ext4 (метка OPKG, FALLBACK)"
+            echo "OK: Раздел §dev отформатирован в ext4 (метка OPKG)"
             """
         )
     }

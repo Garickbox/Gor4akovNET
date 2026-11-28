@@ -1,5 +1,3 @@
-@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
-
 package ru.garickbox.gor4akovnet
 
 import androidx.compose.foundation.BorderStroke
