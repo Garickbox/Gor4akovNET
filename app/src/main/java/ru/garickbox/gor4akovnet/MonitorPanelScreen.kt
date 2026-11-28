@@ -134,6 +134,13 @@ private fun parseJsonOut(raw: String, tag: String): JSONObject {
 
 // Shared formatters and Monitor UI helpers live in MonitorComponents.kt
 
+private fun summarizeRouterError(raw: String?): String {
+    val s = raw.orEmpty().trim()
+    if (s.isBlank()) return "Неизвестная ошибка"
+    val fatals = s.lines().map { it.trim() }.filter { it.contains("FATAL:", true) || it.contains("[FATAL]", true) || it.startsWith("ERR:", true) }
+    return if (fatals.isNotEmpty()) fatals.joinToString(" | ") else s
+}
+
 private fun decodeB64(b64: String): String {
     if (b64.isBlank()) return ""
     return runCatching { String(Base64.decode(b64, Base64.DEFAULT), Charsets.UTF_8) }.getOrDefault("")
@@ -233,7 +240,8 @@ fun MonitorPanelScreen(
     // Backups
     var backupsList by remember { mutableStateOf(prefs.listBackups()) }
     var backupEst by remember { mutableStateOf("") }
-    var includeMediaBackup by remember { mutableStateOf(false) }
+    var includeMediaBackup by remember { mutableStateOf(true) }
+    var expandedErrDialog by remember { mutableStateOf("") }
     var restoreEntry by remember { mutableStateOf<BackupEntry?>(null) }
     var backupPreviewText by remember { mutableStateOf<Pair<String, String>?>(null) }
     var confirmSystemRestore by remember { mutableStateOf<BackupEntry?>(null) }
@@ -600,19 +608,25 @@ fun MonitorPanelScreen(
                 // Валидный полный бэкап /opt не может быть меньше 1 МБ (Entware ~50+ МБ
                 // сжатого). Порог 4 КБ пропускал пустой tar от упавшего busybox.
                 if (writtenBytes > 1_000_000L) {
-                    val b = prefs.commitStreamedBackupFile(
-                        file = tempFile,
-                        label = if (includeMediaBackup) "Полный 100% + USB" else "Полный снимок v2",
-                        model = model,
-                        format = "tar_v2",
-                        isProtected = false
-                    )
-                    onBackupSaved(b)
-                    refreshBackups()
-                    statusMsg = if (includeMediaBackup) {
-                        "Бэкап сохранён: ${formatSizeMb(b.sizeBytes)} (USB — если на флешке только /opt, размер не растёт)"
+                    val crcRes = withContext(Dispatchers.IO) { prefs.verifyGzipArchive(tempFile) }
+                    if (crcRes.isFailure) {
+                        tempFile.delete()
+                        actionErrMsg = "Архив бэкапа повреждён (gzip CRC fail): ${crcRes.exceptionOrNull()?.message}"
                     } else {
-                        "Бэкап сохранён: ${formatSizeMb(b.sizeBytes)}"
+                        val b = prefs.commitStreamedBackupFile(
+                            file = tempFile,
+                            label = if (includeMediaBackup) "Полный 100% + USB" else "Полный снимок v2",
+                            model = model,
+                            format = "tar_v2",
+                            isProtected = false
+                        )
+                        onBackupSaved(b)
+                        refreshBackups()
+                        statusMsg = if (includeMediaBackup) {
+                            "Бэкап сохранён: ${formatSizeMb(b.sizeBytes)} (включая все файлы USB и корень /opt)"
+                        } else {
+                            "Бэкап сохранён: ${formatSizeMb(b.sizeBytes)}"
+                        }
                     }
                 } else {
                     tempFile.delete()
@@ -620,7 +634,7 @@ fun MonitorPanelScreen(
                 }
             } catch (e: Throwable) {
                 tempFile.delete()
-                actionErrMsg = "Ошибка бэкапа: ${e.message}"
+                actionErrMsg = "Ошибка бэкапа: ${summarizeRouterError(e.message)}"
             } finally {
                 loading = false
             }
@@ -665,6 +679,9 @@ fun MonitorPanelScreen(
                         Gboxcore.pushFileSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, entry.filePath, "/opt/.gbox_restore.tar.gz")
                     }
                     val out = runSshCmd(prefs, GboxScripts.restoreArchiveCmd(mode), readOnly = false)
+                    if (out.contains("PREFLIGHT_FAIL") || out.contains("[FATAL]") || out.contains("FATAL:")) {
+                        error(summarizeRouterError(out))
+                    }
                     statusMsg = out.lines().lastOrNull { it.isNotBlank() } ?: "Откат завершён"
                 } else {
                     val cfgText = withContext(Dispatchers.IO) { prefs.readBackupText(entry) }
@@ -779,7 +796,14 @@ fun MonitorPanelScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(activeErr, color = Color(0xFFFDE68A), fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                Text(
+                    activeErr,
+                    color = Color(0xFFFDE68A),
+                    fontSize = 10.sp,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f).clickable { expandedErrDialog = activeErr }
+                )
                 Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                     TextButton(onClick = { actionErrMsg = ""; loadPage(page, true) }, contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp), modifier = Modifier.height(24.dp)) {
                         Text("Повтор", fontSize = 10.sp, color = Color(0xFF93C5FD))
@@ -1367,6 +1391,18 @@ fun MonitorPanelScreen(
                 }
             },
             confirmButton = { TextButton(onClick = { restoreEntry = null }) { Text("Отмена") } }
+        )
+    }
+
+    if (expandedErrDialog.isNotBlank()) {
+        AlertDialog(
+            onDismissRequest = { expandedErrDialog = "" },
+            title = { Text("Полный текст ошибки", fontSize = 15.sp, fontWeight = FontWeight.Bold) },
+            text = { MonoBox(expandedErrDialog) },
+            confirmButton = {
+                TextButton(onClick = { clipboard.setText(AnnotatedString(expandedErrDialog)); expandedErrDialog = "" }) { Text("Копировать") }
+            },
+            dismissButton = { TextButton(onClick = { expandedErrDialog = "" }) { Text("Закрыть") } }
         )
     }
 
@@ -2886,7 +2922,7 @@ private fun BackupsPage(
 ) {
     MiniCard("Полный 100% потоковый бэкап v2", { onTopicHelp("backups") }) {
         Text("Включает running/startup-config, весь /opt/etc (Dropbear SSH ключи, AdGuard, конфиги), /opt/zapret2, /opt/root, /opt/home, Cron и при необходимости все файлы USB/Storage.", color = Color(0xFF94A3B8), fontSize = 10.sp)
-        MiniSwitch("Включить файлы USB / Storage (100%)", "Может занять много памяти телефона — оцените размер ниже", includeMedia) { v ->
+        MiniSwitch("Включить ВСЕ файлы USB / Storage (включая корень)", "Рекомендуется — захватывает все скрипты и папки вне /opt", includeMedia) { v ->
             onToggleMedia(v == 1)
         }
         if (estText.isNotBlank()) {

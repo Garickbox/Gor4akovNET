@@ -101,27 +101,17 @@ fun SetupsScreen(
             // упираться в «нет /opt → RCI fallback → всё равно пусто» незачем.
             if (optAutoBackup) {
                 val tmpFile = prefs.allocateStreamBackupTempFile("Полный_до_Gor4akovNET", "tar.gz")
+                var streamErr: Throwable? = null
                 val streamedSize = withContext(Dispatchers.IO) {
                     runCatching {
                         Gboxcore.pullFileSSH(host, prefs.sshPort, prefs.sshUser, prefs.sshPass, GboxScripts.FULL_BACKUP_TAR_CMD, tmpFile.absolutePath)
-                    }.getOrDefault(0L)
+                    }.onFailure { streamErr = it }.getOrDefault(0L)
                 }
-                // CRC-верификация ДО коммита: если SSH оборвался, файл < streamedSize,
-                // но всё равно > 1 МБ. GZIPInputStream бросит IOException при CRC fail.
+                if (streamErr != null) {
+                    appendLog("[WARN] Полный tar.gz бэкап недоступен (${streamErr?.message?.take(220)}) — пробую RCI конфиг...")
+                }
                 val crcOk = if (streamedSize > 1_000_000L) withContext(Dispatchers.IO) {
-                    runCatching {
-                        java.util.zip.GZIPInputStream(tmpFile.inputStream()).use { ins ->
-                            val buf = ByteArray(64 * 1024)
-                            var total = 0L
-                            while (true) {
-                                val n = ins.read(buf)
-                                if (n < 0) break
-                                total += n
-                                if (total > 1_500_000_000L) error("backup > 1.5GB")
-                            }
-                        }
-                        true
-                    }.getOrDefault(false)
+                    prefs.verifyGzipArchive(tmpFile).isSuccess
                 } else false
                 var backupOk = false
                 if (streamedSize > 1_000_000L && !crcOk) {

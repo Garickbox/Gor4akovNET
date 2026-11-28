@@ -198,9 +198,26 @@ object GboxScripts {
             set +e
             export PATH="/opt/bin:/opt/sbin:/opt/usr/bin:/opt/usr/sbin:/bin:/sbin:/usr/bin:/usr/sbin"
             export TMPDIR=/opt/tmp
-            # GNU tar обязателен: busybox tar в /opt/usr/bin НЕ умеет -c и --strip-components
-            TAR=/opt/bin/tar
-            [ -x "${'$'}TAR" ] || TAR=tar
+${BackupRestoreScripts.SH_ARCHIVER_HELPERS}
+            ensure_archiver 0
+            _gbox_unpack_strip1() {
+                _src_tgz="${'$'}1"; _dst_dir="${'$'}2"
+                mkdir -p "${'$'}_dst_dir"
+                if [ "${'$'}_tar_can_strip" = "1" ]; then
+                    "${'$'}TAR" -xzf "${'$'}_src_tgz" -C "${'$'}_dst_dir" --strip-components=1
+                else
+                    _utmp="${'$'}TMPDIR/.gbox_u1_${'$'}${'$'}"
+                    rm -rf "${'$'}_utmp" && mkdir -p "${'$'}_utmp"
+                    (cd "${'$'}_utmp" && "${'$'}TAR" -xzf "${'$'}_src_tgz") || { rm -rf "${'$'}_utmp"; return 1; }
+                    _top="${'$'}(find "${'$'}_utmp" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+                    if [ -n "${'$'}_top" ]; then
+                        cp -a "${'$'}_top"/. "${'$'}_dst_dir"/
+                    else
+                        cp -a "${'$'}_utmp"/. "${'$'}_dst_dir"/
+                    fi
+                    rm -rf "${'$'}_utmp"
+                fi
+            }
             SAFE_SSID=$qSsid
             SAFE_PASS=$qPass
             ISO_FLAG='$isoFlag'
@@ -226,7 +243,7 @@ object GboxScripts {
                 printf 'src/gz gor4akov_local file:///opt/gor4akov-offline/ipks\n' > /opt/etc/opkg.conf.local
                 grep -E '^(dest|option|arch)' /opt/etc/opkg.conf >> /opt/etc/opkg.conf.local 2>/dev/null || true
                 opkg -f /opt/etc/opkg.conf.local update >/dev/null 2>&1 || true
-                for pkg in libmnl libnetfilter-queue libnfnetlink libcap zlib curl flock unzip iptables xtables-addons_legacy kmod_ndms ipset openssl-util; do
+                for pkg in libmnl libnetfilter-queue libnfnetlink libcap zlib curl flock unzip tar gzip iptables xtables-addons_legacy kmod_ndms ipset openssl-util; do
                     if ! opkg list-installed | grep -q "^${'$'}{pkg} "; then
                         opkg -f /opt/etc/opkg.conf.local install "${'$'}pkg" >/dev/null 2>&1 || opkg -f /opt/etc/opkg.conf.local install /opt/gor4akov-offline/ipks/"${'$'}pkg"_*.ipk >/dev/null 2>&1 || true
                     fi
@@ -245,7 +262,7 @@ object GboxScripts {
                 echo "[OK] Критичные пакеты развёрнуты локально из APK"
             else
                 opkg update || true
-                opkg install libmnl libnetfilter-queue libnfnetlink libcap zlib curl flock unzip iptables xtables-addons_legacy kmod_ndms ipset openssl-util || true
+                opkg install libmnl libnetfilter-queue libnfnetlink libcap zlib curl flock unzip tar gzip iptables xtables-addons_legacy kmod_ndms ipset openssl-util || true
                 missing_pkgs=""
                 for pkg in libmnl libnetfilter-queue libnfnetlink libcap iptables; do
                     if ! opkg list-installed 2>/dev/null | grep -q "^${'$'}{pkg} "; then
@@ -259,6 +276,7 @@ object GboxScripts {
                 fi
             fi
 
+            _gbox_scan_archivers
             echo "=== [2/6] Распаковка z2k-enhanced и nfqws2 ==="
             WORK_STAGE="/opt/z2k-work"
             rm -rf "${'$'}WORK_STAGE" /opt/gor4akov-offline/z2k_src
@@ -269,13 +287,13 @@ object GboxScripts {
                     echo "PREFLIGHT_FAIL"
                     exit 1
                 fi
-                ${'$'}{TAR} -xzf /opt/gor4akov-offline/z2k-repo.tar.gz -C /opt/gor4akov-offline/z2k_src --strip-components=1
+                _gbox_unpack_strip1 /opt/gor4akov-offline/z2k-repo.tar.gz /opt/gor4akov-offline/z2k_src
                 cp -a /opt/gor4akov-offline/z2k_src/* "${'$'}WORK_STAGE/"
                 echo "[OK] z2k-enhanced подготовлен локально"
             else
                 echo "[INFO] Пробую скачать z2k-enhanced из сети..."
                 curl -fsSL "https://github.com/necronicle/z2k/archive/refs/heads/z2k-enhanced.tar.gz" -o /opt/gor4akov-offline/z2k-repo.tar.gz && \
-                ${'$'}{TAR} -xzf /opt/gor4akov-offline/z2k-repo.tar.gz -C "${'$'}WORK_STAGE" --strip-components=1
+                _gbox_unpack_strip1 /opt/gor4akov-offline/z2k-repo.tar.gz "${'$'}WORK_STAGE"
             fi
             if [ -s /opt/gor4akov-offline/openwrt-embedded.tar.gz ]; then
                 cp -f /opt/gor4akov-offline/openwrt-embedded.tar.gz "${'$'}WORK_STAGE/zapret2_build/openwrt-embedded.tar.gz"
@@ -734,431 +752,16 @@ EOFINI
         echo "ROLLBACK_OK"
     """.trimIndent()
 
-    val ESTIMATE_BACKUP_SIZE_CMD = """
-        set +e
-        # /opt целиком (все пакеты и файлы пользователя) минус мусор установки и логи.
-        core_kb=${'$'}(du -sk /opt 2>/dev/null | awk '{print ${'$'}1+0}')
-        for _ex in /opt/gor4akov-offline /opt/z2k-work /opt/z2k-rollback /opt/tmp /opt/var/log; do
-            [ -e "${'$'}_ex" ] && core_kb=${'$'}((core_kb - ${'$'}(du -sk "${'$'}_ex" 2>/dev/null | awk '{print ${'$'}1+0}')))
-        done
-        [ "${'$'}core_kb" -lt 0 ] && core_kb=0
-        media_kb=0
-        mounts=""
-        opt_dev=${'$'}(awk '${'$'}2=="/opt"{print ${'$'}1; exit}' /proc/mounts 2>/dev/null)
-        opt_ino=${'$'}(ls -id /opt 2>/dev/null | awk '{print ${'$'}1}')
-        MNT_LIST="/tmp/.gbox_mnts_${'$'}${'$'}"
-        awk '{
-            gsub(/\\040/," ",${'$'}2)
-            if (${'$'}2 ~ /^\/(tmp\/mnt|media|mnt)\/.+/ || ${'$'}2 == "/storage") {
-                if (${'$'}3 != "tmpfs" && ${'$'}3 != "devtmpfs" && ${'$'}3 != "proc" && ${'$'}3 != "sysfs") print ${'$'}2
-            }
-        }' /proc/mounts 2>/dev/null | awk '!seen[${'$'}0]++' > "${'$'}MNT_LIST"
-        if [ ! -s "${'$'}MNT_LIST" ]; then
-            for m in /tmp/mnt/* /media/* /mnt/* /storage; do
-                [ -d "${'$'}m" ] || continue
-                m_fs=${'$'}(df -PT "${'$'}m" 2>/dev/null | awk 'NR==2{print ${'$'}2}')
-                [ "${'$'}m_fs" = "tmpfs" ] && continue
-                printf '%s\n' "${'$'}m" >> "${'$'}MNT_LIST"
-            done
-        fi
-        while IFS= read -r m; do
-            [ -n "${'$'}m" ] && [ -d "${'$'}m" ] || continue
-            df_info=${'$'}(df -Pm "${'$'}m" 2>/dev/null | awk 'NF==1{d=${'$'}0; getline; ${'$'}0=d" "${'$'}0} NR==2{print ${'$'}1"|"(${'$'}2+0)"|"(${'$'}3+0)"|"(${'$'}4+0)}')
-            m_dev=${'$'}(printf '%s' "${'$'}df_info" | cut -d'|' -f1)
-            m_tot=${'$'}(printf '%s' "${'$'}df_info" | cut -d'|' -f2)
-            m_used=${'$'}(printf '%s' "${'$'}df_info" | cut -d'|' -f3)
-            m_free=${'$'}(printf '%s' "${'$'}df_info" | cut -d'|' -f4)
-            ms=${'$'}(du -sk "${'$'}m" 2>/dev/null | awk '{print ${'$'}1+0}')
-            opt_tag=""
-            if [ -n "${'$'}opt_dev" ] && [ "${'$'}m_dev" = "${'$'}opt_dev" ]; then
-                m_ino=${'$'}(ls -id "${'$'}m" 2>/dev/null | awk '{print ${'$'}1}')
-                if [ -n "${'$'}opt_ino" ] && [ "${'$'}m_ino" = "${'$'}opt_ino" ]; then
-                    opt_tag=", корень /opt"
-                    ms=0
-                else
-                    for sub in "${'$'}m"/* "${'$'}m"/*/*; do
-                        [ -d "${'$'}sub" ] || continue
-                        sub_ino=${'$'}(ls -id "${'$'}sub" 2>/dev/null | awk '{print ${'$'}1}')
-                        if { [ -n "${'$'}opt_ino" ] && [ "${'$'}sub_ino" = "${'$'}opt_ino" ]; } || { [ -x "${'$'}sub/bin/opkg" ] && [ -d "${'$'}sub/etc/init.d" ]; }; then
-                            opt_sub_kb=${'$'}(du -sk "${'$'}sub" 2>/dev/null | awk '{print ${'$'}1+0}')
-                            ms=${'$'}((ms - opt_sub_kb))
-                            [ "${'$'}ms" -lt 0 ] && ms=0
-                            opt_tag=", Entware: ${'$'}{sub##*/}"
-                            break
-                        fi
-                    done
-                fi
-            fi
-            media_kb=${'$'}((media_kb + ms))
-            mounts="${'$'}{mounts}${'$'}{mounts:+; }${'$'}m (~${'$'}((ms/1024))MB данных, занято ${'$'}{m_used:-0}/${'$'}{m_tot:-0}MB, своб. ${'$'}{m_free:-0}MB${'$'}opt_tag)"
-        done < "${'$'}MNT_LIST"
-        rm -f "${'$'}MNT_LIST"
-        echo "EST|${'$'}((core_kb/1024))|${'$'}((media_kb/1024))|${'$'}{mounts:-none}"
-    """.trimIndent()
+    val ESTIMATE_BACKUP_SIZE_CMD: String get() = BackupRestoreScripts.ESTIMATE_BACKUP_SIZE_CMD
 
-    fun buildFullBackupCmd(includeUserMedia: Boolean): String = """__BACKUP__
-        set +e
-        # GNU tar из Entware: busybox tar в /opt/usr/bin/tar НЕ умеет -c (создание)
-        TAR=/opt/bin/tar
-        [ -x "${'$'}TAR" ] || TAR=tar
-        # /opt отсутствует (флешка отвалилась) — полный бэкап собрал бы только 4 txt по 1 КБ,
-        # а UI принял бы это за валидный «полный бэкап v2». Явный fail -> на Android сработает RCI-fallback.
-        if [ ! -x /opt/bin/opkg ] || [ ! -d /opt/etc ]; then
-            echo "FATAL: /opt отсутствует или Entware не смонтирован — полный бэкап невозможен." >&2
-            exit 1
-        fi
-        rm -rf /opt/.gbox_backup_stage.* /opt/tmp/.gbox_bkp_* 2>/dev/null || true
-        TMPB="/opt/tmp/.gbox_bkp_${'$'}${'$'}"
-        STAGE="/opt/.gbox_backup_stage.${'$'}${'$'}.tar.gz"
-        trap 'rm -rf "${'$'}TMPB" "${'$'}STAGE"' EXIT INT TERM
-        mkdir -p "${'$'}TMPB" /opt/tmp
-        LD_LIBRARY_PATH= /bin/ndmc -c "show running-config" > "${'$'}TMPB/running-config.txt" 2>/dev/null || true
-        LD_LIBRARY_PATH= /bin/ndmc -c "show startup-config" > "${'$'}TMPB/startup-config.txt" 2>/dev/null || cp -f "${'$'}TMPB/running-config.txt" "${'$'}TMPB/startup-config.txt" 2>/dev/null || true
-        {
-            echo "=== DATE ===" && date
-            echo "=== UNAME ===" && uname -a
-            echo "=== VERSION ===" && LD_LIBRARY_PATH= /bin/ndmc -c "show version" 2>/dev/null
-            echo "=== DF ===" && df -h 2>/dev/null
-            echo "=== MOUNTS ===" && cat /proc/mounts 2>/dev/null
-            echo "=== OPKG_LIST ===" && /opt/bin/opkg list-installed 2>/dev/null
-        } > "${'$'}TMPB/router-info.txt" 2>/dev/null || true
-        # manifest.json здесь НЕ пишем — сначала надо собрать .mnts (ниже по коду),
-        # иначе media_mnts всегда 0. Пишем манифест после блока media.
-        set -- -C "${'$'}TMPB" running-config.txt startup-config.txt router-info.txt manifest.json
-        # ВЕСЬ /opt — никаких белых списков. Исплючения только масками ниже.
-        [ -d /opt ] && set -- "${'$'}@" -C / opt
+    fun buildFullBackupCmd(includeUserMedia: Boolean): String =
+        BackupRestoreScripts.buildFullBackupCmd(includeUserMedia)
 
-        opt_excl=""
-        # Полный дамп USB/Storage (все внешние/внутренние носители без дублирования папки Entware /opt)
-        if [ "${if (includeUserMedia) 1 else 0}" = "1" ]; then
-            opt_dev=${'$'}(awk '${'$'}2=="/opt"{print ${'$'}1; exit}' /proc/mounts 2>/dev/null)
-            opt_ino=${'$'}(ls -id /opt 2>/dev/null | awk '{print ${'$'}1}')
-            MNT_LIST="${'$'}TMPB/.mnts"
-            awk '{
-                gsub(/\\040/," ",${'$'}2)
-                if (${'$'}2 ~ /^\/(tmp\/mnt|media|mnt)\/.+/ || ${'$'}2 == "/storage") {
-                    if (${'$'}3 != "tmpfs" && ${'$'}3 != "devtmpfs" && ${'$'}3 != "proc" && ${'$'}3 != "sysfs") print ${'$'}2
-                }
-            }' /proc/mounts 2>/dev/null | awk '!seen[${'$'}0]++' > "${'$'}MNT_LIST"
-            if [ ! -s "${'$'}MNT_LIST" ]; then
-                for m in /tmp/mnt/* /media/* /mnt/* /storage; do
-                    [ -d "${'$'}m" ] || continue
-                    m_fs=${'$'}(df -PT "${'$'}m" 2>/dev/null | awk 'NR==2{print ${'$'}2}')
-                    [ "${'$'}m_fs" = "tmpfs" ] && continue
-                    printf '%s\n' "${'$'}m" >> "${'$'}MNT_LIST"
-                done
-            fi
-            while IFS= read -r m; do
-                [ -n "${'$'}m" ] && [ -d "${'$'}m" ] || continue
-                m_dev=${'$'}(df -Pm "${'$'}m" 2>/dev/null | awk 'NF==1{d=${'$'}0; getline; ${'$'}0=d" "${'$'}0} NR==2{print ${'$'}1}')
-                skip_m=0
-                if [ -n "${'$'}opt_dev" ] && [ "${'$'}m_dev" = "${'$'}opt_dev" ]; then
-                    m_ino=${'$'}(ls -id "${'$'}m" 2>/dev/null | awk '{print ${'$'}1}')
-                    if [ -n "${'$'}opt_ino" ] && [ "${'$'}m_ino" = "${'$'}opt_ino" ]; then
-                        skip_m=1
-                    else
-                        for sub in "${'$'}m"/* "${'$'}m"/*/*; do
-                            [ -d "${'$'}sub" ] || continue
-                            sub_ino=${'$'}(ls -id "${'$'}sub" 2>/dev/null | awk '{print ${'$'}1}')
-                            if { [ -n "${'$'}opt_ino" ] && [ "${'$'}sub_ino" = "${'$'}opt_ino" ]; } || { [ -x "${'$'}sub/bin/opkg" ] && [ -d "${'$'}sub/etc/init.d" ]; }; then
-                                opt_excl="${'$'}{sub#/}"
-                                break
-                            fi
-                        done
-                    fi
-                fi
-                [ "${'$'}skip_m" = "0" ] && set -- "${'$'}@" -C / "${'$'}{m#/}"
-            done < "${'$'}MNT_LIST"
-        fi
+    val FULL_BACKUP_TAR_CMD: String get() = BackupRestoreScripts.FULL_BACKUP_TAR_CMD
 
-        # media_mnts = сколько внешних точек реально добавили. Если на флешке
-        # только /opt (весь Entware) — пользовательских данных вне нет, архив будет
-        # ОДИНАКОВЫМ с/без галочки USB. Это не баг, но UI должен это показать.
-        # Считаем ЗДЕСЬ — после блока media, где .mnts уже создан.
-        _media_cnt=0
-        _media_list=""
-        if [ "${if (includeUserMedia) 1 else 0}" = "1" ] && [ -f "${'$'}TMPB/.mnts" ]; then
-            _media_cnt=${'$'}(awk 'NF{n++} END{print n+0}' "${'$'}TMPB/.mnts" 2>/dev/null)
-            _media_list=${'$'}(tr '\n' ',' < "${'$'}TMPB/.mnts" 2>/dev/null | sed 's/,$//')
-        fi
-        printf '{"version":2,"arch":"%s","include_media":%s,"media_mnts":%d,"media_list":"%s"}\n' "${'$'}(uname -m)" "${if (includeUserMedia) "true" else "false"}" "${'$'}{_media_cnt:-0}" "${'$'}{_media_list:-}" > "${'$'}TMPB/manifest.json"
-        echo "[INFO] media_mnts=${'$'}{_media_cnt:-0}" >&2
+    fun restoreArchiveCmd(mode: String): String =
+        BackupRestoreScripts.restoreArchiveCmd(mode)
 
-        # Диагностика: какой тар работает (GNU из /opt/bin или busybox-fallback).
-        _tar_ver=${'$'}("${'$'}TAR" --version 2>&1 | head -n1)
-        _is_gnu=0
-        _tar_opts=""
-        if printf '%s' "${'$'}_tar_ver" | grep -qi "GNU tar"; then
-            _is_gnu=1
-            _tar_opts="--warning=no-file-changed --ignore-failed-read"
-        fi
-        echo "[INFO] TAR=${'$'}TAR (${'$'}{_tar_ver:-unknown})" >&2
-        # Пишем архив на флешку (/opt), а НЕ в /tmp (tmpfs = RAM, OOM) и НЕ в SSH-стрим.
-        # После проверки целостности отдаём содержимое в stdout через cat.
-        rm -f "${'$'}STAGE"
-        # ВАЖНО (2026-11-27): на этом роутере /opt/bin/tar — симлинк на busybox.
-        # busybox tar не понимает --exclude / --warning / --ignore-failed-read →
-        # rc=1 → «битый архив» на первом шаге (после [INFO] media_mnts).
-        # Штатный комментарий обещал GNU tar в /opt/bin/tar, но `opkg install tar`
-        # не был выполнен — симлинк на busybox.
-        # Решение: писать все паттерны в файл и использовать -X FILE — этот флаг
-        # работаёт и в GNU tar (-X = --exclude-from=FILE), и в busybox tar (-X FILE
-        # с glob-паттернами). Один код-путь, без if.
-        EXCLF="${'$'}TMPB/.excludes"
-        {
-          printf '%s\n' 'opt/.gbox_backup_stage*'
-          printf '%s\n' 'opt/.gbox_prerestore.*'
-          printf '%s\n' 'opt/.gbox_rst_*'
-          printf '%s\n' 'opt/gor4akov-offline' 'opt/gor4akov-offline/*'
-          printf '%s\n' 'opt/z2k-work' 'opt/z2k-work/*'
-          printf '%s\n' 'opt/z2k-rollback' 'opt/z2k-rollback/*'
-          printf '%s\n' 'opt/tmp' 'opt/tmp/*'
-          printf '%s\n' 'opt/var/log' 'opt/var/log/*'
-          printf '%s\n' '*.log' '*.swap' 'swapfile' '*.db-wal' '*.db-shm'
-          [ -n "${'$'}opt_excl" ] && printf '%s\n' "${'$'}opt_excl" "${'$'}opt_excl/*"
-        } > "${'$'}EXCLF"
-        "${'$'}{TAR}" ${'$'}_tar_opts -czf "${'$'}STAGE" -X "${'$'}EXCLF" "${'$'}@"
-        tar_rc=${'$'}?
-        rm -f "${'$'}EXCLF"
-        rm -rf "${'$'}TMPB"
-        if { [ "${'$'}_is_gnu" = "1" ] && [ "${'$'}tar_rc" -ge 2 ]; } || { [ "${'$'}_is_gnu" != "1" ] && [ "${'$'}tar_rc" -ne 0 ]; } || [ ! -s "${'$'}STAGE" ]; then
-            _sz=${'$'}(wc -c < "${'$'}STAGE" 2>/dev/null || echo 0)
-            _is_busy=0
-            case "${'$'}(readlink -f "${'$'}TAR" 2>/dev/null):${'$'}TAR" in *busybox*) _is_busy=1 ;; esac
-            rm -f "${'$'}STAGE"
-            if [ "${'$'}_is_busy" = "1" ]; then
-                echo "FATAL: ${'$'}TAR — это busybox tar (не GNU). busybox не умеет --warning/--ignore-failed-read. Установите GNU tar: opkg install tar" >&2
-            else
-                echo "FATAL: tar не смог создать архив (rc=${'$'}tar_rc, size=${'$'}{_sz:-0} B, TAR=${'$'}TAR)" >&2
-            fi
-            echo "FATAL: проверьте свободное место: df -h /opt" >&2
-            exit 1
-        fi
-        if ! ${'$'}{TAR} -tzf "${'$'}STAGE" >/dev/null 2>&1; then
-            rm -f "${'$'}STAGE"
-            echo "FATAL: архив повреждён (${'$'}{TAR} -tzf fail)" >&2
-            exit 1
-        fi
-        cat "${'$'}STAGE"
-        cat_rc=${'$'}?
-        rm -f "${'$'}STAGE"
-        exit ${'$'}cat_rc
-    """.trimIndent()
-
-    val FULL_BACKUP_TAR_CMD: String get() = buildFullBackupCmd(includeUserMedia = false)
-
-    fun restoreArchiveCmd(mode: String): String = """__LONG__
-        set +e
-        TAR=/opt/bin/tar
-        [ -x "${'$'}TAR" ] || TAR=tar
-        ARCH="/opt/.gbox_restore.tar.gz"
-        [ -s "${'$'}ARCH" ] || { echo "ERR: Архив не найден на /opt/.gbox_restore.tar.gz"; exit 1; }
-        # Проверка CRC gzip ДО распаковки: tar -xzf на битом архиве частично
-        # разворачивает файлы, но возвращает rc != 0 — далее pre-snapshot и весь
-        # restore идут по грязному /opt. Лучше явный отказ сразу.
-        if command -v gzip >/dev/null 2>&1 && ! gzip -t "${'$'}ARCH" >/dev/null 2>&1; then
-            echo "FATAL: архив повреждён (gzip CRC fail). Файл оставлен на /opt/.gbox_restore.tar.gz для повторной передачи." >&2
-            echo "PREFLIGHT_FAIL"
-            exit 1
-        fi
-        if [ "$mode" = "opt_full" ] || [ "$mode" = "system_full" ]; then
-            if [ ! -d /opt/etc ] || [ ! -x /opt/bin/opkg ]; then
-                echo "[FATAL] Entware /opt не смонтирован. Сначала установи Entware на флешку."
-                echo "PREFLIGHT_FAIL"
-                rm -f "${'$'}ARCH"
-                exit 1
-            fi
-        fi
-        find /opt -maxdepth 1 -name '.gbox_rst_*' -type d -exec rm -rf {} + 2>/dev/null || true
-        find /opt -maxdepth 1 -name '.gbox_prerestore.*' -type f -exec rm -f {} + 2>/dev/null || true
-        RST="/opt/.gbox_rst_${'$'}${'$'}"
-        rm -rf "${'$'}RST" && mkdir -p "${'$'}RST"
-        echo "=== Распаковка архива ==="
-        "${'$'}TAR" -xzf "${'$'}ARCH" -C "${'$'}RST" || { echo "ERR: битый архив (сохранён для повтора)"; rm -rf "${'$'}RST"; exit 1; }
-        echo "OK: архив распакован"
-
-        PRE="/opt/.gbox_prerestore.${'$'}${'$'}.tar.gz"
-        echo "=== Снимок текущего /opt ==="
-        "${'$'}TAR" --exclude="opt/.gbox_prerestore.*" --exclude="opt/.gbox_restore.tar.gz" --exclude="opt/.gbox_rst_*" --exclude="opt/gor4akov-offline" --exclude="opt/z2k-work" --exclude="opt/tmp" --exclude="opt/var/log" --exclude="*.log" -czf "${'$'}PRE" -C / opt 2>/dev/null
-        PRE_RC=${'$'}?
-        if [ "${'$'}PRE_RC" -ne 0 ] || [ ! -s "${'$'}PRE" ]; then
-            # Раньше: продолжали БЕЗ отката. Опасно: rm -rf /opt/<d> + cp -a может
-            # упасть на полном диске → потеря /opt без возможности вернуть.
-            # Теперь: если свободного < 2× размера архива (запас на распаковку+старт) — стоп.
-            PRE=""
-            _free_kb=${'$'}(df -Pk /opt 2>/dev/null | awk 'NR==2{print ${'$'}4}')
-            _arch_kb=${'$'}(du -sk "${'$'}ARCH" 2>/dev/null | awk '{print ${'$'}1}')
-            if [ -n "${'$'}_free_kb" ] && [ -n "${'$'}_arch_kb" ] && [ "${'$'}_free_kb" -lt ${'$'}(( _arch_kb * 2 )) ]; then
-                echo "[FATAL] Pre-snapshot не создан (нет места) и свободного меньше 2× размера архива: ${'$'}_free_kb КБ vs ${'$'}_arch_kb КБ. Восстановление запрещено, чтобы не потерять /opt."
-                echo "PREFLIGHT_FAIL"
-                exit 1
-            fi
-            echo "[WARN] Pre-snapshot не создан. Откат недоступен, но места хватает (${'$'}_free_kb vs ${'$'}_arch_kb КБ)."
-        else
-            PRE_KB=${'$'}(du -sk "${'$'}PRE" 2>/dev/null | awk '{print ${'$'}1}')
-            echo "[OK] Снимок: ${'$'}PRE (${'$'}PRE_KB КБ)"
-        fi
-
-        echo "=== Остановка служб ==="
-        # Раньше останавливали только 4 сервиса. lighttpd (панель z2k), dropbear (:222),
-        # z2k-scheduler, tg-mtproxy пишут в /opt во время cp -a → битые файлы.
-        # Теперь останавливаем ВСЕ S*-скрипты, как это делает rc.unslung при shutdown.
-        for ini in /opt/etc/init.d/S*; do
-            [ -x "${'$'}ini" ] && [ -f "${'$'}ini" ] && "${'$'}ini" stop >/dev/null 2>&1 || true
-        done
-        killall nfqws2 2>/dev/null || true
-        killall AdGuardHome 2>/dev/null || true
-        sleep 1
-
-        RESTORE_OK=1
-        if [ "$mode" = "bypass" ]; then
-            echo "=== bypass: /opt/zapret2 + netfilter.d ==="
-            if [ -d "${'$'}RST/opt/zapret2" ]; then
-                rm -rf /opt/zapret2 && cp -a "${'$'}RST/opt/zapret2" /opt/zapret2 || RESTORE_OK=0
-            fi
-            if [ -d "${'$'}RST/opt/etc/ndm/netfilter.d" ]; then
-                rm -rf /opt/etc/ndm/netfilter.d && mkdir -p /opt/etc/ndm/netfilter.d
-                cp -a "${'$'}RST/opt/etc/ndm/netfilter.d/." /opt/etc/ndm/netfilter.d/ 2>/dev/null || RESTORE_OK=0
-            fi
-        else
-            echo "=== ПОЛНАЯ замена /opt ==="
-            for d in etc zapret2 root home var bin sbin lib libexec share usr local; do
-                if [ -d "${'$'}RST/opt/${'$'}d" ]; then
-                    rm -rf "/opt/${'$'}d" && cp -a "${'$'}RST/opt/${'$'}d" "/opt/${'$'}d" || RESTORE_OK=0
-                    echo "  OK: /opt/${'$'}d"
-                fi
-            done
-            mkdir -p /opt/tmp /opt/var/log 2>/dev/null || true
-        fi
-
-        if [ "${'$'}RESTORE_OK" -ne 1 ]; then
-            echo "[FATAL] Ошибка распаковки -> откат pre-snapshot"
-            if [ -n "${'$'}PRE" ] && [ -s "${'$'}PRE" ]; then
-                [ -x "${'$'}TAR" ] || TAR=tar
-                "${'$'}TAR" -xzf "${'$'}PRE" -C / 2>&1 | tail -3
-                echo "[OK] Pre-snapshot восстановлен"
-            else
-                echo "[ERR] Pre-snapshot отсутствует"
-            fi
-            rm -rf "${'$'}RST"
-            exit 1
-        fi
-
-        if [ "$mode" = "system_full" ]; then
-            echo "=== system_full: носители + NDMS ==="
-            for d in tmp/mnt media mnt storage; do
-                if [ -d "${'$'}RST/${'$'}d" ]; then
-                    mkdir -p "/${'$'}d" 2>/dev/null || true
-                    cp -af "${'$'}RST/${'$'}d/." "/${'$'}d/" 2>/dev/null || true
-                fi
-            done
-            CFG_SRC="${'$'}RST/running-config.txt"
-            [ -s "${'$'}CFG_SRC" ] || CFG_SRC="${'$'}RST/startup-config.txt"
-            if [ -s "${'$'}CFG_SRC" ]; then
-                echo "=== NDMS конфиг (как в бэкапе, MAC+IP) ==="
-                err_cnt=0
-                ok_cnt=0
-                # Исключения из применяемого NDMS-конфига:
-                #  - user/no user/system mode     — не блокируем себя же;
-                #  - opkg disk/no opkg disk       — привязка флешки делается отдельно по UUID;
-                #  - interface Bridge0 ip address — только MGMT LAN: иначе можно потерять
-                #                                   доступ к роутеру, если бэкап был с другим IP
-                #                                   управления;
-                #  - interface Bridge0 mac address — bridge MAC MGMT (авто).
-                #
-                # ВАЖНО: остальные Bridge (Bridge2, Bridge3 ...) и их IP ВОССТАНАВЛИВАЕМ
-                # из бэкапа — это пользовательские сети. Голый `mac address <X>` — это
-                # намеренная подмена MAC WAN, её тоже восстанавливаем.
-                tr -d '\r' < "${'$'}CFG_SRC" | awk '
-                  function skip(cmd) {
-                    if (cmd ~ /^(user|no user|system mode|opkg disk|no opkg disk) /) return 1
-                    if (cmd ~ /^interface Bridge0 ip address /) return 1
-                    if (cmd ~ /^interface Bridge0 mac address /) return 1
-                    # Сервисы НЕ восстанавливаем: если пользователь выключил telnet/webdav
-                    # (безопасность), старый бэкап молча включит их обратно. Состояние
-                    # сервисов — отдельное решение, не часть конфигурации сети.
-                    if (cmd ~ /^(no )?service (telnet|ssh|ftp|cifs|upnp|dlna|torrent|afp|snmp|mdns|igmp-proxy|vpn-server|oc-server)/) return 1
-                    if (cmd ~ /^ip http webdav/) return 1
-                    if (cmd ~ /^no ip http webdav/) return 1
-                    return 0
-                  }
-                  /^[[:space:]]*${'$'}/ {next}
-                  /^[[:space:]]*#/ {next}
-                  /^[[:space:]]*!/ {if (${'$'}0 ~ /^!${'$'}/) blk=""; next}
-                  /^[[:space:]]/ {sub(/^[[:space:]]+/,""); cmd=(blk!="" ? blk" "${'$'}0 : ${'$'}0); if (!skip(cmd)) print cmd; next}
-                  {blk=${'$'}0; if (!skip(blk)) print blk}
-                ' > "${'$'}RST/.ndms_flat.txt"
-                : > "${'$'}RST/.ndms_retry.txt"
-                while IFS= read -r line; do
-                    [ -n "${'$'}line" ] || continue
-                    out_c=${'$'}(LD_LIBRARY_PATH= /bin/ndmc -c "${'$'}line" 2>&1)
-                    if printf '%s' "${'$'}out_c" | grep -qiE 'error|invalid|no such command'; then
-                        printf '%s
-' "${'$'}line" >> "${'$'}RST/.ndms_retry.txt"
-                    else
-                        ok_cnt=${'$'}((ok_cnt + 1))
-                    fi
-                done < "${'$'}RST/.ndms_flat.txt"
-                if [ -s "${'$'}RST/.ndms_retry.txt" ]; then
-                    while IFS= read -r line; do
-                        [ -n "${'$'}line" ] || continue
-                        out_c=${'$'}(LD_LIBRARY_PATH= /bin/ndmc -c "${'$'}line" 2>&1)
-                        if printf '%s' "${'$'}out_c" | grep -qiE 'error|invalid|no such command'; then
-                            err_cnt=${'$'}((err_cnt + 1))
-                            [ "${'$'}err_cnt" -le 5 ] && echo "[WARN] ndmc: ${'$'}line -> ${'$'}out_c"
-                        else
-                            ok_cnt=${'$'}((ok_cnt + 1))
-                        fi
-                    done < "${'$'}RST/.ndms_retry.txt"
-                fi
-                LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1 || true
-                echo "[OK] NDMS: применено ${'$'}ok_cnt, ошибок ${'$'}err_cnt"
-            fi
-            # Auto-UUID: после restore могла быть другая флешка. Привязываем opkg disk к текущей.
-            OPT_DEV=${'$'}(mount 2>/dev/null | awk '${'$'}3=="/opt"{print ${'$'}1;exit}')
-            if [ -n "${'$'}OPT_DEV" ]; then
-                OPT_UUID=${'$'}(blkid "${'$'}OPT_DEV" 2>/dev/null | sed -n 's/.*UUID="\([^"]*\)".*/\1/p')
-                if [ -n "${'$'}OPT_UUID" ]; then
-                    LD_LIBRARY_PATH= /bin/ndmc -c "opkg disk ${'$'}OPT_UUID:" >/dev/null 2>&1
-                    LD_LIBRARY_PATH= /bin/ndmc -c "opkg initrc /opt/etc/init.d/rc.unslung" >/dev/null 2>&1
-                    LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1
-                    echo "[OK] opkg disk привязан к текущей флешке: ${'$'}OPT_UUID"
-                else
-                    echo "[WARN] UUID текущей /opt не определён"
-                fi
-            fi
-        fi
-
-        echo "=== Запуск служб ==="
-        # Симметрично stop-блоку (выше): стартуем ВСЕ S*, иначе lighttpd (панель z2k),
-        # dropbear (:222 SSH), z2k-scheduler, tg-mtproxy остаются выключенными до
-        # перезагрузки роутера. Это был бы отказ класса «restore убил панель».
-        for ini in /opt/etc/init.d/S*; do
-            [ -x "${'$'}ini" ] && [ -f "${'$'}ini" ] && "${'$'}ini" start >/dev/null 2>&1 || true
-        done
-        [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true
-        sleep 2
-        # Раньше проверяли только nfqws2 — lighttpd/dropbear/scheduler могли не
-        # стартовать незаметно. Теперь проверяем все ключевые службы.
-        NFQ=${'$'}(ps w 2>/dev/null | grep -c "[n]fqws2")
-        AGH=${'$'}(ps w 2>/dev/null | grep -c "[A]dGuardHome")
-        LTP=${'$'}(ps w 2>/dev/null | grep -c "[l]ighttpd")
-        DBR=${'$'}(ps w 2>/dev/null | grep -c "[d]ropbear")
-        echo "=== Готово: nfqws2=${'$'}NFQ AdGuard=${'$'}AGH lighttpd=${'$'}LTP dropbear=${'$'}DBR ==="
-        if [ "${'$'}NFQ" -eq 0 ]; then
-            echo "[WARN] nfqws2 НЕ стартовал — обход не работает. Проверьте: /opt/etc/init.d/S99zapret2 restart"
-        fi
-        if [ "${'$'}LTP" -eq 0 ]; then
-            echo "[WARN] lighttpd НЕ стартовал — веб-панель z2k (:8088) недоступна. Проверьте: /opt/etc/init.d/S99lighttpd start"
-        fi
-
-        rm -f "${'$'}ARCH"
-        rm -rf "${'$'}RST"
-        if [ -n "${'$'}PRE" ] && [ -s "${'$'}PRE" ]; then
-            echo "[OK] Pre-snapshot сохранён: ${'$'}PRE"
-        fi
-        echo "INSTALL_RESTORE_DONE"
-    """.trimIndent()
     val AUTO_DIAG_REPAIR_SCRIPT = """
         set +e
         echo "=== Автодиагностика Gor4akovNET ==="

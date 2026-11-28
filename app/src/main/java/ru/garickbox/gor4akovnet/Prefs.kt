@@ -11,6 +11,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.util.zip.GZIPInputStream
 
 class Prefs(private val context: Context) {
     private val sp = context.getSharedPreferences("gor4akovnet_prefs", Context.MODE_PRIVATE)
@@ -182,6 +183,21 @@ class Prefs(private val context: Context) {
         return registerBackupFile(id, label, model, file, format, isProtected)
     }
 
+    fun verifyGzipArchive(file: File, maxUncompressedBytes: Long = 2_000_000_000L): Result<Long> = runCatching {
+        if (!file.exists() || file.length() < 32L) error("Файл архива слишком мал или отсутствует")
+        var total = 0L
+        GZIPInputStream(FileInputStream(file)).use { ins ->
+            val buf = ByteArray(64 * 1024)
+            while (true) {
+                val n = ins.read(buf)
+                if (n < 0) break
+                total += n
+                if (total > maxUncompressedBytes) error("Архив превышает лимит распаковки")
+            }
+        }
+        total
+    }
+
     fun allocateStreamBackupTempFile(label: String, ext: String = "tar.gz"): File {
         val id = uniqueBackupId()
         val safeLabel = label.replace(Regex("[^a-zA-Z0-9а-яА-Я_-]"), "_").take(32)
@@ -219,6 +235,12 @@ class Prefs(private val context: Context) {
         val head = ByteArray(minOf(4, size.toInt()))
         FileInputStream(temp).use { it.read(head) }
         val isGzip = head.size >= 2 && head[0] == 0x1f.toByte() && head[1] == 0x8b.toByte()
+        if (isGzip) {
+            verifyGzipArchive(temp).onFailure { err ->
+                temp.delete()
+                error("Импортируемый .tar.gz повреждён (gzip CRC fail): ${err.message}")
+            }
+        }
         val ext = if (isGzip) "tar.gz" else "txt"
         val format = if (isGzip) "tar_v2" else "txt"
         val id = uniqueBackupId()
