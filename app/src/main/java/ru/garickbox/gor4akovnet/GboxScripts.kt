@@ -373,7 +373,19 @@ ${BackupRestoreScripts.SH_ARCHIVER_HELPERS}
             # которому выдали политику (ip hotspot host <MAC> policy Gor4akovNET),
             # остался бы БЕЗ интернета. Ставим permit global ISP идемпотентно —
             # это исправляет и старые установки, где политика создана без permit.
-            LD_LIBRARY_PATH= ndmc -c "ip policy Gor4akovNET permit global ISP" >/dev/null 2>&1 || true
+            WAN_IFS="${'$'}(echo "${'$'}CFG" | awk '
+              /^interface / { cur=${'$'}2; inb=1; isw=0 }
+              inb && /^[[:space:]]+ip global / { isw=1 }
+              inb && /^!/ { if (isw) print cur; inb=0 }
+              END { if (inb && isw) print cur }
+            ')"
+            if [ -n "${'$'}WAN_IFS" ]; then
+                for _wi in ${'$'}WAN_IFS; do
+                    LD_LIBRARY_PATH= ndmc -c "ip policy Gor4akovNET permit global ${'$'}_wi" >/dev/null 2>&1 || true
+                done
+            else
+                LD_LIBRARY_PATH= ndmc -c "ip policy Gor4akovNET permit global ISP" >/dev/null 2>&1 || true
+            fi
 
             SUB_PREFIX="192.168.77"
             if [ "${'$'}ISO_FLAG" = "1" ]; then
@@ -611,23 +623,29 @@ EOFINI
                         } > "${'$'}AGH_INIT"
                         chmod +x "${'$'}AGH_INIT"
                     fi
+                    if [ -f /opt/etc/AdGuardHome/AdGuardHome.yaml ]; then
+                        sed -i 's/bind_hosts: *\[ *127\.0\.0\.1 *\]/bind_hosts:\n    - 0.0.0.0/; s/^    - 127\.0\.0\.1$/    - 0.0.0.0/' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null || true
+                    fi
+                    # Сначала освобождаем :53 у NDMS, затем запускаем AdGuard Home (иначе NDMS держит :53 и AGH не может биндиться)
+                    LD_LIBRARY_PATH= ndmc -c "opkg dns-override" >/dev/null 2>&1 || true
+                    sleep 1
                     "${'$'}AGH_INIT" restart >/dev/null 2>&1 || "${'$'}AGH_INIT" start >/dev/null 2>&1 || true
                     sleep 3
                     dns_listen=0
-                    { netstat -ln 2>/dev/null || ss -ln 2>/dev/null; } | grep -q ':53 ' && dns_listen=1
-                    if { ps w 2>/dev/null | grep -q '[A]dGuardHome' || ps 2>/dev/null | grep -q '[A]dGuardHome'; } && [ "${'$'}dns_listen" = "1" ]; then
-                        LD_LIBRARY_PATH= ndmc -c "opkg dns-override" >/dev/null
-                        # AdGuard реально слушает :53 → можно безопасно переключить клиентов
-                        # изолированной сети на 77.1 (DNS через AdGuard с фильтрацией).
+                    { netstat -ln 2>/dev/null || ss -ln 2>/dev/null; } | grep -qE ':53([[:space:]]|$)' && dns_listen=1
+                    if { ps w 2>/dev/null | grep -q '[A]dGuardHome' || ps 2>/dev/null | grep -q '[A]dGuardHome'; } && [ "${'$'}dns_listen" = "1" ] && nslookup youtube.com 127.0.0.1 >/dev/null 2>&1; then
                         if [ "${'$'}ISO_FLAG" = "1" ]; then
+                            LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET no dns-server" >/dev/null 2>&1 || true
                             LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET dns-server ${'$'}{SUB_PREFIX}.1" >/dev/null 2>&1 || true
                         fi
                         LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null
                         echo "[OK] AdGuard Home v1.0.0 запущен (:3000 / DNS :53), opkg dns-override включён"
-                        [ "${'$'}ISO_FLAG" = "1" ] && echo "[OK] DHCP Gor4akovNET раздаёт DNS ${'$'}{SUB_PREFIX}.1 (AdGuard)"
+                        [ "${'$'}ISO_FLAG" = "1" ] && echo "[OK] DHCP Gor4akovNET раздаёт только AdGuard DNS ${'$'}{SUB_PREFIX}.1"
                     else
-                        echo "[WARN] AdGuard Home не слушает :53 — dns-override НЕ включён (безопасность DNS). Проверьте Монитор → DNS."
-                        echo "[WARN] DHCP Gor4akovNET остаётся на 77.88.8.8/77.88.8.1 (рабочий fallback), чтобы клиенты не остались без DNS."
+                        LD_LIBRARY_PATH= ndmc -c "no opkg dns-override" >/dev/null 2>&1 || true
+                        LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null 2>&1 || true
+                        echo "[WARN] AdGuard Home не прошёл проверку :53 — включён автооткат (no opkg dns-override). Проверьте Монитор → DNS."
+                        echo "[WARN] DHCP Gor4akovNET остаётся на 77.88.8.8/77.88.8.1 (рабочий fallback)."
                     fi
                 else
                     echo "[WARN] Бинарник AdGuardHome не найден (нет в кэше и не скачался по opkg)."

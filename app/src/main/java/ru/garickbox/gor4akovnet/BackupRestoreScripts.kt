@@ -47,6 +47,7 @@ object BackupRestoreScripts {
             mkdir -p "${'$'}_pd/src/sub" "${'$'}_pd/out" 2>/dev/null || return 1
             printf 'ok123\n' > "${'$'}_pd/src/keep.txt"
             printf 'oksub\n' > "${'$'}_pd/src/sub/nested.txt"
+            ln -s keep.txt "${'$'}_pd/src/link_keep" 2>/dev/null || true
             printf 'skip\n' > "${'$'}_pd/src/skip.log"
             printf '*.log\n' > "${'$'}_pd/excl"
 
@@ -83,7 +84,8 @@ object BackupRestoreScripts {
                 fi
                 if (cd "${'$'}_pd/out" && "${'$'}_cand" -xzf "${'$'}_pd/a.tar.gz" >/dev/null 2>&1) \
                    && [ "${'$'}(cat "${'$'}_pd/out/keep.txt" 2>/dev/null)" = "ok123" ] \
-                   && [ "${'$'}(cat "${'$'}_pd/out/sub/nested.txt" 2>/dev/null)" = "oksub" ]; then
+                   && [ "${'$'}(cat "${'$'}_pd/out/sub/nested.txt" 2>/dev/null)" = "oksub" ] \
+                   && { [ ! -L "${'$'}_pd/src/link_keep" ] || [ -L "${'$'}_pd/out/link_keep" ]; }; then
                     _c_extract=1
                 fi
                 rm -rf "${'$'}_pd/out" && mkdir -p "${'$'}_pd/out"
@@ -209,6 +211,38 @@ object BackupRestoreScripts {
             printf '%s' "${'$'}_sub"
         }
 
+        _gbox_opt_fs_info() {
+            _opt_dev=""
+            _opt_fs=""
+            if [ -r /proc/mounts ]; then
+                _line=${'$'}(awk '${'$'}2=="/opt"{d=${'$'}1; t=${'$'}3} END{if(d!="") print d"|"t}' /proc/mounts 2>/dev/null)
+                _opt_dev=${'$'}(printf '%s' "${'$'}_line" | cut -d'|' -f1)
+                _opt_fs=${'$'}(printf '%s' "${'$'}_line" | cut -d'|' -f2)
+            fi
+            if [ -z "${'$'}_opt_fs" ]; then
+                _opt_fs=${'$'}(df -PT /opt 2>/dev/null | awk 'NR==2{print ${'$'}2}')
+                _opt_dev=${'$'}(df -Pm /opt 2>/dev/null | awk 'NR==2{print ${'$'}1}')
+            fi
+            _opt_mounted=1
+            case "${'$'}_opt_fs" in
+                tmpfs|ramfs|squashfs|"") _opt_mounted=0 ;;
+            esac
+            [ -z "${'$'}_opt_dev" ] && _opt_mounted=0
+        }
+
+        _gbox_check_opkg_health() {
+            _opkg_status="ok"
+            if [ ! -e /opt/bin/opkg ]; then
+                _opkg_status="missing_bin"
+            elif [ ! -x /opt/bin/opkg ]; then
+                _opkg_status="not_exec"
+            elif ! /opt/bin/opkg --version >/dev/null 2>&1; then
+                _opkg_status="broken_exec"
+            elif [ ! -s /opt/etc/opkg.conf ]; then
+                _opkg_status="missing_conf"
+            fi
+        }
+
         _gbox_collect_mounts() {
             _out_list="${'$'}1"
             : > "${'$'}_out_list"
@@ -231,10 +265,22 @@ object BackupRestoreScripts {
         }
     """.trimIndent()
 
+    val OPT_PREFLIGHT_CMD: String = """
+        set +e
+        export PATH="/opt/bin:/opt/sbin:/opt/usr/bin:/opt/usr/sbin:/bin:/sbin:/usr/bin:/usr/sbin"
+$SH_MOUNT_DISCOVERY
+        _gbox_opt_fs_info
+        _gbox_check_opkg_health
+        _free_kb=${'$'}(df -Pk /opt 2>/dev/null | awk 'NR==2{print ${'$'}4+0}')
+        echo "PREFLIGHT|${'$'}_opt_mounted|${'$'}{_opt_fs:-none}|${'$'}{_free_kb:-0}|${'$'}_opkg_status|${'$'}{_opt_dev:-none}"
+    """.trimIndent()
+
     val ESTIMATE_BACKUP_SIZE_CMD: String = """
         set +e
         export PATH="/opt/bin:/opt/sbin:/opt/usr/bin:/opt/usr/sbin:/bin:/sbin:/usr/bin:/usr/sbin"
 $SH_MOUNT_DISCOVERY
+        _gbox_opt_fs_info
+        _gbox_check_opkg_health
         core_kb=${'$'}(du -sk /opt 2>/dev/null | awk '{print ${'$'}1+0}')
         for _ex in /opt/gor4akov-offline /opt/z2k-work /opt/z2k-rollback /opt/tmp /opt/var/log /opt/var/run; do
             [ -e "${'$'}_ex" ] && core_kb=${'$'}((core_kb - ${'$'}(du -sk "${'$'}_ex" 2>/dev/null | awk '{print ${'$'}1+0}')))
@@ -257,6 +303,7 @@ $SH_MOUNT_DISCOVERY
             m_free=${'$'}(printf '%s' "${'$'}df_info" | cut -d'|' -f4)
             ms=${'$'}(du -sk "${'$'}m" 2>/dev/null | awk '{print ${'$'}1+0}')
             m_rfiles=${'$'}(find "${'$'}m" -maxdepth 1 \( -type f -o -type l \) 2>/dev/null | wc -l | tr -dc '0-9')
+            m_allfiles=${'$'}(find "${'$'}m" -mindepth 1 ! -name 'lost+found' 2>/dev/null | head -n 5 | wc -l | tr -dc '0-9')
             opt_tag=""
             if [ -n "${'$'}opt_dev" ] && [ "${'$'}m_dev" = "${'$'}opt_dev" ]; then
                 m_ino=${'$'}(ls -id "${'$'}m" 2>/dev/null | awk '{print ${'$'}1}')
@@ -284,13 +331,19 @@ $SH_MOUNT_DISCOVERY
                         opt_tag=", Entware в ${'$'}{_cand_sub#${'$'}m}"
                     fi
                 fi
+            elif [ "${'$'}{m_allfiles:-0}" -eq 0 ]; then
+                case "${'$'}m" in
+                    /storage|/storage/*) opt_tag=", пусто — встроенная флеш-память роутера" ;;
+                    *) opt_tag=", пусто (0 файлов)" ;;
+                esac
+                ms=0
             fi
             [ -z "${'$'}opt_tag" ] && [ "${'$'}{m_rfiles:-0}" -gt 0 ] && opt_tag=", файлов в корне: ${'$'}m_rfiles"
             media_kb=${'$'}((media_kb + ms))
             mounts="${'$'}{mounts}${'$'}{mounts:+; }${'$'}m (~${'$'}((ms/1024))MB доп., занято ${'$'}{m_used:-0}/${'$'}{m_tot:-0}MB, своб. ${'$'}{m_free:-0}MB${'$'}opt_tag)"
         done < "${'$'}MNT_LIST"
         rm -f "${'$'}MNT_LIST"
-        echo "EST|${'$'}((core_kb/1024))|${'$'}((media_kb/1024))|${'$'}{mounts:-none}"
+        echo "EST|${'$'}((core_kb/1024))|${'$'}((media_kb/1024))|${'$'}{mounts:-none}|${'$'}_opkg_status|${'$'}_opt_mounted"
     """.trimIndent()
 
     fun buildFullBackupCmd(includeUserMedia: Boolean): String = """__BACKUP__
@@ -298,12 +351,16 @@ $SH_MOUNT_DISCOVERY
 $SH_ARCHIVER_HELPERS
 $SH_MOUNT_DISCOVERY
 
-        ensure_archiver 1
-
-        if [ ! -x /opt/bin/opkg ] || [ ! -d /opt/etc ]; then
-            echo "FATAL: /opt отсутствует или Entware не смонтирован — полный бэкап невозможен." >&2
+        _gbox_opt_fs_info
+        _gbox_check_opkg_health
+        if [ "${'$'}_opt_mounted" -ne 1 ] || [ ! -d /opt/etc ]; then
+            echo "FATAL: /opt не смонтирован на USB/хранилище (fs=${'$'}{_opt_fs:-none}) или нет /opt/etc — полный бэкап невозможен." >&2
             exit 1
         fi
+        if [ "${'$'}_opkg_status" != "ok" ]; then
+            echo "[WARN] Проверка opkg: ${'$'}_opkg_status (tar/бинарники всё равно будут сохранены, если архиватор доступен)" >&2
+        fi
+        ensure_archiver 1
 
         rm -rf /opt/.gbox_backup_stage.* /opt/.gbox_meta /opt/tmp/.gbox_bkp_* 2>/dev/null || true
         TMPB="/opt/tmp/.gbox_bkp_${'$'}${'$'}"
@@ -393,8 +450,13 @@ $SH_MOUNT_DISCOVERY
                     fi
                 fi
                 if [ "${'$'}skip_m" = "0" ]; then
-                    printf '%s\n' "${'$'}m" >> "${'$'}INCL_MNTS"
-                    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${'$'}{m#/}" "${'$'}m" "${'$'}m_uuid" "${'$'}m_lbl" "${'$'}m_fs" "${'$'}sub_rel" >> "${'$'}MOUNTS_TSV"
+                    _has_usr=${'$'}(find "${'$'}m" -mindepth 1 ! -name 'lost+found' 2>/dev/null | head -n 1 | wc -l | tr -dc '0-9')
+                    if [ "${'$'}{_has_usr:-0}" -eq 0 ] && [ "${'$'}m" = "/storage" ]; then
+                        echo "[INFO] /storage (встроенная память роутера) пуст — пропущен из архива" >&2
+                    else
+                        printf '%s\n' "${'$'}m" >> "${'$'}INCL_MNTS"
+                        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${'$'}{m#/}" "${'$'}m" "${'$'}m_uuid" "${'$'}m_lbl" "${'$'}m_fs" "${'$'}sub_rel" >> "${'$'}MOUNTS_TSV"
+                    fi
                 fi
             done < "${'$'}MNT_LIST"
         fi
@@ -456,7 +518,7 @@ $SH_MOUNT_DISCOVERY
                     [ -e "${'$'}_item" ] || [ -L "${'$'}_item" ] || continue
                     _bn="${'$'}{_item##*/}"
                     case "${'$'}_bn" in
-                        .gbox_backup_stage*|'.gbox_prerestore.*'|.gbox_rst_*|.gbox_old_*|gor4akov-offline|z2k-work|z2k-rollback|tmp|swapfile|*.swap) continue ;;
+                        .gbox_backup_stage*|.gbox_prerestore.*|.gbox_rst_*|.gbox_old_*|gor4akov-offline|z2k-work|z2k-rollback|tmp|swapfile|*.swap) continue ;;
                     esac
                     set -- "${'$'}@" "opt/${'$'}_bn"
                 done
@@ -522,13 +584,16 @@ $SH_MOUNT_DISCOVERY
             exit 1
         fi
 
-        if [ "$mode" = "opt_full" ] || [ "$mode" = "system_full" ]; then
-            if [ ! -d /opt/etc ] || [ ! -x /opt/bin/opkg ]; then
-                echo "[FATAL] Entware /opt не смонтирован. Сначала установи Entware на флешку."
-                echo "PREFLIGHT_FAIL"
-                rm -f "${'$'}ARCH"
-                exit 1
-            fi
+        _gbox_opt_fs_info
+        _gbox_check_opkg_health
+        if [ "${'$'}_opt_mounted" -ne 1 ]; then
+            echo "[FATAL] Раздел /opt не смонтирован на реальном накопителе (fs=${'$'}{_opt_fs:-none}). Отказ во избежание переполнения ОЗУ."
+            echo "PREFLIGHT_FAIL"
+            rm -f "${'$'}ARCH"
+            exit 1
+        fi
+        if [ "${'$'}_opkg_status" != "ok" ]; then
+            echo "[INFO] Текущий opkg имеет статус '${'$'}_opkg_status' — откат восстановит рабочую папку /opt из архива."
         fi
 
         # Фиксируем системные утилиты прошивки ДО любых операций с /opt/lib
@@ -596,13 +661,17 @@ $SH_MOUNT_DISCOVERY
             echo "[OK] Снимок отката: ${'$'}PRE (${'$'}PRE_KB КБ)"
         fi
 
-        echo "=== [3/5] Остановка всех служб /opt ==="
+        echo "=== [3/5] Остановка служб /opt (сохраняя SSH dropbear для завершения отката) ==="
         for ini in /opt/etc/init.d/S*; do
-            [ -x "${'$'}ini" ] && [ -f "${'$'}ini" ] && "${'$'}ini" stop >/dev/null 2>&1 || true
+            [ -x "${'$'}ini" ] && [ -f "${'$'}ini" ] || continue
+            case "${'$'}{ini##*/}" in
+                *dropbear*) continue ;;
+            esac
+            "${'$'}ini" stop >/dev/null 2>&1 || true
         done
-        killall nfqws2 2>/dev/null || true
-        killall AdGuardHome 2>/dev/null || true
-        killall lighttpd 2>/dev/null || true
+        for _d in nfqws2 AdGuardHome lighttpd z2k-warpd z2k-http tg-mtproxy crond sing-box mihomo xray stubby dnscrypt-proxy; do
+            killall "${'$'}_d" 2>/dev/null || true
+        done
         sleep 1
 
         RESTORE_OK=1
@@ -635,9 +704,9 @@ $SH_MOUNT_DISCOVERY
                     [ -e "${'$'}_src" ] || [ -L "${'$'}_src" ] || continue
                     _sbn="${'$'}{_src##*/}"
                     case "${'$'}_sbn" in
-                        .gbox_meta|.gbox_backup_stage*|'.gbox_prerestore.*'|.gbox_rst_*|.gbox_old_*|lost+found) continue ;;
+                        .gbox_meta|.gbox_backup_stage*|.gbox_prerestore.*|.gbox_rst_*|.gbox_old_*|lost+found) continue ;;
                     esac
-                    "${'$'}_CP" -a "${'$'}_src" "/opt/${'$'}_sbn" || RESTORE_OK=0
+                    "${'$'}_MV" -f "${'$'}_src" "/opt/${'$'}_sbn" 2>/dev/null || "${'$'}_CP" -a "${'$'}_src" "/opt/${'$'}_sbn" || RESTORE_OK=0
                 done
                 "${'$'}_MKDIR" -p /opt/tmp /opt/var/log /opt/var/run 2>/dev/null || true
                 chmod 1777 /opt/tmp 2>/dev/null || true
@@ -903,10 +972,23 @@ $SH_MOUNT_DISCOVERY
             fi
         fi
 
-        echo "=== [5/5] Запуск служб /opt ==="
+        echo "=== [5/5] Запуск служб /opt и проверка opkg ==="
         for ini in /opt/etc/init.d/S*; do
-            [ -x "${'$'}ini" ] && [ -f "${'$'}ini" ] && "${'$'}ini" start >/dev/null 2>&1 || true
+            [ -x "${'$'}ini" ] && [ -f "${'$'}ini" ] || continue
+            case "${'$'}{ini##*/}" in
+                *dropbear*)
+                    if (ps w 2>/dev/null || ps 2>/dev/null) | grep -q '[d]ropbear'; then
+                        continue
+                    fi
+                    ;;
+            esac
+            "${'$'}ini" start >/dev/null 2>&1 || true
         done
+        if [ -x /opt/bin/opkg ] && /opt/bin/opkg --version >/dev/null 2>&1; then
+            echo "[OK] Entware opkg здоров (${'$'}(/opt/bin/opkg --version 2>/dev/null | head -n1))"
+        else
+            echo "[WARN] После отката /opt/bin/opkg не отвечает — проверьте флешку /opt"
+        fi
         [ -x /opt/etc/init.d/S99zapret2 ] && /opt/etc/init.d/S99zapret2 restart >/dev/null 2>&1 || true
         sleep 2
         NFQ=${'$'}(ps w 2>/dev/null | grep -c "[n]fqws2")

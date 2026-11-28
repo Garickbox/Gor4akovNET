@@ -93,12 +93,13 @@ object OfflineAssets {
             if (passport.hasWebdavComp) {
                 onLog("Включаю WebDAV на роутере...")
                 runCatching {
-                    session.parseCli(listOf(
+                    val (_, wErrs) = session.parseCliChecked(listOf(
                         "ip http webdav",
                         "ip http webdav enable",
                         "ip http webdav security-level private",
                         "system configuration save"
                     ))
+                    if (wErrs.isNotEmpty()) onLog("[WARN] WebDAV CLI: ${wErrs.first()}")
                 }
                 if (passport.ndmsMajor in 1..3) {
                     runCatching {
@@ -155,12 +156,15 @@ object OfflineAssets {
                 if (uploadedPath != null) {
                     val diskId = if (targetMedia.isInternalStorage) "storage:" else "${targetMedia.uuid}:"
                     onLog("Настраиваю opkg disk $diskId и автозапуск Entware...")
-                    session.parseCli(listOf(
+                    val (oErrCnt, oErrs) = session.parseCliChecked(listOf(
                         "no opkg dns-override",
                         "opkg disk $diskId",
                         "opkg initrc /opt/etc/init.d/rc.unslung",
                         "system configuration save"
                     ))
+                    if (oErrCnt > 0 && oErrs.isNotEmpty()) {
+                        error("Ошибка opkg disk $diskId: ${oErrs.joinToString("; ")}")
+                    }
                     return@runCatching "Entware загружен на роутер и запущен на $diskId. Подождите ~40 сек пока распакуется Dropbear SSH :222!"
                 }
             }

@@ -295,7 +295,23 @@ internal object NdmsConfigParser {
                 t.startsWith("range ") -> {
                     val p = t.removePrefix("range ").trim().split(Regex("\\s+"))
                     start = p.getOrNull(0).orEmpty()
-                    size = p.getOrNull(1)?.toIntOrNull() ?: 0
+                    val arg2 = p.getOrNull(1).orEmpty()
+                    size = arg2.toIntOrNull() ?: run {
+                        fun ipToLong(s: String): Long? {
+                            val oct = s.split(".")
+                            if (oct.size != 4) return null
+                            var res = 0L
+                            for (o in oct) {
+                                val v = o.toLongOrNull() ?: return null
+                                if (v !in 0L..255L) return null
+                                res = (res shl 8) or v
+                            }
+                            return res
+                        }
+                        val a = ipToLong(start)
+                        val b = ipToLong(arg2)
+                        if (a != null && b != null && b >= a) (b - a + 1).toInt().coerceAtLeast(1) else 0
+                    }
                 }
                 t.startsWith("lease ") -> lease = t.removePrefix("lease ").trim().toIntOrNull() ?: 0
                 t.startsWith("dns-server ") -> {

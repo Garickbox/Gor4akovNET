@@ -170,7 +170,7 @@ object MonitorDiagScripts {
           ip_e=§(printf '%s' "§ip_out" | awk '$AWK_ESC {print esc(§0)}')
           egress_json="§{egress_json}§([ -n "§egress_json" ] && echo ','){\"iface\":\"§ifc_e\",\"ip\":\"§ip_e\"}"
         done
-        dns_leak=§(nslookup -type=A whoami.akamai.net 127.0.0.1 2>&1 | awk '/^Address/{a=§NF} END{print a}' | tr -dc '0-9.')
+        dns_leak=§(nslookup whoami.akamai.net 127.0.0.1 2>&1 | awk '/^Address/{a=§NF} END{print a}' | tr -dc '0-9.')
         printf '{"rules":%s,"main_routes":%s,"tables":[%s],"ndm_policy":"%s","ipv6":%s,"egress":[%s],"dns_egress":"%s"}\n' \
           "§rules" "§main_rt" "§tbl_json" "§ndm_pol" "§ipv6_glob" "§egress_json" "§dns_leak"
         """
@@ -359,7 +359,7 @@ EOF
             if [ -n "§MY_UUID" ] && [ -x /bin/ndmc ]; then
               U_UP=§(printf '%s' "§MY_UUID" | tr 'a-f' 'A-F')
               MEDIA_NAME=§(LD_LIBRARY_PATH= /bin/ndmc -c "show media" 2>/dev/null | awk -v U="§U_UP" '
-                /name:/ && cur=="" { cur=§2; gsub(/[ \t\r]/,"",cur) }
+                /^[[:space:]]*name:/ { cur=§2; gsub(/[ \t\r]/,"",cur) }
                 { u=toupper(§0); if (index(u, U) > 0 && cur != "") { print cur; exit } }
               ')
             fi

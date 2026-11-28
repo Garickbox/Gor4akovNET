@@ -1,5 +1,8 @@
 package ru.garickbox.gor4akovnet
 
+import android.util.Base64
+import org.json.JSONObject
+
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -264,4 +267,43 @@ internal fun WrapRow(
         verticalArrangement = Arrangement.spacedBy(4.dp),
         content = content
     )
+}
+
+internal fun parseJsonOut(raw: String, tag: String): JSONObject {
+    val i = raw.indexOf('{')
+    if (i < 0) {
+        val preview = raw.trim().take(180)
+        throw IllegalArgumentException(if (preview.isBlank()) "$tag: пустой ответ роутера" else "$tag (не JSON): $preview")
+    }
+    var depth = 0
+    var inStr = false
+    var esc = false
+    var end = -1
+    for (k in i until raw.length) {
+        val c = raw[k]
+        if (esc) { esc = false; continue }
+        if (c == '\\') { esc = true; continue }
+        if (c == '"') { inStr = !inStr; continue }
+        if (inStr) continue
+        when (c) {
+            '{' -> depth++
+            '}' -> { depth--; if (depth == 0) { end = k; break } }
+        }
+    }
+    if (end < 0) throw IllegalArgumentException("$tag: незакрытый JSON (${raw.take(200)}${if (raw.length > 200) " ... ${raw.takeLast(80)}" else ""})")
+    return JSONObject(raw.substring(i, end + 1))
+}
+
+internal fun summarizeRouterError(raw: String?): String {
+    val s = raw.orEmpty().trim()
+    if (s.isBlank()) return "Неизвестная ошибка"
+    val fatals = s.lines().map { it.trim() }.filter {
+        it.contains("FATAL:", true) || it.contains("[FATAL]", true) || it.startsWith("ERR:", true)
+    }
+    return if (fatals.isNotEmpty()) fatals.joinToString(" | ") else s
+}
+
+internal fun decodeB64(b64: String): String {
+    if (b64.isBlank()) return ""
+    return runCatching { String(Base64.decode(b64, Base64.DEFAULT), Charsets.UTF_8) }.getOrDefault("")
 }

@@ -273,11 +273,12 @@ func pushReaderSSH(host string, port int32, user, pass, remotePath string, src i
 	safePath := shellQuote(remotePath)
 	safeTmp := shellQuote(remotePath + ".tmp")
 
+	pathHdr := "export PATH=/opt/sbin:/opt/bin:/sbin:/usr/sbin:/bin:/usr/bin; "
 	var transfer string
 	if gunzipRemote {
-		transfer = "gzip -dc > " + safeTmp + " && mv -f " + safeTmp + " " + safePath
+		transfer = pathHdr + "gzip -dc > " + safeTmp + " && mv -f " + safeTmp + " " + safePath
 	} else {
-		transfer = "cat > " + safeTmp + " && mv -f " + safeTmp + " " + safePath
+		transfer = pathHdr + "cat > " + safeTmp + " && mv -f " + safeTmp + " " + safePath
 	}
 	if makeExec {
 		transfer += " && chmod 755 " + safePath

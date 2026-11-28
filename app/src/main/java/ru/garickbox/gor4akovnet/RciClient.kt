@@ -183,7 +183,7 @@ class RciSession(
     fun parseCliChecked(commands: List<String>, readTimeoutMs: Int = 45000): Pair<Int, List<String>> {
         if (commands.isEmpty()) return 0 to emptyList()
         val raw = parseCli(commands, readTimeoutMs = readTimeoutMs).trim()
-        if (raw.isBlank()) return commands.size to emptyList()
+        if (raw.isBlank()) return commands.size to listOf("Пустой ответ RCI (таймаут или сессия сброшена)")
         val errors = mutableListOf<String>()
         fun inspectItem(idx: Int, item: JSONObject?) {
             val stArr = item?.optJSONObject("parse")?.optJSONArray("status")
