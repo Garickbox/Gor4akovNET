@@ -384,7 +384,7 @@ $SH_MOUNT_DISCOVERY
             echo "=== UNAME ===" && uname -a
             echo "=== VERSION ===" && LD_LIBRARY_PATH= /bin/ndmc -c "show version" 2>/dev/null
             echo "=== MEDIA ===" && LD_LIBRARY_PATH= /bin/ndmc -c "show media" 2>/dev/null
-            echo "=== OPKG_CFG ===" && LD_LIBRARY_PATH= /bin/ndmc -c "show opkg" 2>/dev/null
+            echo "=== OPKG_CFG ===" && grep -E '^opkg ' "${'$'}TMPB/running-config.txt" 2>/dev/null || true
             echo "=== DF ===" && df -h 2>/dev/null
             echo "=== MOUNTS ===" && cat /proc/mounts 2>/dev/null
             echo "=== MOUNTINFO ===" && cat /proc/self/mountinfo 2>/dev/null
@@ -716,7 +716,8 @@ $SH_MOUNT_DISCOVERY
         if [ "${'$'}RESTORE_OK" -ne 1 ]; then
             echo "[FATAL] Ошибка восстановления /opt -> аварийный откат из pre-snapshot"
             if [ -n "${'$'}PRE" ] && [ -s "${'$'}PRE" ]; then
-                (cd / && "${'$'}TAR" -xzf "${'$'}PRE" 2>&1 | tail -5)
+                [ -x "${'$'}TAR" ] || { [ -x /bin/busybox ] && TAR="/bin/busybox tar"; }
+                (cd / && ${'$'}TAR -xzf "${'$'}PRE" 2>&1 | tail -5)
                 echo "[OK] Pre-snapshot восстановлен"
             else
                 echo "[ERR] Pre-snapshot отсутствует"

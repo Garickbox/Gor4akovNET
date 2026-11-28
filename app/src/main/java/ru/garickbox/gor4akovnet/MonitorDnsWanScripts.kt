@@ -507,20 +507,34 @@ EOFINI
         if [ -f /opt/etc/AdGuardHome/AdGuardHome.yaml ]; then
           sed -i 's/bind_hosts: *\[ *127\.0\.0\.1 *\]/bind_hosts:\n    - 0.0.0.0/; s/^    - 127\.0\.0\.1$/    - 0.0.0.0/' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null || true
         fi
-        # Порядок без deadlock: сначала opkg dns-override освобождает :53, затем старт AGH, затем проверка + rollback
-        LD_LIBRARY_PATH= /bin/ndmc -c "opkg dns-override" >/dev/null 2>&1 || true
-        sleep 1
+        AGH_DNS_PORT=§(awk '/^dns:/{f=1;next} f&&/^[^ ]/{f=0} f&&/^  port:/{print §2; exit}' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null | tr -dc '0-9')
+        [ -n "§AGH_DNS_PORT" ] || AGH_DNS_PORT=53
+        AGH_WEB_PORT=§(awk -F: '/^  address:/{p=§NF; gsub(/[^0-9]/,"",p); if(p!="") print p; exit}' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null | tr -dc '0-9')
+        [ -n "§AGH_WEB_PORT" ] || AGH_WEB_PORT=3000
+        if [ "§AGH_DNS_PORT" = "53" ]; then
+          # Порядок без deadlock: сначала opkg dns-override освобождает :53, затем старт AGH, затем проверка + rollback
+          LD_LIBRARY_PATH= /bin/ndmc -c "opkg dns-override" >/dev/null 2>&1 || true
+          sleep 1
+        fi
         "§AGH_INI" restart >/dev/null 2>&1 || "§AGH_INI" start >/dev/null 2>&1 || true
         sleep 3
         dns_listen=0
-        { netstat -ln 2>/dev/null || ss -ln 2>/dev/null; } | grep -qE ':53([[:space:]]|$)' && dns_listen=1
-        if (ps w 2>/dev/null || ps 2>/dev/null) | grep -q '[A]dGuardHome' && [ "§dns_listen" = "1" ] && nslookup youtube.com 127.0.0.1 >/dev/null 2>&1; then
-          LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1 || true
-          echo "OK: AdGuard Home запущен (:3000 / :53) и dns-override включён"
+        { netstat -ln 2>/dev/null || ss -ln 2>/dev/null; } | grep -qE ":§{AGH_DNS_PORT}([[:space:]]|$)" && dns_listen=1
+        agh_alive=0
+        (ps w 2>/dev/null || ps 2>/dev/null) | grep -q '[A]dGuardHome' && agh_alive=1
+        if [ "§AGH_DNS_PORT" = "53" ]; then
+          if [ "§agh_alive" = "1" ] && [ "§dns_listen" = "1" ] && nslookup youtube.com 127.0.0.1 >/dev/null 2>&1; then
+            LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1 || true
+            echo "OK: AdGuard Home запущен (:§AGH_WEB_PORT / :53) и dns-override включён"
+          else
+            LD_LIBRARY_PATH= /bin/ndmc -c "no opkg dns-override" >/dev/null 2>&1 || true
+            LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1 || true
+            echo "WARN: AdGuard не ответил на :53 — включён безопасный откат no opkg dns-override"
+          fi
+        elif [ "§agh_alive" = "1" ] && [ "§dns_listen" = "1" ]; then
+          echo "OK: AdGuard Home запущен (:§AGH_WEB_PORT / DNS :§AGH_DNS_PORT, без dns-override)"
         else
-          LD_LIBRARY_PATH= /bin/ndmc -c "no opkg dns-override" >/dev/null 2>&1 || true
-          LD_LIBRARY_PATH= /bin/ndmc -c "system configuration save" >/dev/null 2>&1 || true
-          echo "WARN: AdGuard не ответил на :53 — включён безопасный откат no opkg dns-override"
+          echo "WARN: AdGuard не слушает порт :§AGH_DNS_PORT"
         fi
         """
     )

@@ -626,26 +626,40 @@ EOFINI
                     if [ -f /opt/etc/AdGuardHome/AdGuardHome.yaml ]; then
                         sed -i 's/bind_hosts: *\[ *127\.0\.0\.1 *\]/bind_hosts:\n    - 0.0.0.0/; s/^    - 127\.0\.0\.1$/    - 0.0.0.0/' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null || true
                     fi
-                    # Сначала освобождаем :53 у NDMS, затем запускаем AdGuard Home (иначе NDMS держит :53 и AGH не может биндиться)
-                    LD_LIBRARY_PATH= ndmc -c "opkg dns-override" >/dev/null 2>&1 || true
-                    sleep 1
+                    AGH_DNS_PORT=${'$'}(awk '/^dns:/{f=1;next} f&&/^[^ ]/{f=0} f&&/^  port:/{print ${'$'}2; exit}' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null | tr -dc '0-9')
+                    [ -n "${'$'}AGH_DNS_PORT" ] || AGH_DNS_PORT=53
+                    AGH_WEB_PORT=${'$'}(awk -F: '/^  address:/{p=${'$'}NF; gsub(/[^0-9]/,"",p); if(p!="") print p; exit}' /opt/etc/AdGuardHome/AdGuardHome.yaml 2>/dev/null | tr -dc '0-9')
+                    [ -n "${'$'}AGH_WEB_PORT" ] || AGH_WEB_PORT=3000
+                    if [ "${'$'}AGH_DNS_PORT" = "53" ]; then
+                        # Сначала освобождаем :53 у NDMS, затем запускаем AdGuard Home (иначе NDMS держит :53 и AGH не может биндиться)
+                        LD_LIBRARY_PATH= ndmc -c "opkg dns-override" >/dev/null 2>&1 || true
+                        sleep 1
+                    fi
                     "${'$'}AGH_INIT" restart >/dev/null 2>&1 || "${'$'}AGH_INIT" start >/dev/null 2>&1 || true
                     sleep 3
                     dns_listen=0
-                    { netstat -ln 2>/dev/null || ss -ln 2>/dev/null; } | grep -qE ':53([[:space:]]|$)' && dns_listen=1
-                    if { ps w 2>/dev/null | grep -q '[A]dGuardHome' || ps 2>/dev/null | grep -q '[A]dGuardHome'; } && [ "${'$'}dns_listen" = "1" ] && nslookup youtube.com 127.0.0.1 >/dev/null 2>&1; then
-                        if [ "${'$'}ISO_FLAG" = "1" ]; then
-                            LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET no dns-server" >/dev/null 2>&1 || true
-                            LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET dns-server ${'$'}{SUB_PREFIX}.1" >/dev/null 2>&1 || true
+                    { netstat -ln 2>/dev/null || ss -ln 2>/dev/null; } | grep -qE ":${'$'}{AGH_DNS_PORT}([[:space:]]|$)" && dns_listen=1
+                    agh_alive=0
+                    { ps w 2>/dev/null | grep -q '[A]dGuardHome' || ps 2>/dev/null | grep -q '[A]dGuardHome'; } && agh_alive=1
+                    if [ "${'$'}AGH_DNS_PORT" = "53" ]; then
+                        if [ "${'$'}agh_alive" = "1" ] && [ "${'$'}dns_listen" = "1" ] && nslookup youtube.com 127.0.0.1 >/dev/null 2>&1; then
+                            if [ "${'$'}ISO_FLAG" = "1" ]; then
+                                LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET no dns-server" >/dev/null 2>&1 || true
+                                LD_LIBRARY_PATH= ndmc -c "ip dhcp pool Gor4akovNET dns-server ${'$'}{SUB_PREFIX}.1" >/dev/null 2>&1 || true
+                            fi
+                            LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null
+                            echo "[OK] AdGuard Home v1.0.0 запущен (:${'$'}AGH_WEB_PORT / DNS :53), opkg dns-override включён"
+                            [ "${'$'}ISO_FLAG" = "1" ] && echo "[OK] DHCP Gor4akovNET раздаёт только AdGuard DNS ${'$'}{SUB_PREFIX}.1"
+                        else
+                            LD_LIBRARY_PATH= ndmc -c "no opkg dns-override" >/dev/null 2>&1 || true
+                            LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null 2>&1 || true
+                            echo "[WARN] AdGuard Home не прошёл проверку :53 — включён автооткат (no opkg dns-override). Проверьте Монитор → DNS."
+                            echo "[WARN] DHCP Gor4akovNET остаётся на 77.88.8.8/77.88.8.1 (рабочий fallback)."
                         fi
-                        LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null
-                        echo "[OK] AdGuard Home v1.0.0 запущен (:3000 / DNS :53), opkg dns-override включён"
-                        [ "${'$'}ISO_FLAG" = "1" ] && echo "[OK] DHCP Gor4akovNET раздаёт только AdGuard DNS ${'$'}{SUB_PREFIX}.1"
+                    elif [ "${'$'}agh_alive" = "1" ] && [ "${'$'}dns_listen" = "1" ]; then
+                        echo "[OK] AdGuard Home запущен (:${'$'}AGH_WEB_PORT / DNS :${'$'}AGH_DNS_PORT, режим без opkg dns-override)"
                     else
-                        LD_LIBRARY_PATH= ndmc -c "no opkg dns-override" >/dev/null 2>&1 || true
-                        LD_LIBRARY_PATH= ndmc -c "system configuration save" >/dev/null 2>&1 || true
-                        echo "[WARN] AdGuard Home не прошёл проверку :53 — включён автооткат (no opkg dns-override). Проверьте Монитор → DNS."
-                        echo "[WARN] DHCP Gor4akovNET остаётся на 77.88.8.8/77.88.8.1 (рабочий fallback)."
+                        echo "[WARN] AdGuard Home не слушает порт :${'$'}AGH_DNS_PORT — проверьте Монитор → DNS."
                     fi
                 else
                     echo "[WARN] Бинарник AdGuardHome не найден (нет в кэше и не скачался по opkg)."
