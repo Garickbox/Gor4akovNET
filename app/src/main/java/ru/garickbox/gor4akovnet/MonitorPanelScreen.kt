@@ -1411,7 +1411,7 @@ fun MonitorPanelScreen(
         )
     }
 
-    if (expandedErrDialog.isNotBlank())    if (expandedErrDialog.isNotBlank()) {
+    if (expandedErrDialog.isNotBlank()) {
         AlertDialog(
             onDismissRequest = { expandedErrDialog = "" },
             title = { Text("Полный текст ошибки", fontSize = 15.sp, fontWeight = FontWeight.Bold) },
